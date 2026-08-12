@@ -1,0 +1,12 @@
+[package]
+name = "doujin-scanner"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[dependencies]
+doujin-parser = { path = "../doujin-parser" }
+
+[lints.rust]
+unsafe_code = "forbid"

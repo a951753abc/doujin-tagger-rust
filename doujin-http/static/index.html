@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#f7f3ec">
+  <title>私藏編目室</title>
+  <link rel="stylesheet" href="/assets/app.css?v=26">
+  <script src="/assets/app.js?v=26" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳到主要內容</a>
+
+  <div class="app-shell">
+    <header class="masthead">
+      <div class="utility-row">
+        <span class="service-state" id="service-state"><i aria-hidden="true"></i> 連線中</span>
+        <div>
+          <button class="utility-button" id="recent-button" type="button" aria-haspopup="dialog">最近開啟 <span id="recent-count">0</span> 冊</button>
+          <button class="utility-button" id="shortcuts-button" type="button" aria-haspopup="dialog">J / K 移動 · / 搜尋</button>
+        </div>
+      </div>
+
+      <div class="masthead-main">
+        <a class="brand" href="#shelf" aria-label="私藏編目室書架首頁">私藏編目室</a>
+
+        <label class="header-search" for="search-input">
+          <span class="visually-hidden">搜尋收藏</span>
+          <input id="search-input" name="q" type="search" form="search-form" autocomplete="off"
+                 placeholder="搜尋標題、社團、作者、原作或檔名…">
+          <button type="submit" form="search-form" aria-label="搜尋"><span aria-hidden="true">⌕</span></button>
+        </label>
+
+        <nav class="primary-nav" aria-label="主要功能">
+          <a href="#shelf" data-route="shelf" aria-current="page">書架</a>
+          <a href="#library" data-route="library">全部藏書</a>
+          <a href="#workbench" data-route="workbench">工作台 <b class="nav-count" id="workbench-count" hidden>0</b></a>
+          <a href="#stats" data-route="stats">統計</a>
+          <a href="#settings" data-route="settings">設定</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main-content" tabindex="-1">
+      <section class="view shelf-view" id="shelf-view" data-view="shelf" aria-label="書架">
+        <div class="quick-filter-row" aria-label="常用篩選">
+          <span>常用篩選</span>
+          <button type="button" class="quick-filter" id="shelf-quick-event" data-filter="event" data-value="C105">C105</button>
+          <button type="button" class="quick-filter" id="shelf-quick-parody" data-filter="parody" data-value="東方Project">東方Project</button>
+          <button type="button" class="quick-filter" data-filter="parody" data-value="オリジナル">オリジナル</button>
+          <button type="button" class="quick-filter" data-filter="missing" data-value="any">缺少 metadata</button>
+          <button type="button" class="quick-filter" data-filter="untagged" data-value="1">尚無標籤</button>
+        </div>
+
+        <div class="shelf-loading" id="shelf-loading" role="status"><span class="loader" aria-hidden="true"></span> 正在整理書架…</div>
+        <div class="shelf-content" id="shelf-content" hidden>
+          <aside class="tidy-strip">
+            <p><strong>待整理</strong> <span id="shelf-tidy-summary">正在彙整待處理項目…</span></p>
+            <a href="#workbench">前往工作台 <span aria-hidden="true">→</span></a>
+          </aside>
+
+          <section class="book-shelf" aria-labelledby="recent-shelf-heading">
+            <header class="shelf-heading">
+              <div><h1 id="recent-shelf-heading">最近加入</h1><span id="recent-shelf-count"></span></div>
+              <button type="button" class="shelf-link" data-shelf-target="recent">檢視全部 <span aria-hidden="true">→</span></button>
+            </header>
+            <ol class="shelf-books" id="recent-shelf-books"></ol>
+          </section>
+
+          <section class="featured-shelf" id="featured-shelf" aria-labelledby="featured-shelf-heading">
+            <header class="featured-heading">
+              <span>本週特輯</span>
+              <h2 id="featured-shelf-heading">收藏選輯</h2>
+              <small id="featured-shelf-count"></small>
+            </header>
+            <ol class="shelf-books" id="featured-shelf-books"></ol>
+          </section>
+
+          <section class="book-shelf event-shelf" aria-labelledby="event-shelf-heading">
+            <header class="shelf-heading">
+              <div><h2 id="event-shelf-heading">場次書架</h2><span id="event-shelf-count"></span></div>
+              <button type="button" class="shelf-link" data-shelf-target="event">檢視全部 <span aria-hidden="true">→</span></button>
+            </header>
+            <ol class="shelf-books" id="event-shelf-books"></ol>
+          </section>
+
+          <footer class="shelf-footer">
+            <span id="shelf-footer-status">收藏已編目 · 本機服務正常</span>
+            <span>私藏編目室 · LOCAL CATALOGUE</span>
+          </footer>
+        </div>
+      </section>
+
+      <section class="view" id="library-view" data-view="library" aria-labelledby="library-heading" hidden>
+        <header class="page-heading">
+          <div>
+            <p class="eyebrow">COLLECTION / 藏書</p>
+            <h1 id="library-heading">整理你的私人書架</h1>
+          </div>
+          <p>搜尋、核對與閱讀都從同一張編目桌完成。</p>
+        </header>
+
+        <form class="search-panel" id="search-form" role="search">
+          <div class="filter-panel" id="filter-panel" hidden>
+            <div class="filter-panel-heading">
+              <strong>更多篩選</strong>
+              <button class="filter-panel-close" id="close-filter-panel" type="button" aria-label="收合篩選面板">
+                收合 <span aria-hidden="true">×</span>
+              </button>
+            </div>
+            <label>來源
+              <select name="source">
+                <option value="">全部來源</option>
+                <option value="archive">典藏庫</option>
+                <option value="downloads">新收藏</option>
+              </select>
+            </label>
+            <label>種類
+              <select name="classification">
+                <option value="">全部種類</option>
+                <option value="同人誌">同人誌</option>
+                <option value="商業誌">商業誌</option>
+                <option value="其他">其他</option>
+              </select>
+            </label>
+            <label>缺少資料
+              <select name="missing">
+                <option value="">不限制</option>
+                <option value="any">缺少任一 metadata</option>
+                <option value="title">缺少標題</option>
+                <option value="circle">缺少社團</option>
+                <option value="authors">缺少作者</option>
+                <option value="parody">缺少原作</option>
+                <option value="classification">缺少種類</option>
+                <option value="event">缺少場次</option>
+              </select>
+            </label>
+            <label>場次<input name="event" type="text" autocomplete="off"></label>
+            <label>社團<input name="circle" type="text" autocomplete="off"></label>
+            <label>作者<input name="author" type="text" autocomplete="off"></label>
+            <label>原作<input name="parody" type="text" autocomplete="off"></label>
+            <label>子分類<input name="subcategory" type="text" autocomplete="off"></label>
+            <label>標籤<input name="tag" type="text" autocomplete="off"></label>
+            <input name="untagged" type="hidden" value="">
+            <div class="filter-actions">
+              <button class="text-button" id="clear-filters" type="button">清除篩選</button>
+              <button class="secondary-button" type="submit">套用篩選</button>
+            </div>
+          </div>
+        </form>
+
+        <div class="library-toolbar">
+          <div class="active-filter-area">
+            <div class="active-filter-chips" id="active-filter-chips"></div>
+            <button class="filter-toggle" id="filter-toggle" type="button" aria-expanded="false" aria-controls="filter-panel">
+              更多篩選 <span id="active-filter-count" class="visually-hidden">0</span>
+            </button>
+          </div>
+          <div class="library-toolbar-actions">
+            <p id="result-summary" aria-live="polite">正在讀取收藏…</p>
+            <div class="page-selection" aria-label="目前頁面選取">
+              <button class="text-button" id="select-page" type="button">全選本頁</button>
+              <button class="text-button" id="invert-page" type="button">反選本頁</button>
+            </div>
+            <div class="view-switcher" aria-label="結果排列方式">
+              <button type="button" data-layout="grid" aria-pressed="true">書牆</button>
+              <button type="button" data-layout="list" aria-pressed="false">條列</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="library-workbench">
+          <section class="results-pane" aria-label="收藏結果">
+            <div class="loading-state" id="library-loading" role="status">
+              <span class="loader" aria-hidden="true"></span> 正在翻查書目…
+            </div>
+            <ol class="collection-results layout-list" id="collection-results" aria-label="收藏清單"></ol>
+            <div class="empty-state" id="library-empty" hidden>
+              <span aria-hidden="true">空</span>
+              <h2>沒有符合條件的收藏</h2>
+              <p>試著縮短關鍵字，或清除一項篩選條件。</p>
+              <button class="secondary-button" id="empty-reset" type="button">清除搜尋與篩選</button>
+            </div>
+            <nav class="pagination" id="pagination" aria-label="收藏分頁" hidden>
+              <button class="secondary-button" id="previous-page" type="button">上一頁</button>
+              <span id="page-label">第 1 頁</span>
+              <button class="secondary-button" id="next-page" type="button">下一頁</button>
+            </nav>
+          </section>
+
+          <aside class="detail-pane" id="detail-pane" aria-label="收藏詳細資料">
+            <div class="detail-placeholder" id="detail-placeholder">
+              <span aria-hidden="true">選</span>
+              <p>選取一本收藏，在這裡核對封面與編目資料。</p>
+              <small>鍵盤可用 J／K 移動選取</small>
+            </div>
+            <article class="collection-detail" id="collection-detail" hidden>
+              <div class="cover-stage">
+                <img id="detail-cover" alt="" width="300" height="400">
+                <span id="detail-source" class="source-ribbon"></span>
+              </div>
+              <div class="detail-copy">
+                <p class="detail-kicker" id="detail-kicker"></p>
+                <h2 id="detail-title"></h2>
+                <p class="filename" id="detail-filename"></p>
+
+                <div class="primary-actions">
+                  <button class="primary-button" id="read-button" type="button">用閱讀器開啟</button>
+                  <button class="secondary-button" id="open-button" type="button">在系統中開啟</button>
+                </div>
+
+                <dl class="metadata-list" id="metadata-list"></dl>
+
+                <details class="metadata-evidence" id="metadata-evidence">
+                  <summary>
+                    <span><strong>證據與裁決</strong><small>檢視採用來源、候選與外部搜尋紀錄</small></span>
+                    <b class="evidence-summary-count" id="evidence-summary-count">尚未載入</b>
+                  </summary>
+                  <div class="metadata-evidence-body">
+                    <div class="evidence-toolbar">
+                      <p>目前值依「手動修改 › 外部 metadata › 檔名解析 › 推斷結果」選擇。</p>
+                      <button class="text-button" id="refresh-metadata-evidence" type="button">重新整理證據</button>
+                    </div>
+
+                    <section class="external-job-status" id="external-job-status" aria-live="polite" hidden></section>
+
+                    <div class="evidence-loading" id="evidence-loading" role="status" hidden>
+                      <span class="loader" aria-hidden="true"></span> 正在整理 metadata 證據…
+                    </div>
+                    <div class="evidence-error" id="evidence-error" role="alert" hidden>
+                      <strong>無法載入 metadata 證據</strong>
+                      <p id="evidence-error-message"></p>
+                      <button class="secondary-button" id="retry-metadata-evidence" type="button">再試一次</button>
+                    </div>
+                    <div class="evidence-fields" id="evidence-fields"></div>
+                  </div>
+                </details>
+
+                <section class="tag-editor" aria-labelledby="tags-heading">
+                  <h3 id="tags-heading">標籤</h3>
+                  <div class="tag-list" id="detail-tags"></div>
+                  <form id="tag-form">
+                    <label class="visually-hidden" for="tag-input">新增標籤</label>
+                    <input id="tag-input" name="tag" type="text" placeholder="新增標籤" autocomplete="off">
+                    <button class="secondary-button" type="submit">加入</button>
+                  </form>
+                </section>
+
+                <div class="detail-actions">
+                  <button class="text-button" id="edit-metadata-button" type="button">修正 metadata</button>
+                  <button class="text-button" id="external-search-button" type="button">搜尋外部資料</button>
+                  <button class="text-button" id="rebuild-thumbnail-button" type="button">重建縮圖</button>
+                </div>
+                <p class="path-note" id="detail-path"></p>
+              </div>
+            </article>
+          </aside>
+        </div>
+
+        <aside class="selection-rail" id="selection-rail" aria-label="批次選取" hidden>
+          <p><strong id="selection-count">0</strong> 筆已選</p>
+          <span>選取只保留在目前頁面</span>
+          <div>
+            <button class="text-button" id="clear-selection" type="button">清除選取</button>
+              <a class="secondary-button button-link" href="#workbench">加標籤</a>
+              <a class="secondary-button button-link" href="#workbench">寫入手動值</a>
+              <a class="primary-button button-link" href="#workbench">前往工作台</a>
+          </div>
+        </aside>
+      </section>
+
+      <section class="view" id="workbench-view" data-view="workbench" aria-labelledby="workbench-heading" hidden>
+        <h1 class="visually-hidden" id="workbench-heading">整理與人工裁決</h1>
+
+        <div class="operations-dashboard">
+          <section class="operations-section batch-desk" aria-labelledby="batch-desk-heading">
+            <div class="section-heading ruled-heading">
+              <div><p class="section-index">01 / 批次操作</p><h2 id="batch-desk-heading">目前頁面選取</h2></div>
+              <a class="text-link" href="#library">返回全部藏書調整選取 <span aria-hidden="true">→</span></a>
+            </div>
+            <div class="selection-summary" id="workbench-selection-summary" aria-live="polite"></div>
+            <ol class="selected-collection-list" id="selected-collection-list"></ol>
+            <div class="workbench-empty" id="selection-empty">
+              <span aria-hidden="true">選</span>
+              <div><h3>尚未選取收藏</h3><p>回到藏書，以核取方塊、全選本頁或反選本頁建立這次操作清單。</p></div>
+            </div>
+
+            <div class="batch-tools" id="batch-tools" hidden>
+              <form class="inline-operation" id="batch-tag-form">
+                <div><h3>批次加入標籤</h3><p>已具有同名標籤的收藏不會重複建立關聯。</p></div>
+                <label>標籤名稱<input name="tag" type="text" autocomplete="off" required></label>
+                <button class="primary-button" type="submit">加入</button>
+              </form>
+
+              <form class="inline-operation" id="batch-metadata-form">
+                <div><h3>批次寫入手動值</h3><p>手動值會優先於外部資料、檔名解析與推斷結果。</p></div>
+                <label>欄位
+                  <select name="field"><option value="parody">原作</option><option value="classification">種類</option></select>
+                </label>
+                <label id="batch-metadata-value-label">新的原作<input name="value" type="text" autocomplete="off" required></label>
+                <button class="primary-button" type="submit">寫入</button>
+              </form>
+
+              <div class="file-operation-strip">
+                <div><p class="section-index">FILES / 檔案</p><h3>搬移或刪除</h3><p>每筆操作都會由後端重新驗證來源、路徑與檔案狀態，批次允許部分成功。</p></div>
+                <div>
+                  <button class="secondary-button" id="prepare-move" type="button">搬移至典藏庫</button>
+                  <button class="danger-button" id="prepare-delete" type="button">刪除已選收藏</button>
+                </div>
+              </div>
+            </div>
+
+            <section class="batch-result" id="batch-result" aria-labelledby="batch-result-heading" hidden>
+              <h3 id="batch-result-heading">最近一次操作結果</h3>
+              <div id="batch-result-summary"></div>
+              <ol id="batch-result-items"></ol>
+            </section>
+          </section>
+
+          <section class="operations-section identity-desk" aria-labelledby="identity-heading">
+            <div class="section-heading ruled-heading">
+              <div><p class="section-index">02 / 身分裁決</p><h2 id="identity-heading">同名候選裁決</h2></div>
+              <button class="text-button" id="refresh-candidates" type="button">重新整理</button>
+            </div>
+            <p class="section-intro">確認候選只記錄人工判斷，不會立即合併。每個同名候選都必須裁決後，才能進入身分合併預檢。</p>
+            <div class="identity-result" id="identity-result" aria-live="polite" hidden></div>
+            <div class="review-loading" id="candidate-loading" hidden><span class="loader" aria-hidden="true"></span> 正在讀取待裁決項目…</div>
+            <div class="candidate-groups" id="candidate-groups"></div>
+            <div class="workbench-empty" id="candidate-empty" hidden>
+              <span aria-hidden="true">清</span>
+              <div><h3>沒有待處理的同名候選</h3><p>重新掃描若發現已消失收藏的同名新位置，會在這裡等待人工裁決。</p></div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" id="stats-view" data-view="stats" aria-labelledby="stats-heading" hidden>
+        <h1 class="visually-hidden" id="stats-heading">收藏概況</h1>
+        <p class="stats-intro">只計入目前有效的收藏，不包含已移除或被合併的紀錄。名稱皆可點擊，直接帶入藏書篩選。</p>
+        <div class="stat-ledger" id="stat-ledger" aria-live="polite"></div>
+        <div class="stat-columns" id="stat-columns"></div>
+      </section>
+
+      <section class="view" id="settings-view" data-view="settings" aria-labelledby="settings-heading" hidden>
+        <h1 class="visually-hidden" id="settings-heading">編目室設定</h1>
+
+        <div class="settings-layout">
+          <section class="settings-section preferences-settings" aria-labelledby="reader-settings-heading">
+            <h2 id="reader-settings-heading">閱讀與縮圖</h2>
+            <p class="settings-intro" id="environment-overrides">正在讀取設定優先權…</p>
+            <form id="settings-form">
+              <label>閱讀器執行檔
+                <input name="viewer_path" type="text" autocomplete="off" placeholder="留空時使用系統預設程式">
+              </label>
+              <div class="form-row">
+                <label>縮圖尺寸<input name="thumb_size" type="text" inputmode="numeric" placeholder="300x400" required></label>
+                <label>WebP 品質<input name="thumb_quality" type="number" min="1" max="100" required></label>
+              </div>
+              <button class="primary-button" type="submit">儲存設定</button>
+              <p class="field-note">變更縮圖尺寸或品質時，既有縮圖會自動排入重建。</p>
+            </form>
+          </section>
+
+          <section class="settings-section roots-settings" aria-labelledby="roots-heading">
+            <div class="section-heading roots-heading">
+              <h2 id="roots-heading">資料夾來源</h2>
+              <p>掃描只會處理這裡登記且啟用的來源。</p>
+              <button class="secondary-button" id="scan-button" type="button">重新掃描</button>
+            </div>
+            <ul class="root-list" id="root-list"></ul>
+            <form class="root-form" id="root-form">
+              <h3>新增來源</h3>
+              <div class="root-form-fields">
+                <label>顯示名稱<input name="label" type="text" required autocomplete="off"></label>
+                <label>完整路徑<input name="path" type="text" required autocomplete="off"></label>
+                <label>用途
+                  <select name="source" required>
+                    <option value="downloads">新收藏（會解析）</option>
+                    <option value="archive">典藏庫</option>
+                  </select>
+                </label>
+                <button class="primary-button" type="submit">登記</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="recent-dialog" aria-labelledby="recent-heading">
+    <div class="dialog-shell">
+      <header><div><p class="eyebrow">LOCAL / 本機</p><h2 id="recent-heading">最近開啟</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉">×</button></header>
+      <p class="dialog-intro">這份清單只儲存在目前瀏覽器，不會寫入收藏資料庫。</p>
+      <ol class="recent-list" id="recent-list"></ol>
+      <div class="dialog-footer"><button class="text-button danger-text" id="clear-recent" type="button">清除最近紀錄</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="metadata-dialog" aria-labelledby="metadata-dialog-heading">
+    <form class="dialog-shell" id="metadata-form">
+      <header><div><p class="eyebrow">MANUAL / 手動值</p><h2 id="metadata-dialog-heading">修正 metadata</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉">×</button></header>
+      <p class="dialog-intro">手動修改優先於外部資料與檔名解析。每次只修改一個欄位，方便保留歷史。</p>
+      <label>欄位
+        <select name="field" id="metadata-field">
+          <option value="title">標題</option><option value="event">場次</option><option value="circle">社團</option>
+          <option value="authors">作者</option><option value="parody">原作</option><option value="classification">種類</option><option value="is_dl">DL 版</option>
+        </select>
+      </label>
+      <div id="metadata-text-group">
+        <label id="metadata-value-label">新值<input name="value" id="metadata-value" type="text" autocomplete="off"></label>
+      </div>
+      <div id="metadata-classification-group" class="form-row" hidden>
+        <label>主要種類
+          <select name="classification_top"><option value="同人誌">同人誌</option><option value="商業誌">商業誌</option><option value="其他">其他</option></select>
+        </label>
+        <label>子分類<input name="classification_subcategory" type="text" autocomplete="off"></label>
+      </div>
+      <label id="metadata-boolean-group" hidden>新值
+        <select name="boolean_value"><option value="true">是</option><option value="false">否</option></select>
+      </label>
+      <div class="dialog-footer split-footer">
+        <button class="text-button danger-text" id="clear-manual-button" type="button">清除這個手動值</button>
+        <div><button class="text-button" data-close-dialog type="button">取消</button><button class="primary-button" type="submit">儲存手動值</button></div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="move-dialog" aria-labelledby="move-dialog-heading">
+    <form class="dialog-shell" id="move-form">
+      <header><div><p class="eyebrow">MOVE / 搬移</p><h2 id="move-dialog-heading">搬移至典藏庫</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉">×</button></header>
+      <p class="dialog-intro" id="move-summary"></p>
+      <label>目的典藏庫
+        <select name="archive_root_id" id="archive-root-select" required></select>
+      </label>
+      <p class="field-note">後端會依每筆收藏的場次建立安全子資料夾；不會覆寫既有同名 ZIP。</p>
+      <ol class="confirm-item-list" id="move-item-list"></ol>
+      <div class="dialog-footer"><button class="text-button" data-close-dialog type="button">保留原位</button><button class="primary-button" type="submit">搬移已選收藏</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="delete-dialog" aria-labelledby="delete-dialog-heading">
+    <form class="dialog-shell destructive-dialog" id="delete-form">
+      <header><div><p class="eyebrow">DELETE / 刪除</p><h2 id="delete-dialog-heading">選擇刪除方式</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉">×</button></header>
+      <p class="dialog-intro" id="delete-summary"></p>
+      <fieldset class="delete-mode-options">
+        <legend>刪除方式</legend>
+        <label><input type="radio" name="mode" value="soft" checked><span><strong>移到資源回收桶</strong><small>可嘗試由作業系統資源回收桶還原，並保留 catalog tombstone、metadata 與標籤。</small></span></label>
+        <label><input type="radio" name="mode" value="permanent"><span><strong>永久刪除</strong><small>不經資源回收桶，實體 ZIP、索引與標籤關聯都無法由本工具還原。</small></span></label>
+      </fieldset>
+      <label id="permanent-confirm-group" hidden>輸入確認文字 <code id="permanent-confirm-phrase"></code>
+        <input name="confirmation" type="text" autocomplete="off" aria-describedby="permanent-confirm-note">
+      </label>
+      <p class="field-note danger-text" id="permanent-confirm-note" hidden>這是不可還原的操作。確認文字必須完全一致。</p>
+      <ol class="confirm-item-list" id="delete-item-list"></ol>
+      <div class="dialog-footer"><button class="text-button" data-close-dialog type="button">保留收藏</button><button class="danger-button" id="confirm-delete" type="submit">移到資源回收桶</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="consolidation-dialog" aria-labelledby="consolidation-dialog-heading">
+    <form class="dialog-shell consolidation-dialog" id="consolidation-form">
+      <header><div><p class="eyebrow">PREFLIGHT / 預檢</p><h2 id="consolidation-dialog-heading">合併收藏身分</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉">×</button></header>
+      <p class="dialog-intro">合併後由較早的 tombstone ID 存活並接管候選位置；實體 ZIP 不會搬移，但本工具目前不提供自動拆分。</p>
+      <div class="identity-pair" id="identity-pair"></div>
+      <section class="preflight-blockers" id="preflight-blockers" hidden><h3>目前無法合併</h3><ul></ul></section>
+      <section class="conflict-section" id="conflict-section" hidden><h3>逐欄選擇保留值</h3><p>未選中的 assertion 仍會保留來源與歷史。</p><div id="conflict-list"></div></section>
+      <label id="consolidation-confirm-group">輸入確認文字 <code id="consolidation-confirm-phrase"></code>
+        <input name="confirmation" type="text" autocomplete="off">
+      </label>
+      <div class="dialog-footer"><button class="text-button" data-close-dialog type="button">暫不合併</button><button class="primary-button" id="confirm-consolidation" type="submit" disabled>合併收藏身分</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-heading">
+    <div class="dialog-shell compact-dialog">
+      <header><h2 id="shortcuts-heading">鍵盤操作</h2><button class="icon-button" data-close-dialog type="button" aria-label="關閉">×</button></header>
+      <dl class="shortcut-list"><dt><kbd>/</kbd></dt><dd>跳到搜尋</dd><dt><kbd>J</kbd> / <kbd>K</kbd></dt><dd>移動收藏選取</dd><dt><kbd>?</kbd></dt><dd>顯示這份說明</dd><dt><kbd>Esc</kbd></dt><dd>關閉對話框</dd></dl>
+    </div>
+  </dialog>
+
+  <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>

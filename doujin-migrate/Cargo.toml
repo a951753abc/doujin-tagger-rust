@@ -1,0 +1,17 @@
+[package]
+name = "doujin-migrate"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[dependencies]
+blake3 = "1.8.6"
+doujin-parser = { path = "../doujin-parser" }
+doujin-storage = { path = "../doujin-storage" }
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+[lints.rust]
+unsafe_code = "forbid"

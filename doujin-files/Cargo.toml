@@ -1,0 +1,19 @@
+[package]
+name = "doujin-files"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[dependencies]
+blake3 = "1.8.6"
+doujin-scanner = { path = "../doujin-scanner" }
+doujin-storage = { path = "../doujin-storage" }
+open = { version = "5.4.1", features = ["shellexecute-on-windows"] }
+trash = "5.2.6"
+
+[dev-dependencies]
+doujin-parser = { path = "../doujin-parser" }
+
+[lints.rust]
+unsafe_code = "forbid"

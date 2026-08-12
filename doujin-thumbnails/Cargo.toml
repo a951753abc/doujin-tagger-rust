@@ -1,0 +1,15 @@
+[package]
+name = "doujin-thumbnails"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[dependencies]
+doujin-storage = { path = "../doujin-storage" }
+image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
+webp = "0.3.1"
+zip = { version = "8.4.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[lints.rust]
+unsafe_code = "forbid"

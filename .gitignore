@@ -1,0 +1,14 @@
+/target/
+/cutover/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+config.json
+*.log
+/.obsidian/
+/--help
+/--help-wal
+/--help-shm
+/handoff.zip
+/UIUX 重新設計.zip

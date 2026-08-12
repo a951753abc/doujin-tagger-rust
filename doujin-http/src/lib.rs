@@ -1,0 +1,2722 @@
+//! Thin localhost-only HTTP adapter for the Rust application service.
+
+use std::collections::HashSet;
+use std::error::Error;
+use std::fmt;
+use std::future::Future;
+use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
+use std::str::FromStr;
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use axum::Json;
+use axum::Router;
+use axum::body::Body;
+use axum::extract::rejection::JsonRejection;
+use axum::extract::{Path, RawQuery, Request, State};
+use axum::http::uri::Authority;
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{delete, get, patch, post, put};
+use doujin_app::{
+    ApplicationError, ApplicationScanReport, ApplicationService, ApplicationSettingsSnapshot,
+};
+use doujin_files::{
+    BatchReport, DeleteRequest, ItemStatus, LaunchAction, LaunchError, LaunchReceipt, RecycleBin,
+};
+use doujin_parser::domain::{Authors, Classification, Parody};
+use doujin_scanner::SourceKind;
+use doujin_storage::StorageError;
+use doujin_storage::collections::{
+    CollectionPage, CollectionQuery, CollectionRootSnapshot, CollectionSnapshot,
+    MissingMetadataField,
+};
+use doujin_storage::consolidation::{
+    ConsolidationChoice, ConsolidationConflict, ConsolidationPreflight, ConsolidationResolution,
+    ConsolidationSnapshot, ManualSelectionEvidence,
+};
+use doujin_storage::jobs::{ExternalSearchEnqueueOutcome, ExternalSearchJobSnapshot};
+use doujin_storage::lifecycle::{CandidateDecision, DeleteMode, TombstoneCandidateSnapshot};
+use doujin_storage::metadata::{
+    ExternalSearchResultHistory, MetadataAssertionDecision, MetadataAssertionHistory,
+    MetadataField, MetadataFieldHistory, MetadataHistory, MetadataSelectionHistory, MetadataValue,
+};
+use doujin_storage::roots::LibraryRootSnapshot;
+use doujin_storage::scan::{ScanIssueSnapshot, ScanRunSnapshot};
+use doujin_storage::statistics::{CollectionStatistics, NamedCount};
+use doujin_storage::thumbnails::{
+    DEFAULT_THUMBNAIL_PRIORITY, MAX_THUMBNAIL_PRIORITY, ThumbnailStateSnapshot, ThumbnailStatus,
+};
+use doujin_thumbnails::transparent_placeholder_webp;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tokio::net::TcpListener;
+
+#[derive(Debug)]
+pub enum ServerError {
+    Io(std::io::Error),
+    NonLoopbackAddress(SocketAddr),
+}
+
+impl fmt::Display for ServerError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "HTTP server I/O 錯誤：{error}"),
+            Self::NonLoopbackAddress(address) => {
+                write!(
+                    formatter,
+                    "HTTP server 只允許 localhost loopback：{address}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for ServerError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::NonLoopbackAddress(_) => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for ServerError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+pub fn validate_loopback_address(address: SocketAddr) -> Result<(), ServerError> {
+    if address.ip().is_loopback() {
+        Ok(())
+    } else {
+        Err(ServerError::NonLoopbackAddress(address))
+    }
+}
+
+pub async fn bind_loopback(address: SocketAddr) -> Result<TcpListener, ServerError> {
+    validate_loopback_address(address)?;
+    Ok(TcpListener::bind(address).await?)
+}
+
+pub async fn serve_with_shutdown<R, F>(
+    listener: TcpListener,
+    application: ApplicationService<R>,
+    shutdown: F,
+) -> Result<(), ServerError>
+where
+    R: RecycleBin + Send + 'static,
+    F: Future<Output = ()> + Send + 'static,
+{
+    serve_shared_with_shutdown(listener, share_application(application), shutdown).await
+}
+
+pub type SharedApplication<R> = Arc<Mutex<ApplicationService<R>>>;
+
+pub fn share_application<R>(application: ApplicationService<R>) -> SharedApplication<R> {
+    Arc::new(Mutex::new(application))
+}
+
+pub async fn serve_shared_with_shutdown<R, F>(
+    listener: TcpListener,
+    application: SharedApplication<R>,
+    shutdown: F,
+) -> Result<(), ServerError>
+where
+    R: RecycleBin + Send + 'static,
+    F: Future<Output = ()> + Send + 'static,
+{
+    validate_loopback_address(listener.local_addr()?)?;
+    axum::serve(listener, build_router(application))
+        .with_graceful_shutdown(shutdown)
+        .await?;
+    Ok(())
+}
+
+fn build_router<R>(application: SharedApplication<R>) -> Router
+where
+    R: RecycleBin + Send + 'static,
+{
+    let state = HttpState { application };
+    Router::new()
+        .route("/", get(frontend_index))
+        .route("/assets/app.css", get(frontend_css))
+        .route("/assets/app.js", get(frontend_javascript))
+        .route("/api/health", get(health))
+        .route(
+            "/api/settings",
+            get(get_settings::<R>).put(update_settings::<R>),
+        )
+        .route("/api/stats", get(get_statistics::<R>))
+        .route("/api/collections", get(list_collections::<R>))
+        .route("/api/collections/{collection_id}", get(get_collection::<R>))
+        .route(
+            "/api/collections/{collection_id}/open",
+            post(open_collection::<R>),
+        )
+        .route(
+            "/api/collections/{collection_id}/read",
+            post(read_collection::<R>),
+        )
+        .route(
+            "/api/collections/{collection_id}/thumbnail",
+            get(get_thumbnail::<R>),
+        )
+        .route(
+            "/api/collections/{collection_id}/thumbnail/rebuild",
+            post(rebuild_thumbnail::<R>),
+        )
+        .route("/api/thumbnails/rebuild", post(rebuild_all_thumbnails::<R>))
+        .route(
+            "/api/collections/{collection_id}/metadata",
+            get(get_metadata_history::<R>),
+        )
+        .route(
+            "/api/collections/{collection_id}/metadata/{field}",
+            put(set_manual_metadata::<R>).delete(clear_manual_metadata::<R>),
+        )
+        .route(
+            "/api/collections/{collection_id}/metadata/{field}/assertions/{assertion_id}",
+            patch(decide_metadata_assertion::<R>),
+        )
+        .route(
+            "/api/collections/{collection_id}/tags",
+            post(add_collection_tag::<R>).delete(remove_collection_tag::<R>),
+        )
+        .route(
+            "/api/collections/{collection_id}/external-search-jobs",
+            post(enqueue_external_search::<R>),
+        )
+        .route(
+            "/api/external-search-jobs/{job_id}",
+            get(get_external_search_job::<R>),
+        )
+        .route(
+            "/api/tombstone-candidates",
+            get(list_tombstone_candidates::<R>),
+        )
+        .route(
+            "/api/tombstone-candidates/{tombstone_id}/{candidate_id}",
+            patch(decide_tombstone_candidate::<R>),
+        )
+        .route(
+            "/api/tombstone-candidates/{tombstone_id}/{candidate_id}/preflight",
+            get(consolidation_preflight::<R>),
+        )
+        .route(
+            "/api/tombstone-candidates/{tombstone_id}/{candidate_id}/consolidate",
+            post(consolidate_tombstone_candidate::<R>),
+        )
+        .route(
+            "/api/library-roots",
+            get(list_library_roots::<R>).post(register_library_root::<R>),
+        )
+        .route(
+            "/api/library-roots/{root_id}",
+            delete(deactivate_library_root::<R>),
+        )
+        .route("/api/file-actions/move", post(move_collections::<R>))
+        .route("/api/file-actions/delete", post(delete_collections::<R>))
+        .route("/api/scans", post(start_scan::<R>))
+        .route("/api/scans/{scan_run_id}", get(get_scan::<R>))
+        .fallback(not_found)
+        .method_not_allowed_fallback(method_not_allowed)
+        .layer(middleware::from_fn(request_guard))
+        .with_state(state)
+}
+
+struct HttpState<R> {
+    application: Arc<Mutex<ApplicationService<R>>>,
+}
+
+impl<R> Clone for HttpState<R> {
+    fn clone(&self) -> Self {
+        Self {
+            application: Arc::clone(&self.application),
+        }
+    }
+}
+
+const INTERACTIVE_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
+const INTERACTIVE_LOCK_RETRY: Duration = Duration::from_millis(10);
+
+fn lock_interactive_application<R>(
+    application: &Mutex<ApplicationService<R>>,
+) -> Result<MutexGuard<'_, ApplicationService<R>>, ApiError> {
+    let deadline = Instant::now() + INTERACTIVE_LOCK_TIMEOUT;
+    loop {
+        match application.try_lock() {
+            Ok(application) => return Ok(application),
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+            Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                thread::sleep(INTERACTIVE_LOCK_RETRY);
+            }
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct HealthResponse {
+    status: &'static str,
+    service: &'static str,
+    api_version: u8,
+}
+
+async fn health() -> Json<HealthResponse> {
+    Json(HealthResponse {
+        status: "ok",
+        service: "doujin-http",
+        api_version: 1,
+    })
+}
+
+const FRONTEND_INDEX: &str = include_str!("../static/index.html");
+const FRONTEND_CSS: &str = include_str!("../static/app.css");
+const FRONTEND_JAVASCRIPT: &str = include_str!("../static/app.js");
+
+async fn frontend_index() -> Response {
+    frontend_response(FRONTEND_INDEX, "text/html; charset=utf-8", "no-store", true)
+}
+
+async fn frontend_css() -> Response {
+    frontend_response(FRONTEND_CSS, "text/css; charset=utf-8", "no-cache", false)
+}
+
+async fn frontend_javascript() -> Response {
+    frontend_response(
+        FRONTEND_JAVASCRIPT,
+        "text/javascript; charset=utf-8",
+        "no-cache",
+        false,
+    )
+}
+
+fn frontend_response(
+    body: &'static str,
+    content_type: &'static str,
+    cache_control: &'static str,
+    is_document: bool,
+) -> Response {
+    let mut response = Response::new(Body::from(body));
+    let headers = response.headers_mut();
+    headers.insert("content-type", HeaderValue::from_static(content_type));
+    headers.insert("cache-control", HeaderValue::from_static(cache_control));
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    if is_document {
+        headers.insert(
+            "content-security-policy",
+            HeaderValue::from_static(
+                "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+            ),
+        );
+    }
+    response
+}
+
+#[derive(Debug, Serialize)]
+struct SettingsResponse {
+    viewer_path: String,
+    thumb_size: String,
+    thumb_quality: u8,
+    environment_overrides: Vec<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thumbnails_requeued: Option<usize>,
+}
+
+impl SettingsResponse {
+    fn from_snapshot(
+        settings: ApplicationSettingsSnapshot,
+        thumbnails_requeued: Option<usize>,
+    ) -> Self {
+        let mut environment_overrides = Vec::new();
+        if settings.reader_overridden_by_environment {
+            environment_overrides.push("DOUJIN_READER_PATH");
+        }
+        if settings.thumbnail_size_overridden_by_environment {
+            environment_overrides.push("DOUJIN_THUMB_SIZE");
+        }
+        if settings.thumbnail_quality_overridden_by_environment {
+            environment_overrides.push("DOUJIN_THUMB_QUALITY");
+        }
+        Self {
+            viewer_path: settings
+                .reader_path
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            thumb_size: format!("{}x{}", settings.thumbnail_width, settings.thumbnail_height),
+            thumb_quality: settings.thumbnail_quality,
+            environment_overrides,
+            thumbnails_requeued,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsUpdateRequest {
+    viewer_path: String,
+    thumb_size: String,
+    thumb_quality: i64,
+}
+
+async fn get_settings<R>(
+    State(state): State<HttpState<R>>,
+) -> Result<Json<SettingsResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let settings = tokio::task::spawn_blocking(move || {
+        let application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .application_settings()
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(SettingsResponse::from_snapshot(settings, None)))
+}
+
+async fn update_settings<R>(
+    State(state): State<HttpState<R>>,
+    payload: Result<Json<SettingsUpdateRequest>, JsonRejection>,
+) -> Result<Json<SettingsResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let (width, height) = parse_thumbnail_size(&payload.thumb_size)?;
+    let quality = u8::try_from(payload.thumb_quality)
+        .ok()
+        .filter(|quality| (1..=100).contains(quality))
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "invalid_thumbnail_quality",
+                "thumb_quality 必須是 1 到 100 的整數",
+            )
+        })?;
+    let reader_path = match payload.viewer_path.trim() {
+        "" => None,
+        value => Some(PathBuf::from(value)),
+    };
+    let outcome = tokio::task::spawn_blocking(move || {
+        let mut application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .save_application_settings(reader_path, width, height, quality)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(SettingsResponse::from_snapshot(
+        outcome.settings,
+        Some(outcome.thumbnails_requeued),
+    )))
+}
+
+fn parse_thumbnail_size(value: &str) -> Result<(u32, u32), ApiError> {
+    let value = value.trim();
+    let (width, height) = value.split_once('x').ok_or_else(|| {
+        ApiError::bad_request(
+            "invalid_thumbnail_size",
+            "thumb_size 必須使用 WIDTHxHEIGHT 格式",
+        )
+    })?;
+    let width = width.parse::<u32>().ok();
+    let height = height.parse::<u32>().ok();
+    match (width, height) {
+        (Some(width), Some(height))
+            if (1..=4096).contains(&width) && (1..=4096).contains(&height) =>
+        {
+            Ok((width, height))
+        }
+        _ => Err(ApiError::bad_request(
+            "invalid_thumbnail_size",
+            "thumb_size 的寬高必須是 1 到 4096 的整數",
+        )),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct NamedCountResponse {
+    name: String,
+    count: i64,
+}
+
+impl From<NamedCount> for NamedCountResponse {
+    fn from(value: NamedCount) -> Self {
+        Self {
+            name: value.name,
+            count: value.count,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct StatisticsResponse {
+    total: i64,
+    tagged: i64,
+    missing_metadata: i64,
+    categories: Vec<NamedCountResponse>,
+    top_parody: Vec<NamedCountResponse>,
+    top_author: Vec<NamedCountResponse>,
+    top_circle: Vec<NamedCountResponse>,
+    top_event: Vec<NamedCountResponse>,
+    top_tags: Vec<NamedCountResponse>,
+}
+
+impl From<CollectionStatistics> for StatisticsResponse {
+    fn from(value: CollectionStatistics) -> Self {
+        Self {
+            total: value.total,
+            tagged: value.tagged,
+            missing_metadata: value.missing_metadata,
+            categories: value.classifications.into_iter().map(Into::into).collect(),
+            top_parody: value.top_parodies.into_iter().map(Into::into).collect(),
+            top_author: value.top_authors.into_iter().map(Into::into).collect(),
+            top_circle: value.top_circles.into_iter().map(Into::into).collect(),
+            top_event: value.top_events.into_iter().map(Into::into).collect(),
+            top_tags: value.top_tags.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+async fn get_statistics<R>(
+    State(state): State<HttpState<R>>,
+) -> Result<Json<StatisticsResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let statistics = tokio::task::spawn_blocking(move || {
+        let application = lock_interactive_application(&state.application)?;
+        application
+            .collection_statistics()
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(statistics.into()))
+}
+
+#[derive(Debug, Serialize)]
+struct LaunchResponse {
+    collection_id: i64,
+    action: &'static str,
+    launched: bool,
+}
+
+impl From<LaunchReceipt> for LaunchResponse {
+    fn from(receipt: LaunchReceipt) -> Self {
+        Self {
+            collection_id: receipt.collection_id,
+            action: match receipt.action {
+                LaunchAction::SystemDefault => "system_default",
+                LaunchAction::ConfiguredReader => "configured_reader",
+            },
+            launched: true,
+        }
+    }
+}
+
+async fn open_collection<R>(
+    State(state): State<HttpState<R>>,
+    Path(collection_id): Path<String>,
+) -> Result<Json<LaunchResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    launch_collection(state, collection_id, LaunchAction::SystemDefault).await
+}
+
+async fn read_collection<R>(
+    State(state): State<HttpState<R>>,
+    Path(collection_id): Path<String>,
+) -> Result<Json<LaunchResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    launch_collection(state, collection_id, LaunchAction::ConfiguredReader).await
+}
+
+async fn get_thumbnail<R>(
+    State(state): State<HttpState<R>>,
+    Path(collection_id): Path<String>,
+    RawQuery(raw_query): RawQuery,
+) -> Result<Response, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let collection_id = parse_collection_id(&collection_id)?;
+    let priority = parse_thumbnail_priority(raw_query.as_deref())?;
+    let (thumbnail, cache) = tokio::task::spawn_blocking(move || {
+        let mut application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        let outcome = application
+            .request_thumbnail_with_priority(collection_id, priority)
+            .map_err(ApiError::from_application)?;
+        let cache = application
+            .read_thumbnail_cache(collection_id)
+            .map_err(ApiError::from_application)?;
+        Ok((outcome.state, cache))
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+
+    let ready = thumbnail.status == ThumbnailStatus::Ready && cache.is_some();
+    let body = cache.unwrap_or_else(|| transparent_placeholder_webp().to_vec());
+    let mut response = Response::new(Body::from(body));
+    *response.status_mut() = if ready {
+        StatusCode::OK
+    } else {
+        StatusCode::ACCEPTED
+    };
+    response
+        .headers_mut()
+        .insert("content-type", HeaderValue::from_static("image/webp"));
+    response.headers_mut().insert(
+        "cache-control",
+        HeaderValue::from_static(if ready {
+            "private, max-age=86400"
+        } else {
+            "no-store"
+        }),
+    );
+    response.headers_mut().insert(
+        "x-thumbnail-status",
+        HeaderValue::from_static(thumbnail.status.as_str()),
+    );
+    response.headers_mut().insert(
+        "x-thumbnail-priority",
+        HeaderValue::from_str(&thumbnail.priority.to_string()).map_err(|_| ApiError::internal())?,
+    );
+    if let Some(error_kind) = thumbnail.error_kind {
+        response.headers_mut().insert(
+            "x-thumbnail-error-kind",
+            HeaderValue::from_static(error_kind.as_str()),
+        );
+    }
+    if let Some(next_retry_at) = thumbnail.next_retry_at {
+        response.headers_mut().insert(
+            "x-thumbnail-next-retry-at",
+            HeaderValue::from_str(&next_retry_at).map_err(|_| ApiError::internal())?,
+        );
+    }
+    Ok(response)
+}
+
+#[derive(Debug, Serialize)]
+struct ThumbnailStateResponse {
+    collection_id: i64,
+    status: &'static str,
+    error_kind: Option<&'static str>,
+    error_message: Option<String>,
+    attempts: i64,
+    next_retry_at: Option<String>,
+    generated_width: Option<u32>,
+    generated_height: Option<u32>,
+    priority: i64,
+    requested_at: Option<String>,
+}
+
+impl From<ThumbnailStateSnapshot> for ThumbnailStateResponse {
+    fn from(state: ThumbnailStateSnapshot) -> Self {
+        Self {
+            collection_id: state.collection_id,
+            status: state.status.as_str(),
+            error_kind: state.error_kind.map(|kind| kind.as_str()),
+            error_message: state.error_message,
+            attempts: state.attempts,
+            next_retry_at: state.next_retry_at,
+            generated_width: state.generated_width,
+            generated_height: state.generated_height,
+            priority: state.priority,
+            requested_at: state.requested_at,
+        }
+    }
+}
+
+fn parse_thumbnail_priority(raw_query: Option<&str>) -> Result<i64, ApiError> {
+    let mut priority = DEFAULT_THUMBNAIL_PRIORITY;
+    let mut seen = false;
+    for (key, value) in form_urlencoded::parse(raw_query.unwrap_or_default().as_bytes()) {
+        if key != "priority" || seen {
+            return Err(ApiError::bad_request(
+                "invalid_thumbnail_priority",
+                "thumbnail 僅接受一個 priority 參數",
+            ));
+        }
+        priority = value.parse::<i64>().map_err(|_| {
+            ApiError::bad_request(
+                "invalid_thumbnail_priority",
+                "thumbnail priority 必須是正整數",
+            )
+        })?;
+        if !(DEFAULT_THUMBNAIL_PRIORITY..=MAX_THUMBNAIL_PRIORITY).contains(&priority) {
+            return Err(ApiError::bad_request(
+                "invalid_thumbnail_priority",
+                "thumbnail priority 超出允許範圍",
+            ));
+        }
+        seen = true;
+    }
+    Ok(priority)
+}
+
+async fn rebuild_thumbnail<R>(
+    State(state): State<HttpState<R>>,
+    Path(collection_id): Path<String>,
+) -> Result<Json<ThumbnailStateResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let collection_id = parse_collection_id(&collection_id)?;
+    let thumbnail = tokio::task::spawn_blocking(move || {
+        let mut application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .rebuild_thumbnail(collection_id)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(thumbnail.into()))
+}
+
+#[derive(Debug, Serialize)]
+struct ThumbnailRebuildAllResponse {
+    rebuilt: usize,
+}
+
+async fn rebuild_all_thumbnails<R>(
+    State(state): State<HttpState<R>>,
+) -> Result<Json<ThumbnailRebuildAllResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let rebuilt = tokio::task::spawn_blocking(move || {
+        let mut application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .rebuild_all_thumbnails()
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(ThumbnailRebuildAllResponse { rebuilt }))
+}
+
+async fn launch_collection<R>(
+    state: HttpState<R>,
+    collection_id: String,
+    action: LaunchAction,
+) -> Result<Json<LaunchResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let collection_id = parse_collection_id(&collection_id)?;
+    let receipt = tokio::task::spawn_blocking(move || {
+        let application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        match action {
+            LaunchAction::SystemDefault => application.open_collection(collection_id),
+            LaunchAction::ConfiguredReader => application.read_collection(collection_id),
+        }
+        .map_err(ApiError::from_launch)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(receipt.into()))
+}
+
+#[derive(Debug, Serialize)]
+struct CollectionPageResponse {
+    items: Vec<CollectionResponse>,
+    pagination: PaginationResponse,
+}
+
+#[derive(Debug, Serialize)]
+struct PaginationResponse {
+    page: u32,
+    per_page: u32,
+    total: i64,
+    total_pages: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct CollectionResponse {
+    id: i64,
+    path: String,
+    filename: String,
+    root: Option<CollectionRootResponse>,
+    title: Option<String>,
+    event: Option<String>,
+    circle: Option<String>,
+    authors: Vec<String>,
+    parody: Option<String>,
+    parody_raw: Option<String>,
+    classification_top: Option<String>,
+    classification_subcategory: Option<String>,
+    is_dl: Option<bool>,
+    tags: Vec<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CollectionRootResponse {
+    id: i64,
+    source: &'static str,
+    label: String,
+}
+
+impl From<CollectionRootSnapshot> for CollectionRootResponse {
+    fn from(root: CollectionRootSnapshot) -> Self {
+        Self {
+            id: root.id,
+            source: source_name(root.source),
+            label: root.label,
+        }
+    }
+}
+
+impl From<CollectionSnapshot> for CollectionResponse {
+    fn from(collection: CollectionSnapshot) -> Self {
+        Self {
+            id: collection.id,
+            path: collection.path.to_string_lossy().into_owned(),
+            filename: collection.filename,
+            root: collection.root.map(Into::into),
+            title: collection.title,
+            event: collection.event,
+            circle: collection.circle,
+            authors: collection.authors,
+            parody: collection.parody,
+            parody_raw: collection.parody_raw,
+            classification_top: collection.classification_top,
+            classification_subcategory: collection.classification_subcategory,
+            is_dl: collection.is_dl,
+            tags: collection.tags,
+            created_at: collection.created_at,
+            updated_at: collection.updated_at,
+        }
+    }
+}
+
+impl From<CollectionPage> for CollectionPageResponse {
+    fn from(page: CollectionPage) -> Self {
+        let total_pages = if page.total == 0 {
+            0
+        } else {
+            (page.total + i64::from(page.per_page) - 1) / i64::from(page.per_page)
+        };
+        Self {
+            items: page.items.into_iter().map(Into::into).collect(),
+            pagination: PaginationResponse {
+                page: page.page,
+                per_page: page.per_page,
+                total: page.total,
+                total_pages,
+            },
+        }
+    }
+}
+
+async fn list_collections<R>(
+    State(state): State<HttpState<R>>,
+    RawQuery(raw_query): RawQuery,
+) -> Result<Json<CollectionPageResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let query = parse_collection_query(raw_query.as_deref())?;
+    let page = tokio::task::spawn_blocking(move || {
+        let application = lock_interactive_application(&state.application)?;
+        application
+            .collections(&query)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(page.into()))
+}
+
+async fn get_collection<R>(
+    State(state): State<HttpState<R>>,
+    Path(collection_id): Path<String>,
+) -> Result<Json<CollectionResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let collection_id = parse_collection_id(&collection_id)?;
+    let collection = tokio::task::spawn_blocking(move || {
+        let application = lock_interactive_application(&state.application)?;
+        match application.collection(collection_id) {
+            Ok(collection) => Ok(collection),
+            Err(ApplicationError::Storage(StorageError::CollectionNotFound(_))) => {
+                match application.merged_into_collection(collection_id) {
+                    Ok(Some(survivor_id)) => Err(ApiError::merged(survivor_id)),
+                    Ok(None) => Err(ApiError::from_storage(StorageError::CollectionNotFound(
+                        collection_id,
+                    ))),
+                    Err(error) => Err(ApiError::from_application(error)),
+                }
+            }
+            Err(error) => Err(ApiError::from_application(error)),
+        }
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(collection.into()))
+}
+
+#[derive(Debug, Serialize)]
+struct MetadataHistoryResponse {
+    collection_id: i64,
+    fields: Vec<MetadataFieldHistoryResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct MetadataFieldHistoryResponse {
+    field: &'static str,
+    selection: Option<MetadataSelectionResponse>,
+    assertions: Vec<MetadataAssertionResponse>,
+    external_search_results: Vec<ExternalSearchResultResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct MetadataSelectionResponse {
+    assertion_id: i64,
+    selected_by: &'static str,
+    selected_at: String,
+}
+
+#[derive(Debug, Serialize)]
+struct MetadataAssertionResponse {
+    id: i64,
+    value: Value,
+    source: &'static str,
+    parser_run_id: Option<i64>,
+    source_reference: Option<String>,
+    confidence_total: Option<f64>,
+    confidence: Option<Value>,
+    status: &'static str,
+    reason: Option<String>,
+    created_at: String,
+    selected: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ExternalSearchResultResponse {
+    id: i64,
+    value: Value,
+    source_reference: String,
+    confidence_total: f64,
+    confidence: Value,
+    disposition: &'static str,
+    assertion_id: Option<i64>,
+    created_at: String,
+}
+
+impl TryFrom<MetadataHistory> for MetadataHistoryResponse {
+    type Error = ApiError;
+
+    fn try_from(history: MetadataHistory) -> Result<Self, Self::Error> {
+        Ok(Self {
+            collection_id: history.collection_id,
+            fields: history
+                .fields
+                .into_iter()
+                .map(metadata_field_history_response)
+                .collect::<Result<_, _>>()?,
+        })
+    }
+}
+
+fn metadata_field_history_response(
+    history: MetadataFieldHistory,
+) -> Result<MetadataFieldHistoryResponse, ApiError> {
+    let selected_assertion_id = history
+        .selection
+        .as_ref()
+        .map(|selection| selection.assertion_id);
+    Ok(MetadataFieldHistoryResponse {
+        field: history.field.as_str(),
+        selection: history.selection.map(metadata_selection_response),
+        assertions: history
+            .assertions
+            .into_iter()
+            .map(|assertion| metadata_assertion_response(assertion, selected_assertion_id))
+            .collect::<Result<_, _>>()?,
+        external_search_results: history
+            .external_search_results
+            .into_iter()
+            .map(external_search_result_response)
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+fn metadata_selection_response(selection: MetadataSelectionHistory) -> MetadataSelectionResponse {
+    MetadataSelectionResponse {
+        assertion_id: selection.assertion_id,
+        selected_by: selection.selected_by.as_str(),
+        selected_at: selection.selected_at,
+    }
+}
+
+fn metadata_assertion_response(
+    assertion: MetadataAssertionHistory,
+    selected_assertion_id: Option<i64>,
+) -> Result<MetadataAssertionResponse, ApiError> {
+    let value = serde_json::from_str(&assertion.value_json).map_err(|_| ApiError::internal())?;
+    let confidence = assertion
+        .confidence_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|_| ApiError::internal())?;
+    Ok(MetadataAssertionResponse {
+        id: assertion.id,
+        value,
+        source: assertion.source.as_str(),
+        parser_run_id: assertion.parser_run_id,
+        source_reference: assertion.source_reference,
+        confidence_total: assertion.confidence_total,
+        confidence,
+        status: assertion.status.as_str(),
+        reason: assertion.reason,
+        created_at: assertion.created_at,
+        selected: selected_assertion_id == Some(assertion.id),
+    })
+}
+
+fn external_search_result_response(
+    result: ExternalSearchResultHistory,
+) -> Result<ExternalSearchResultResponse, ApiError> {
+    Ok(ExternalSearchResultResponse {
+        id: result.id,
+        value: serde_json::from_str(&result.value_json).map_err(|_| ApiError::internal())?,
+        source_reference: result.source_reference,
+        confidence_total: result.confidence_total,
+        confidence: serde_json::from_str(&result.confidence_json)
+            .map_err(|_| ApiError::internal())?,
+        disposition: result.disposition.as_str(),
+        assertion_id: result.assertion_id,
+        created_at: result.created_at,
+    })
+}
+
+async fn get_metadata_history<R>(
+    State(state): State<HttpState<R>>,
+    Path(collection_id): Path<String>,
+) -> Result<Json<MetadataHistoryResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let collection_id = parse_collection_id(&collection_id)?;
+    let history = tokio::task::spawn_blocking(move || {
+        let application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .metadata_history(collection_id)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(history.try_into()?))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManualMetadataRequest {
+    value: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MetadataAssertionDecisionRequest {
+    decision: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TagRequest {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalSearchJobRequest {
+    fields: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExternalSearchEnqueueResponse {
+    created: bool,
+    job: ExternalSearchJobResponse,
+}
+
+#[derive(Debug, Serialize)]
+struct ExternalSearchJobResponse {
+    id: i64,
+    collection_id: i64,
+    status: &'static str,
+    fields: Vec<&'static str>,
+    result: Option<Value>,
+    error_kind: Option<&'static str>,
+    error_message: Option<String>,
+    attempts: i64,
+    next_retry_at: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TombstoneCandidateDecisionRequest {
+    decision: String,
+}
+
+#[derive(Debug, Serialize)]
+struct TombstoneCandidatesResponse {
+    items: Vec<TombstoneCandidateResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct TombstoneCandidateResponse {
+    tombstone_collection_id: i64,
+    candidate_collection_id: i64,
+    tombstone_path: String,
+    candidate_path: Option<String>,
+    reason: String,
+    decision: &'static str,
+    discovered_at: String,
+    decided_at: Option<String>,
+}
+
+impl From<TombstoneCandidateSnapshot> for TombstoneCandidateResponse {
+    fn from(candidate: TombstoneCandidateSnapshot) -> Self {
+        Self {
+            tombstone_collection_id: candidate.tombstone_collection_id,
+            candidate_collection_id: candidate.candidate_collection_id,
+            tombstone_path: candidate.tombstone_path.to_string_lossy().into_owned(),
+            candidate_path: candidate
+                .candidate_path
+                .map(|path| path.to_string_lossy().into_owned()),
+            reason: candidate.reason,
+            decision: candidate_decision_name(candidate.decision),
+            discovered_at: candidate.discovered_at,
+            decided_at: candidate.decided_at,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConsolidationRequest {
+    #[serde(default)]
+    resolutions: Vec<ConsolidationResolutionRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConsolidationResolutionRequest {
+    field: String,
+    choice: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ConsolidationPreflightResponse {
+    tombstone_collection_id: i64,
+    candidate_collection_id: i64,
+    ready: bool,
+    already_consolidated: bool,
+    blockers: Vec<ConsolidationBlockerResponse>,
+    conflicts: Vec<ConsolidationConflictResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct ConsolidationBlockerResponse {
+    kind: String,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ConsolidationConflictResponse {
+    field: &'static str,
+    tombstone: ManualSelectionEvidenceResponse,
+    candidate: ManualSelectionEvidenceResponse,
+}
+
+#[derive(Debug, Serialize)]
+struct ManualSelectionEvidenceResponse {
+    assertion_id: i64,
+    source: &'static str,
+    value: Value,
+}
+
+#[derive(Debug, Serialize)]
+struct ConsolidationResponse {
+    consolidation_id: i64,
+    survivor_collection_id: i64,
+    merged_collection_id: i64,
+    already_completed: bool,
+    resolutions: Value,
+    consolidated_at: String,
+}
+
+impl TryFrom<ConsolidationPreflight> for ConsolidationPreflightResponse {
+    type Error = ApiError;
+
+    fn try_from(preflight: ConsolidationPreflight) -> Result<Self, Self::Error> {
+        Ok(Self {
+            tombstone_collection_id: preflight.tombstone_collection_id,
+            candidate_collection_id: preflight.candidate_collection_id,
+            ready: preflight.ready,
+            already_consolidated: preflight.already_consolidated,
+            blockers: preflight
+                .blockers
+                .into_iter()
+                .map(|blocker| ConsolidationBlockerResponse {
+                    kind: blocker.kind,
+                    message: blocker.message,
+                })
+                .collect(),
+            conflicts: preflight
+                .conflicts
+                .into_iter()
+                .map(consolidation_conflict_response)
+                .collect::<Result<_, _>>()?,
+        })
+    }
+}
+
+impl TryFrom<ConsolidationSnapshot> for ConsolidationResponse {
+    type Error = ApiError;
+
+    fn try_from(snapshot: ConsolidationSnapshot) -> Result<Self, Self::Error> {
+        Ok(Self {
+            consolidation_id: snapshot.consolidation_id,
+            survivor_collection_id: snapshot.survivor_collection_id,
+            merged_collection_id: snapshot.merged_collection_id,
+            already_completed: snapshot.already_completed,
+            resolutions: serde_json::from_str(&snapshot.resolutions_json)
+                .map_err(|_| ApiError::internal())?,
+            consolidated_at: snapshot.consolidated_at,
+        })
+    }
+}
+
+fn consolidation_conflict_response(
+    conflict: ConsolidationConflict,
+) -> Result<ConsolidationConflictResponse, ApiError> {
+    Ok(ConsolidationConflictResponse {
+        field: conflict.field.as_str(),
+        tombstone: manual_selection_evidence_response(conflict.tombstone)?,
+        candidate: manual_selection_evidence_response(conflict.candidate)?,
+    })
+}
+
+fn manual_selection_evidence_response(
+    evidence: ManualSelectionEvidence,
+) -> Result<ManualSelectionEvidenceResponse, ApiError> {
+    Ok(ManualSelectionEvidenceResponse {
+        assertion_id: evidence.assertion_id,
+        source: evidence.source.as_str(),
+        value: serde_json::from_str(&evidence.value_json).map_err(|_| ApiError::internal())?,
+    })
+}
+
+impl TryFrom<ExternalSearchJobSnapshot> for ExternalSearchJobResponse {
+    type Error = ApiError;
+
+    fn try_from(job: ExternalSearchJobSnapshot) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: job.id,
+            collection_id: job.collection_id,
+            status: job.status.as_str(),
+            fields: job.fields.into_iter().map(MetadataField::as_str).collect(),
+            result: job
+                .result_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|_| ApiError::internal())?,
+            error_kind: job.error_kind.map(|kind| kind.as_str()),
+            error_message: job.error_message,
+            attempts: job.attempts,
+            next_retry_at: job.next_retry_at,
+            created_at: job.created_at,
+            updated_at: job.updated_at,
+        })
+    }
+}
+
+impl TryFrom<ExternalSearchEnqueueOutcome> for ExternalSearchEnqueueResponse {
+    type Error = ApiError;
+
+    fn try_from(outcome: ExternalSearchEnqueueOutcome) -> Result<Self, Self::Error> {
+        Ok(Self {
+            created: outcome.created,
+            job: outcome.job.try_into()?,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ManualParodyRequest {
+    Text(String),
+    Detailed(ManualParodyDetails),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManualParodyDetails {
+    raw: String,
+    canonical: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ManualClassificationRequest {
+    Text(String),
+    Detailed(ManualClassificationDetails),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManualClassificationDetails {
+    top_level: String,
+    subcategory: Option<String>,
+}
+
+async fn decide_metadata_assertion<R>(
+    State(state): State<HttpState<R>>,
+    Path((collection_id, field, assertion_id)): Path<(String, String, String)>,
+    payload: Result<Json<MetadataAssertionDecisionRequest>, JsonRejection>,
+) -> Result<Json<MetadataHistoryResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let collection_id = parse_collection_id(&collection_id)?;
+    let field = parse_metadata_field(&field)?;
+    let assertion_id = parse_metadata_assertion_id(&assertion_id)?;
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let decision = match payload.decision.as_str() {
+        "select" => MetadataAssertionDecision::Select,
+        "reject" => MetadataAssertionDecision::Reject,
+        _ => {
+            return Err(ApiError::bad_request(
+                "invalid_metadata_assertion_decision",
+                "metadata assertion decision 必須是 select 或 reject",
+            ));
+        }
+    };
+    let history = tokio::task::spawn_blocking(move || {
+        let mut application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .decide_metadata_assertion(collection_id, field, assertion_id, decision)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(history.try_into()?))
+}
+
+async fn set_manual_metadata<R>(
+    State(state): State<HttpState<R>>,
+    Path((collection_id, field)): Path<(String, String)>,
+    payload: Result<Json<ManualMetadataRequest>, JsonRejection>,
+) -> Result<Json<CollectionResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let collection_id = parse_collection_id(&collection_id)?;
+    let field = parse_metadata_field(&field)?;
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let value = decode_manual_metadata(field, payload.value)?;
+    let collection = tokio::task::spawn_blocking(move || {
+        let mut application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .set_manual_metadata(collection_id, field, value)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(collection.into()))
+}
+
+async fn clear_manual_metadata<R>(
+    State(state): State<HttpState<R>>,
+    Path((collection_id, field)): Path<(String, String)>,
+) -> Result<Json<CollectionResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let collection_id = parse_collection_id(&collection_id)?;
+    let field = parse_metadata_field(&field)?;
+    let collection = tokio::task::spawn_blocking(move || {
+        let mut application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .clear_manual_metadata(collection_id, field)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(collection.into()))
+}
+
+async fn add_collection_tag<R>(
+    State(state): State<HttpState<R>>,
+    Path(collection_id): Path<String>,
+    payload: Result<Json<TagRequest>, JsonRejection>,
+) -> Result<Json<CollectionResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let collection_id = parse_collection_id(&collection_id)?;
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let collection = tokio::task::spawn_blocking(move || {
+        let mut application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .add_collection_tag(collection_id, &payload.name)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(collection.into()))
+}
+
+async fn remove_collection_tag<R>(
+    State(state): State<HttpState<R>>,
+    Path(collection_id): Path<String>,
+    payload: Result<Json<TagRequest>, JsonRejection>,
+) -> Result<Json<CollectionResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let collection_id = parse_collection_id(&collection_id)?;
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let collection = tokio::task::spawn_blocking(move || {
+        let mut application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .remove_collection_tag(collection_id, &payload.name)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(collection.into()))
+}
+
+async fn enqueue_external_search<R>(
+    State(state): State<HttpState<R>>,
+    Path(collection_id): Path<String>,
+    payload: Result<Json<ExternalSearchJobRequest>, JsonRejection>,
+) -> Result<Json<ExternalSearchEnqueueResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let collection_id = parse_collection_id(&collection_id)?;
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let fields = parse_external_search_fields(payload.fields)?;
+    let outcome = tokio::task::spawn_blocking(move || {
+        let mut application = lock_interactive_application(&state.application)?;
+        application
+            .enqueue_external_search(collection_id, &fields)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(outcome.try_into()?))
+}
+
+async fn get_external_search_job<R>(
+    State(state): State<HttpState<R>>,
+    Path(job_id): Path<String>,
+) -> Result<Json<ExternalSearchJobResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let job_id = parse_external_search_job_id(&job_id)?;
+    let job = tokio::task::spawn_blocking(move || {
+        let application = lock_interactive_application(&state.application)?;
+        application
+            .external_search_job(job_id)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(job.try_into()?))
+}
+
+async fn list_tombstone_candidates<R>(
+    State(state): State<HttpState<R>>,
+) -> Result<Json<TombstoneCandidatesResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let candidates = tokio::task::spawn_blocking(move || {
+        let application = lock_interactive_application(&state.application)?;
+        application
+            .tombstone_candidates()
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(TombstoneCandidatesResponse {
+        items: candidates.into_iter().map(Into::into).collect(),
+    }))
+}
+
+async fn decide_tombstone_candidate<R>(
+    State(state): State<HttpState<R>>,
+    Path((tombstone_id, candidate_id)): Path<(String, String)>,
+    payload: Result<Json<TombstoneCandidateDecisionRequest>, JsonRejection>,
+) -> Result<Json<TombstoneCandidateResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let tombstone_id = parse_tombstone_id(&tombstone_id)?;
+    let candidate_id = parse_candidate_id(&candidate_id)?;
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let decision = match payload.decision.as_str() {
+        "confirmed" => CandidateDecision::Confirmed,
+        "rejected" => CandidateDecision::Rejected,
+        _ => {
+            return Err(ApiError::bad_request(
+                "invalid_tombstone_candidate_decision",
+                "tombstone candidate decision 必須是 confirmed 或 rejected",
+            ));
+        }
+    };
+    let candidate = tokio::task::spawn_blocking(move || {
+        let mut application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .decide_tombstone_candidate(tombstone_id, candidate_id, decision)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(candidate.into()))
+}
+
+async fn consolidation_preflight<R>(
+    State(state): State<HttpState<R>>,
+    Path((tombstone_id, candidate_id)): Path<(String, String)>,
+) -> Result<Json<ConsolidationPreflightResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let tombstone_id = parse_tombstone_id(&tombstone_id)?;
+    let candidate_id = parse_candidate_id(&candidate_id)?;
+    let preflight = tokio::task::spawn_blocking(move || {
+        let application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .consolidation_preflight(tombstone_id, candidate_id)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(preflight.try_into()?))
+}
+
+async fn consolidate_tombstone_candidate<R>(
+    State(state): State<HttpState<R>>,
+    Path((tombstone_id, candidate_id)): Path<(String, String)>,
+    payload: Result<Json<ConsolidationRequest>, JsonRejection>,
+) -> Result<Json<ConsolidationResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let tombstone_id = parse_tombstone_id(&tombstone_id)?;
+    let candidate_id = parse_candidate_id(&candidate_id)?;
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let resolutions = payload
+        .resolutions
+        .into_iter()
+        .map(parse_consolidation_resolution)
+        .collect::<Result<Vec<_>, _>>()?;
+    let consolidated = tokio::task::spawn_blocking(move || {
+        let mut application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .consolidate_tombstone_candidate(tombstone_id, candidate_id, &resolutions)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(consolidated.try_into()?))
+}
+
+fn parse_consolidation_resolution(
+    resolution: ConsolidationResolutionRequest,
+) -> Result<ConsolidationResolution, ApiError> {
+    let field = parse_metadata_field(&resolution.field).map_err(|_| {
+        ApiError::bad_request(
+            "invalid_consolidation_resolution",
+            "consolidation resolution 包含不支援的 metadata field",
+        )
+    })?;
+    let choice = match resolution.choice.as_str() {
+        "tombstone" => ConsolidationChoice::Tombstone,
+        "candidate" => ConsolidationChoice::Candidate,
+        _ => {
+            return Err(ApiError::bad_request(
+                "invalid_consolidation_resolution",
+                "consolidation choice 必須是 tombstone 或 candidate",
+            ));
+        }
+    };
+    Ok(ConsolidationResolution { field, choice })
+}
+
+fn parse_collection_id(value: &str) -> Result<i64, ApiError> {
+    value
+        .parse::<i64>()
+        .ok()
+        .filter(|id| *id > 0)
+        .ok_or_else(|| ApiError::bad_request("invalid_collection_id", "collection ID 必須是正整數"))
+}
+
+fn parse_tombstone_id(value: &str) -> Result<i64, ApiError> {
+    value
+        .parse::<i64>()
+        .ok()
+        .filter(|id| *id > 0)
+        .ok_or_else(|| ApiError::bad_request("invalid_tombstone_id", "tombstone ID 必須是正整數"))
+}
+
+fn parse_candidate_id(value: &str) -> Result<i64, ApiError> {
+    value
+        .parse::<i64>()
+        .ok()
+        .filter(|id| *id > 0)
+        .ok_or_else(|| ApiError::bad_request("invalid_candidate_id", "candidate ID 必須是正整數"))
+}
+
+fn candidate_decision_name(decision: CandidateDecision) -> &'static str {
+    match decision {
+        CandidateDecision::Pending => "pending",
+        CandidateDecision::Confirmed => "confirmed",
+        CandidateDecision::Rejected => "rejected",
+    }
+}
+
+fn parse_metadata_assertion_id(value: &str) -> Result<i64, ApiError> {
+    value
+        .parse::<i64>()
+        .ok()
+        .filter(|id| *id > 0)
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "invalid_metadata_assertion_id",
+                "metadata assertion ID 必須是正整數",
+            )
+        })
+}
+
+fn parse_external_search_job_id(value: &str) -> Result<i64, ApiError> {
+    value
+        .parse::<i64>()
+        .ok()
+        .filter(|id| *id > 0)
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "invalid_external_search_job_id",
+                "external search job ID 必須是正整數",
+            )
+        })
+}
+
+fn parse_external_search_fields(values: Vec<String>) -> Result<Vec<MetadataField>, ApiError> {
+    if values.is_empty() {
+        return Err(ApiError::bad_request(
+            "invalid_external_search_fields",
+            "external search 至少必須指定一個 metadata field",
+        ));
+    }
+    let mut fields = Vec::with_capacity(values.len());
+    for value in values {
+        let field = parse_metadata_field(&value).map_err(|_| {
+            ApiError::bad_request(
+                "invalid_external_search_fields",
+                "external search 包含不支援的 metadata field",
+            )
+        })?;
+        if !fields.contains(&field) {
+            fields.push(field);
+        }
+    }
+    Ok(fields)
+}
+
+fn parse_metadata_field(value: &str) -> Result<MetadataField, ApiError> {
+    match value {
+        "title" => Ok(MetadataField::Title),
+        "event" => Ok(MetadataField::Event),
+        "circle" => Ok(MetadataField::Circle),
+        "authors" => Ok(MetadataField::Authors),
+        "parody" => Ok(MetadataField::Parody),
+        "classification" => Ok(MetadataField::Classification),
+        "is_dl" => Ok(MetadataField::IsDl),
+        _ => Err(ApiError::bad_request(
+            "invalid_metadata_field",
+            "不支援指定的 metadata field",
+        )),
+    }
+}
+
+fn decode_manual_metadata(field: MetadataField, value: Value) -> Result<MetadataValue, ApiError> {
+    let invalid =
+        || ApiError::bad_request("invalid_metadata_value", "metadata value 的型別或內容無效");
+    match field {
+        MetadataField::Title | MetadataField::Event | MetadataField::Circle => {
+            let value = serde_json::from_value::<String>(value).map_err(|_| invalid())?;
+            Ok(MetadataValue::Text(nonempty_metadata_text(value)?))
+        }
+        MetadataField::Authors => {
+            let values = serde_json::from_value::<Vec<String>>(value).map_err(|_| invalid())?;
+            let values = values
+                .into_iter()
+                .map(nonempty_metadata_text)
+                .collect::<Result<Vec<_>, _>>()?;
+            if values.is_empty() {
+                return Err(invalid());
+            }
+            Ok(MetadataValue::Authors(Authors { raw: None, values }))
+        }
+        MetadataField::Parody => {
+            let value =
+                serde_json::from_value::<ManualParodyRequest>(value).map_err(|_| invalid())?;
+            let (raw, canonical) = match value {
+                ManualParodyRequest::Text(value) => {
+                    let value = nonempty_metadata_text(value)?;
+                    (value.clone(), value)
+                }
+                ManualParodyRequest::Detailed(value) => {
+                    let raw = nonempty_metadata_text(value.raw)?;
+                    let canonical = value
+                        .canonical
+                        .map(nonempty_metadata_text)
+                        .transpose()?
+                        .unwrap_or_else(|| raw.clone());
+                    (raw, canonical)
+                }
+            };
+            Ok(MetadataValue::Parody(Parody {
+                raw,
+                canonical,
+                evidence: "manual".to_owned(),
+            }))
+        }
+        MetadataField::Classification => {
+            let value = serde_json::from_value::<ManualClassificationRequest>(value)
+                .map_err(|_| invalid())?;
+            let (top_level, subcategory) = match value {
+                ManualClassificationRequest::Text(value) => (nonempty_metadata_text(value)?, None),
+                ManualClassificationRequest::Detailed(value) => (
+                    nonempty_metadata_text(value.top_level)?,
+                    value
+                        .subcategory
+                        .map(|value| value.trim().to_owned())
+                        .filter(|value| !value.is_empty()),
+                ),
+            };
+            Ok(MetadataValue::Classification(Classification {
+                top_level,
+                subcategory,
+                raw_marker: None,
+            }))
+        }
+        MetadataField::IsDl => Ok(MetadataValue::Boolean(
+            serde_json::from_value::<bool>(value).map_err(|_| invalid())?,
+        )),
+    }
+}
+
+fn nonempty_metadata_text(value: String) -> Result<String, ApiError> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err(ApiError::bad_request(
+            "invalid_metadata_value",
+            "metadata value 不得為空白；清除手動值請使用 DELETE",
+        ))
+    } else {
+        Ok(value.to_owned())
+    }
+}
+
+fn positive_u32_or(value: Option<i64>, fallback: u32) -> u32 {
+    value
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(fallback)
+}
+
+fn clamped_per_page(value: Option<i64>) -> u32 {
+    value.map(|value| value.clamp(1, 200) as u32).unwrap_or(50)
+}
+
+fn parse_collection_query(raw_query: Option<&str>) -> Result<CollectionQuery, ApiError> {
+    let mut query = CollectionQuery::default();
+    let mut scalar_keys = HashSet::new();
+    for (key, value) in form_urlencoded::parse(raw_query.unwrap_or_default().as_bytes()) {
+        let key = key.as_ref();
+        let value = value.as_ref();
+        match key {
+            "q" => {
+                ensure_single_parameter(&mut scalar_keys, key)?;
+                query.search = Some(value.to_owned());
+            }
+            "page" => {
+                ensure_single_parameter(&mut scalar_keys, key)?;
+                let value = value.parse::<i64>().map_err(|_| invalid_query())?;
+                query.page = positive_u32_or(Some(value), 1);
+            }
+            "per_page" => {
+                ensure_single_parameter(&mut scalar_keys, key)?;
+                let value = value.parse::<i64>().map_err(|_| invalid_query())?;
+                query.per_page = clamped_per_page(Some(value));
+            }
+            "event" => {
+                ensure_single_parameter(&mut scalar_keys, key)?;
+                query.filters.event = Some(required_filter_value(value)?);
+            }
+            "circle" => {
+                ensure_single_parameter(&mut scalar_keys, key)?;
+                query.filters.circle = Some(required_filter_value(value)?);
+            }
+            "author" => {
+                ensure_single_parameter(&mut scalar_keys, key)?;
+                query.filters.author = Some(required_filter_value(value)?);
+            }
+            "parody" => {
+                ensure_single_parameter(&mut scalar_keys, key)?;
+                query.filters.parody = Some(required_filter_value(value)?);
+            }
+            "classification" => {
+                ensure_single_parameter(&mut scalar_keys, key)?;
+                query.filters.classification = Some(required_filter_value(value)?);
+            }
+            "subcategory" => {
+                ensure_single_parameter(&mut scalar_keys, key)?;
+                query.filters.subcategory = Some(required_filter_value(value)?);
+            }
+            "source" => {
+                ensure_single_parameter(&mut scalar_keys, key)?;
+                query.filters.source = Some(match value {
+                    "archive" => SourceKind::Archive,
+                    "downloads" => SourceKind::Downloads,
+                    _ => {
+                        return Err(ApiError::bad_request(
+                            "invalid_collection_filter",
+                            "source 必須是 archive 或 downloads",
+                        ));
+                    }
+                });
+            }
+            "tag" => query.filters.tags.push(required_filter_value(value)?),
+            "untagged" => {
+                ensure_single_parameter(&mut scalar_keys, key)?;
+                query.filters.untagged = match value {
+                    "1" | "true" => true,
+                    "" | "0" | "false" => false,
+                    _ => {
+                        return Err(ApiError::bad_request(
+                            "invalid_collection_filter",
+                            "untagged 必須是 1、0、true 或 false",
+                        ));
+                    }
+                };
+            }
+            "missing" => query.filters.missing.push(match value {
+                "any" => MissingMetadataField::Any,
+                "title" => MissingMetadataField::Title,
+                "event" => MissingMetadataField::Event,
+                "circle" => MissingMetadataField::Circle,
+                "authors" => MissingMetadataField::Authors,
+                "parody" => MissingMetadataField::Parody,
+                "classification" => MissingMetadataField::Classification,
+                _ => {
+                    return Err(ApiError::bad_request(
+                        "invalid_collection_filter",
+                        "missing 必須是 any、title、event、circle、authors、parody 或 classification",
+                    ));
+                }
+            }),
+            _ => {}
+        }
+    }
+    Ok(query)
+}
+
+fn ensure_single_parameter(scalar_keys: &mut HashSet<String>, key: &str) -> Result<(), ApiError> {
+    if scalar_keys.insert(key.to_owned()) {
+        Ok(())
+    } else {
+        Err(invalid_query())
+    }
+}
+
+fn required_filter_value(value: &str) -> Result<String, ApiError> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err(ApiError::bad_request(
+            "invalid_collection_filter",
+            "collection filter value 不得為空白",
+        ))
+    } else {
+        Ok(value.to_owned())
+    }
+}
+
+fn invalid_query() -> ApiError {
+    ApiError::bad_request("invalid_query", "collection query 參數無效")
+}
+
+fn source_name(source: SourceKind) -> &'static str {
+    match source {
+        SourceKind::Archive => "archive",
+        SourceKind::Downloads => "downloads",
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RegisterLibraryRootRequest {
+    path: String,
+    source: String,
+    label: String,
+}
+
+#[derive(Debug, Serialize)]
+struct LibraryRootsResponse {
+    roots: Vec<LibraryRootResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct LibraryRootResponse {
+    id: i64,
+    path: String,
+    source: &'static str,
+    label: String,
+    active: bool,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MoveCollectionsRequest {
+    collection_ids: Vec<i64>,
+    archive_root_id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeleteCollectionsRequest {
+    collection_ids: Vec<i64>,
+    mode: String,
+}
+
+#[derive(Debug, Serialize)]
+struct FileActionBatchResponse {
+    succeeded: usize,
+    failed: usize,
+    pending_recovery: usize,
+    items: Vec<FileActionItemResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct FileActionItemResponse {
+    collection_id: i64,
+    operation_id: Option<i64>,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+impl From<BatchReport> for FileActionBatchResponse {
+    fn from(report: BatchReport) -> Self {
+        Self {
+            succeeded: report.succeeded(),
+            failed: report.failed(),
+            pending_recovery: report.pending_recovery(),
+            items: report
+                .items
+                .into_iter()
+                .map(|item| FileActionItemResponse {
+                    collection_id: item.collection_id,
+                    operation_id: item.operation_id,
+                    status: match item.status {
+                        ItemStatus::Succeeded => "succeeded",
+                        ItemStatus::Failed => "failed",
+                        ItemStatus::PendingRecovery => "pending_recovery",
+                    },
+                    error: item.error,
+                })
+                .collect(),
+        }
+    }
+}
+
+async fn move_collections<R>(
+    State(state): State<HttpState<R>>,
+    payload: Result<Json<MoveCollectionsRequest>, JsonRejection>,
+) -> Result<Json<FileActionBatchResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let collection_ids = validated_collection_ids(payload.collection_ids)?;
+    let archive_root_id = positive_id(
+        payload.archive_root_id,
+        "invalid_archive_root_id",
+        "archive root ID 必須是正整數",
+    )?;
+    let report = tokio::task::spawn_blocking(move || {
+        let mut application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        Ok(application.move_collections_to_archive(&collection_ids, archive_root_id))
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(report.into()))
+}
+
+async fn delete_collections<R>(
+    State(state): State<HttpState<R>>,
+    payload: Result<Json<DeleteCollectionsRequest>, JsonRejection>,
+) -> Result<Json<FileActionBatchResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let collection_ids = validated_collection_ids(payload.collection_ids)?;
+    let mode = match payload.mode.as_str() {
+        "soft" => DeleteMode::Soft,
+        "permanent" => DeleteMode::Permanent,
+        _ => {
+            return Err(ApiError::bad_request(
+                "invalid_delete_mode",
+                "delete mode 必須是 soft 或 permanent",
+            ));
+        }
+    };
+    let requests: Vec<_> = collection_ids
+        .into_iter()
+        .map(|collection_id| DeleteRequest {
+            collection_id,
+            mode,
+        })
+        .collect();
+    let report = tokio::task::spawn_blocking(move || {
+        let mut application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        Ok(application.delete_collections(&requests))
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(report.into()))
+}
+
+fn validated_collection_ids(collection_ids: Vec<i64>) -> Result<Vec<i64>, ApiError> {
+    if collection_ids.is_empty() {
+        return Err(ApiError::bad_request(
+            "invalid_collection_ids",
+            "collection_ids 不得為空",
+        ));
+    }
+    let mut unique = HashSet::with_capacity(collection_ids.len());
+    if collection_ids
+        .iter()
+        .any(|collection_id| *collection_id <= 0 || !unique.insert(*collection_id))
+    {
+        return Err(ApiError::bad_request(
+            "invalid_collection_ids",
+            "collection_ids 必須是互不重複的正整數",
+        ));
+    }
+    Ok(collection_ids)
+}
+
+fn positive_id(value: i64, code: &'static str, message: &str) -> Result<i64, ApiError> {
+    if value > 0 {
+        Ok(value)
+    } else {
+        Err(ApiError::bad_request(code, message))
+    }
+}
+
+impl From<LibraryRootSnapshot> for LibraryRootResponse {
+    fn from(root: LibraryRootSnapshot) -> Self {
+        Self {
+            id: root.id,
+            path: root.path.to_string_lossy().into_owned(),
+            source: source_name(root.source),
+            label: root.label,
+            active: root.active,
+            created_at: root.created_at,
+            updated_at: root.updated_at,
+        }
+    }
+}
+
+async fn list_library_roots<R>(
+    State(state): State<HttpState<R>>,
+) -> Result<Json<LibraryRootsResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let roots = tokio::task::spawn_blocking(move || {
+        let application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .library_roots()
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(LibraryRootsResponse {
+        roots: roots.into_iter().map(Into::into).collect(),
+    }))
+}
+
+async fn register_library_root<R>(
+    State(state): State<HttpState<R>>,
+    payload: Result<Json<RegisterLibraryRootRequest>, JsonRejection>,
+) -> Result<Json<LibraryRootResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let source = match payload.source.as_str() {
+        "archive" => SourceKind::Archive,
+        "downloads" => SourceKind::Downloads,
+        _ => {
+            return Err(ApiError::bad_request(
+                "invalid_library_root_source",
+                "library root source 必須是 archive 或 downloads",
+            ));
+        }
+    };
+    let path = PathBuf::from(payload.path);
+    let label = payload.label.trim().to_owned();
+    let root = tokio::task::spawn_blocking(move || {
+        let mut application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .register_library_root(&path, source, &label)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(root.into()))
+}
+
+async fn deactivate_library_root<R>(
+    State(state): State<HttpState<R>>,
+    Path(root_id): Path<String>,
+) -> Result<Json<LibraryRootResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let root_id = root_id
+        .parse::<i64>()
+        .ok()
+        .filter(|id| *id > 0)
+        .ok_or_else(|| {
+            ApiError::bad_request("invalid_library_root_id", "library root ID 必須是正整數")
+        })?;
+    let root = tokio::task::spawn_blocking(move || {
+        let mut application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .deactivate_library_root(root_id)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(root.into()))
+}
+
+async fn not_found() -> ApiError {
+    ApiError::new(
+        StatusCode::NOT_FOUND,
+        "route_not_found",
+        "找不到指定的 API route",
+    )
+}
+
+async fn method_not_allowed() -> ApiError {
+    ApiError::new(
+        StatusCode::METHOD_NOT_ALLOWED,
+        "method_not_allowed",
+        "此 API route 不支援指定的 HTTP method",
+    )
+}
+
+async fn start_scan<R>(
+    State(state): State<HttpState<R>>,
+) -> Result<Json<ApplicationScanReport>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let result = tokio::task::spawn_blocking(move || {
+        let mut application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::conflict(
+                    "scan_already_running",
+                    "重新掃描正在執行",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        let roots = application
+            .repository()
+            .active_scan_roots()
+            .map_err(ApiError::from_storage)?;
+        application
+            .run_scan(&roots)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(result))
+}
+
+async fn get_scan<R>(
+    State(state): State<HttpState<R>>,
+    Path(scan_run_id): Path<String>,
+) -> Result<Json<ScanRunResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let scan_run_id = scan_run_id
+        .parse::<i64>()
+        .ok()
+        .filter(|id| *id > 0)
+        .ok_or_else(|| ApiError::bad_request("invalid_scan_run_id", "scan run ID 必須是正整數"))?;
+    let response = tokio::task::spawn_blocking(move || {
+        let application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        let run = application
+            .repository()
+            .scan_run(scan_run_id)
+            .map_err(ApiError::from_storage)?;
+        let issues = application
+            .repository()
+            .scan_issues(scan_run_id)
+            .map_err(ApiError::from_storage)?;
+        ScanRunResponse::from_snapshots(run, issues)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(response))
+}
+
+#[derive(Debug, Serialize)]
+struct ScanRunResponse {
+    id: i64,
+    status: String,
+    started_at: String,
+    completed_at: Option<String>,
+    summary: Option<Value>,
+    error_message: Option<String>,
+    issues: Vec<ScanIssueResponse>,
+}
+
+impl ScanRunResponse {
+    fn from_snapshots(
+        run: ScanRunSnapshot,
+        issues: Vec<ScanIssueSnapshot>,
+    ) -> Result<Self, ApiError> {
+        let summary = run
+            .summary_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|_| ApiError::internal())?;
+        Ok(Self {
+            id: run.id,
+            status: run.status.as_str().to_owned(),
+            started_at: run.started_at,
+            completed_at: run.completed_at,
+            summary,
+            error_message: run.error_message,
+            issues: issues
+                .into_iter()
+                .map(|issue| ScanIssueResponse {
+                    id: issue.id,
+                    path: issue.path,
+                    kind: issue.kind,
+                    message: issue.message,
+                })
+                .collect(),
+        })
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ScanIssueResponse {
+    id: i64,
+    path: String,
+    kind: String,
+    message: String,
+}
+
+async fn request_guard(request: Request<Body>, next: Next) -> Response {
+    if !request
+        .headers()
+        .get(axum::http::header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(is_allowed_loopback_authority)
+    {
+        return ApiError::new(
+            StatusCode::MISDIRECTED_REQUEST,
+            "invalid_host",
+            "HTTP Host 必須是 localhost loopback",
+        )
+        .into_response();
+    }
+    if is_mutating(request.method())
+        && let Some(value) = origin_or_referer(request.headers())
+        && !value.to_str().ok().is_some_and(is_allowed_loopback_origin)
+    {
+        return ApiError::forbidden(
+            "cross_site_write_rejected",
+            "寫入要求的 Origin／Referer 不是 localhost loopback",
+        )
+        .into_response();
+    }
+    next.run(request).await
+}
+
+fn is_mutating(method: &Method) -> bool {
+    matches!(
+        *method,
+        Method::POST | Method::PUT | Method::PATCH | Method::DELETE
+    )
+}
+
+fn origin_or_referer(headers: &HeaderMap) -> Option<&axum::http::HeaderValue> {
+    headers
+        .get(axum::http::header::ORIGIN)
+        .or_else(|| headers.get(axum::http::header::REFERER))
+}
+
+fn is_allowed_loopback_origin(value: &str) -> bool {
+    let Ok(uri) = Uri::from_str(value) else {
+        return false;
+    };
+    if uri.scheme().is_none() || uri.authority().is_none() {
+        return false;
+    }
+    let Some(host) = uri.host() else {
+        return false;
+    };
+    is_allowed_loopback_host(host)
+}
+
+fn is_allowed_loopback_authority(value: &str) -> bool {
+    Authority::from_str(value)
+        .ok()
+        .is_some_and(|authority| is_allowed_loopback_host(authority.host()))
+}
+
+fn is_allowed_loopback_host(host: &str) -> bool {
+    let host = host.trim_matches(['[', ']']);
+    host.eq_ignore_ascii_case("localhost")
+        || IpAddr::from_str(host).is_ok_and(|address| address.is_loopback())
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorEnvelope {
+    error: ErrorBody,
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorBody {
+    code: &'static str,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    merged_into_collection_id: Option<i64>,
+}
+
+#[derive(Debug)]
+struct ApiError {
+    status: StatusCode,
+    code: &'static str,
+    message: String,
+    merged_into_collection_id: Option<i64>,
+}
+
+impl ApiError {
+    fn bad_request(code: &'static str, message: &str) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, code, message)
+    }
+
+    fn forbidden(code: &'static str, message: &str) -> Self {
+        Self::new(StatusCode::FORBIDDEN, code, message)
+    }
+
+    fn conflict(code: &'static str, message: &str) -> Self {
+        Self::new(StatusCode::CONFLICT, code, message)
+    }
+
+    fn unavailable(code: &'static str, message: &str) -> Self {
+        Self::new(StatusCode::SERVICE_UNAVAILABLE, code, message)
+    }
+
+    fn internal() -> Self {
+        Self::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "伺服器內部錯誤",
+        )
+    }
+
+    fn merged(survivor_id: i64) -> Self {
+        Self {
+            status: StatusCode::GONE,
+            code: "collection_merged",
+            message: format!("收藏已合併至 collection {survivor_id}"),
+            merged_into_collection_id: Some(survivor_id),
+        }
+    }
+
+    fn new(status: StatusCode, code: &'static str, message: &str) -> Self {
+        Self {
+            status,
+            code,
+            message: message.to_owned(),
+            merged_into_collection_id: None,
+        }
+    }
+
+    fn from_application(error: ApplicationError) -> Self {
+        match error {
+            ApplicationError::Storage(error) => Self::from_storage(error),
+            ApplicationError::ThumbnailNotConfigured => Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "thumbnail_not_configured",
+                "thumbnail 服務尚未設定",
+            ),
+            ApplicationError::InvalidSettings(reason) => {
+                Self::bad_request("invalid_settings", &reason)
+            }
+            ApplicationError::Thumbnail(_)
+            | ApplicationError::ThumbnailCacheIo(_)
+            | ApplicationError::Json(_) => Self::internal(),
+        }
+    }
+
+    fn from_launch(error: LaunchError) -> Self {
+        match error {
+            LaunchError::Storage(error) => Self::from_storage(error),
+            LaunchError::CollectionFileNotFound => Self::new(
+                StatusCode::NOT_FOUND,
+                "collection_file_not_found",
+                "收藏檔案不存在",
+            ),
+            LaunchError::InvalidCollectionFile(reason) => {
+                Self::conflict("invalid_collection_file", &reason)
+            }
+            LaunchError::ReaderNotConfigured => Self::new(
+                StatusCode::NOT_FOUND,
+                "reader_not_configured",
+                "尚未設定閱讀器",
+            ),
+            LaunchError::ReaderUnavailable => Self::new(
+                StatusCode::NOT_FOUND,
+                "reader_not_found",
+                "設定的閱讀器不存在或不是一般檔案",
+            ),
+            LaunchError::Launcher { .. } => Self::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "external_launch_failed",
+                "無法啟動外部程式",
+            ),
+        }
+    }
+
+    fn from_storage(error: StorageError) -> Self {
+        match error {
+            StorageError::LibraryRootNotFound(_) => Self::new(
+                StatusCode::NOT_FOUND,
+                "library_root_not_found",
+                "找不到指定的 library root",
+            ),
+            StorageError::InvalidLibraryRoot(reason) => {
+                Self::bad_request("invalid_library_root", &reason)
+            }
+            StorageError::InvalidMetadata(reason) => {
+                Self::bad_request("invalid_metadata_value", &reason)
+            }
+            StorageError::CollectionNotFound(_) => Self::new(
+                StatusCode::NOT_FOUND,
+                "collection_not_found",
+                "找不到指定的 collection",
+            ),
+            StorageError::AssertionUnavailable(_) => Self::conflict(
+                "metadata_assertion_unavailable",
+                "metadata assertion 不存在、欄位歸屬不符，或已不可裁決",
+            ),
+            StorageError::ExternalSearchJobNotFound(_) => Self::new(
+                StatusCode::NOT_FOUND,
+                "external_search_job_not_found",
+                "找不到指定的 external search job",
+            ),
+            StorageError::ExternalSearchJobUnavailable(_) => Self::conflict(
+                "external_search_job_unavailable",
+                "external search job 目前不可執行",
+            ),
+            StorageError::InvalidExternalSearchJob(reason) => {
+                Self::bad_request("invalid_external_search_job", &reason)
+            }
+            StorageError::ThumbnailStateNotFound(_) => Self::new(
+                StatusCode::NOT_FOUND,
+                "thumbnail_state_not_found",
+                "找不到指定的 thumbnail state",
+            ),
+            StorageError::ThumbnailStateUnavailable(_) => Self::conflict(
+                "thumbnail_state_unavailable",
+                "thumbnail state 目前不可執行",
+            ),
+            StorageError::InvalidThumbnailState(reason) => {
+                Self::bad_request("invalid_thumbnail_state", &reason)
+            }
+            StorageError::InvalidApplicationSettings(reason) => {
+                Self::bad_request("invalid_settings", &reason)
+            }
+            StorageError::ScanAlreadyRunning => {
+                Self::conflict("scan_already_running", "重新掃描正在執行")
+            }
+            StorageError::ScanRunNotFound(_) => Self::new(
+                StatusCode::NOT_FOUND,
+                "scan_run_not_found",
+                "找不到指定的 scan run",
+            ),
+            StorageError::InvalidScanRun(reason) => Self::bad_request("invalid_scan_run", &reason),
+            StorageError::InvalidLifecycle(reason) => Self::conflict("invalid_lifecycle", &reason),
+            _ => Self::internal(),
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (
+            self.status,
+            Json(ErrorEnvelope {
+                error: ErrorBody {
+                    code: self.code,
+                    message: self.message,
+                    merged_into_collection_id: self.merged_into_collection_id,
+                },
+            }),
+        )
+            .into_response()
+    }
+}

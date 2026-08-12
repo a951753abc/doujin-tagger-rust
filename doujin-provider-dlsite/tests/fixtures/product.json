@@ -1,0 +1,45 @@
+[
+  {
+    "workno": "RJ123456",
+    "product_id": "RJ123456",
+    "work_name": "Official title",
+    "maker_id": "RG12345",
+    "maker_name": "Official Circle",
+    "site_id": "maniax",
+    "author": null,
+    "authors": [
+      { "author_name": "Author A" },
+      { "author_name": "Author B" }
+    ],
+    "creaters": {
+      "created_by": [{ "name": "Fallback Creator" }],
+      "voice_by": [{ "name": "Voice Actor" }],
+      "illust_by": [{ "name": "Illustrator" }],
+      "scenario_by": [{ "name": "Scenario Writer" }]
+    },
+    "work_options": {
+      "C104": {
+        "value": "C104",
+        "name": "コミックマーケット104",
+        "category": "event"
+      },
+      "ORW": {
+        "value": "ORW",
+        "name": "オリジナル作品",
+        "category": "else"
+      },
+      "RegionHiddenFilter": {
+        "value": "RegionHiddenFilter",
+        "name": "特定地域アクセス非表示作品",
+        "category": "region_filter"
+      }
+    },
+    "genres": [
+      { "name": "Fate", "id": 1 },
+      { "name": "巨乳/爆乳", "id": 182 }
+    ],
+    "work_type": "MNG",
+    "work_category": "doujin",
+    "is_dlsiteplay_work": true
+  }
+]

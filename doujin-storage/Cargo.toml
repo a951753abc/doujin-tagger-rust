@@ -1,0 +1,16 @@
+[package]
+name = "doujin-storage"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[dependencies]
+doujin-parser = { path = "../doujin-parser" }
+doujin-scanner = { path = "../doujin-scanner" }
+rusqlite = { version = "0.40.2", default-features = false, features = ["backup", "bundled"] }
+serde = "1.0.229"
+serde_json = "1.0.151"
+
+[lints.rust]
+unsafe_code = "forbid"

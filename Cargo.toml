@@ -1,0 +1,3 @@
+[workspace]
+members = ["doujin-app", "doujin-files", "doujin-http", "doujin-migrate", "doujin-parser", "doujin-provider-dlsite", "doujin-provider-ehentai", "doujin-scanner", "doujin-storage", "doujin-thumbnails"]
+resolver = "3"

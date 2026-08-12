@@ -1,0 +1,890 @@
+{
+  "schema_version": 1,
+  "corpus_status": "accepted",
+  "accepted_at": "2026-08-12",
+  "description": "Rust v2 parser 已確認黃金語料；不得把現有資料庫欄位視為正確答案。",
+  "cases": [
+    {
+      "id": "parser-v2-case-001",
+      "review_status": "accepted",
+      "origin": { "kind": "bdd_example", "reference": "parse-001" },
+      "decisions": ["DEC-001", "DEC-003", "DEC-005"],
+      "tags": ["standard", "event", "circle-author", "dl"],
+      "input": {
+        "filename": "(C106) [20NT (ふけまち)] プラナちゃん催眠のお時間です (ブルーアーカイブ) [DL版].zip",
+        "parody_evidence": [
+          { "raw": "ブルーアーカイブ", "kind": "confirmed_dictionary", "canonical": "ブルーアーカイブ" }
+        ]
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": "C106",
+        "leading_bracket_raw": "20NT (ふけまち)",
+        "circle": "20NT",
+        "authors": { "raw": "ふけまち", "values": ["ふけまち"] },
+        "title": "プラナちゃん催眠のお時間です",
+        "parody": { "raw": "ブルーアーカイブ", "canonical": "ブルーアーカイブ", "evidence": "confirmed_dictionary" },
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [
+          { "raw": "[DL版]", "kind": "distribution_marker" }
+        ],
+        "is_dl": true,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-002",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-001", "DEC-003"],
+      "tags": ["standard", "arbitrary-event", "dl"],
+      "input": {
+        "filename": "(エアコミケ2) [23.4ド (イチリ)] ボクの理想の異世界生活9 (オリジナル) [DL版].zip",
+        "parody_evidence": [
+          { "raw": "オリジナル", "kind": "confirmed_dictionary", "canonical": "オリジナル" }
+        ]
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": "エアコミケ2",
+        "leading_bracket_raw": "23.4ド (イチリ)",
+        "circle": "23.4ド",
+        "authors": { "raw": "イチリ", "values": ["イチリ"] },
+        "title": "ボクの理想の異世界生活9",
+        "parody": { "raw": "オリジナル", "canonical": "オリジナル", "evidence": "confirmed_dictionary" },
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [
+          { "raw": "[DL版]", "kind": "distribution_marker" }
+        ],
+        "is_dl": true,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-003",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-001", "DEC-005"],
+      "tags": ["classification", "single-bracket", "alias"],
+      "input": {
+        "filename": "(同人誌) [世を忍ぶ] カーマちゃんとはーれむックス!! (Fate Grand Order).zip",
+        "parody_evidence": [
+          { "raw": "Fate Grand Order", "kind": "confirmed_alias", "canonical": "Fate/Grand Order" }
+        ]
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": "(同人誌)" },
+        "event": null,
+        "leading_bracket_raw": "世を忍ぶ",
+        "circle": "世を忍ぶ",
+        "authors": { "raw": null, "values": [] },
+        "title": "カーマちゃんとはーれむックス!!",
+        "parody": { "raw": "Fate Grand Order", "canonical": "Fate/Grand Order", "evidence": "confirmed_alias" },
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [],
+        "is_dl": false,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-004",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-001", "DEC-005"],
+      "tags": ["classification", "cg", "alias"],
+      "input": {
+        "filename": "(同人CG集) [アトリエ GONS] ドロンボーな小部屋 (夜ノヤッーマン).zip",
+        "parody_evidence": [
+          { "raw": "夜ノヤッーマン", "kind": "confirmed_alias", "canonical": "夜ノヤッターマン" }
+        ]
+      },
+      "expected": {
+        "classification": { "top_level": "CG", "subcategory": null, "raw_marker": "(同人CG集)" },
+        "event": null,
+        "leading_bracket_raw": "アトリエ GONS",
+        "circle": "アトリエ GONS",
+        "authors": { "raw": null, "values": [] },
+        "title": "ドロンボーな小部屋",
+        "parody": { "raw": "夜ノヤッーマン", "canonical": "夜ノヤッターマン", "evidence": "confirmed_alias" },
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [],
+        "is_dl": false,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-005",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-004"],
+      "tags": ["classification", "commercial", "single-bracket", "dl"],
+      "input": {
+        "filename": "(成年コミック) [長崎インター] FOOT JOB J○2 [DL版].zip",
+        "parody_evidence": []
+      },
+      "expected": {
+        "classification": { "top_level": "商業誌", "subcategory": "成年コミック", "raw_marker": "(成年コミック)" },
+        "event": null,
+        "leading_bracket_raw": "長崎インター",
+        "circle": null,
+        "authors": { "raw": "長崎インター", "values": ["長崎インター"] },
+        "title": "FOOT JOB J○2",
+        "parody": null,
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [
+          { "raw": "[DL版]", "kind": "distribution_marker" }
+        ],
+        "is_dl": true,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-006",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-003", "DEC-004"],
+      "tags": ["classification", "commercial", "author-splitting", "dl"],
+      "input": {
+        "filename": "(官能小説・エロライトノベル) [有機企画、火愚夜] 天煌聖姫ヴァーミリオン2 フタナリ快楽に堕ちる母娘ヒロイン [DL版].zip",
+        "parody_evidence": []
+      },
+      "expected": {
+        "classification": { "top_level": "商業誌", "subcategory": "官能小説", "raw_marker": "(官能小説・エロライトノベル)" },
+        "event": null,
+        "leading_bracket_raw": "有機企画、火愚夜",
+        "circle": null,
+        "authors": { "raw": "有機企画、火愚夜", "values": ["有機企画", "火愚夜"] },
+        "title": "天煌聖姫ヴァーミリオン2 フタナリ快楽に堕ちる母娘ヒロイン",
+        "parody": null,
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [
+          { "raw": "[DL版]", "kind": "distribution_marker" }
+        ],
+        "is_dl": true,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-007",
+      "review_status": "accepted",
+      "origin": { "kind": "bdd_example", "reference": "parser-v2-005" },
+      "decisions": ["DEC-004"],
+      "tags": ["classification", "commercial", "synthetic"],
+      "input": {
+        "filename": "(一般コミック) [作者名稱] 作品名稱.zip",
+        "parody_evidence": []
+      },
+      "expected": {
+        "classification": { "top_level": "商業誌", "subcategory": "一般コミック", "raw_marker": "(一般コミック)" },
+        "event": null,
+        "leading_bracket_raw": "作者名稱",
+        "circle": null,
+        "authors": { "raw": "作者名稱", "values": ["作者名稱"] },
+        "title": "作品名稱",
+        "parody": null,
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [],
+        "is_dl": false,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-008",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-001", "DEC-003"],
+      "tags": ["author-splitting", "japanese-comma"],
+      "input": {
+        "filename": "(C100) [NoFuture (すみすず、端音乱希)] 魔法神輝アムセイヴァー 身バレヒロイン脅迫調教2 (オリジナル) [DL版].zip",
+        "parody_evidence": [
+          { "raw": "オリジナル", "kind": "confirmed_dictionary", "canonical": "オリジナル" }
+        ]
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": "C100",
+        "leading_bracket_raw": "NoFuture (すみすず、端音乱希)",
+        "circle": "NoFuture",
+        "authors": { "raw": "すみすず、端音乱希", "values": ["すみすず", "端音乱希"] },
+        "title": "魔法神輝アムセイヴァー 身バレヒロイン脅迫調教2",
+        "parody": { "raw": "オリジナル", "canonical": "オリジナル", "evidence": "confirmed_dictionary" },
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [
+          { "raw": "[DL版]", "kind": "distribution_marker" }
+        ],
+        "is_dl": true,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-009",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-003"],
+      "tags": ["author-splitting", "ascii-comma", "circle-punctuation"],
+      "input": {
+        "filename": "(C84) [セブンスヘブンMAXION, うすべに屋 (MAKI, うすべに桜子)] 15周年記念☆うさだヒカルの極上チェリーハンティング (デ・ジ・キャラット).zip",
+        "parody_evidence": [
+          { "raw": "デ・ジ・キャラット", "kind": "confirmed_dictionary", "canonical": "デ・ジ・キャラット" }
+        ]
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": "C84",
+        "leading_bracket_raw": "セブンスヘブンMAXION, うすべに屋 (MAKI, うすべに桜子)",
+        "circle": "セブンスヘブンMAXION, うすべに屋",
+        "authors": { "raw": "MAKI, うすべに桜子", "values": ["MAKI", "うすべに桜子"] },
+        "title": "15周年記念☆うさだヒカルの極上チェリーハンティング",
+        "parody": { "raw": "デ・ジ・キャラット", "canonical": "デ・ジ・キャラット", "evidence": "confirmed_dictionary" },
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [],
+        "is_dl": false,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-010",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-003"],
+      "tags": ["author-splitting", "ambiguous-separator", "ampersand"],
+      "input": {
+        "filename": "(C79) (同人誌) [はぁと饅頭マニア (亜方逸樹 & 茉森晶)] えろよろ 3 (よろず).zip",
+        "parody_evidence": [
+          { "raw": "よろず", "kind": "confirmed_dictionary", "canonical": "よろず" }
+        ]
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": "(同人誌)" },
+        "event": "C79",
+        "leading_bracket_raw": "はぁと饅頭マニア (亜方逸樹 & 茉森晶)",
+        "circle": "はぁと饅頭マニア",
+        "authors": { "raw": "亜方逸樹 & 茉森晶", "values": ["亜方逸樹 & 茉森晶"] },
+        "title": "えろよろ 3",
+        "parody": { "raw": "よろず", "canonical": "よろず", "evidence": "confirmed_dictionary" },
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [],
+        "is_dl": false,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-011",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-003"],
+      "tags": ["author-splitting", "ambiguous-separator", "fullwidth-ampersand"],
+      "input": {
+        "filename": "(C80) (同人誌) [QP：flapper (さくら小春＆小原トメ太)] Where is the Friend shop？ (僕は友達が少ない).zip",
+        "parody_evidence": [
+          { "raw": "僕は友達が少ない", "kind": "confirmed_dictionary", "canonical": "僕は友達が少ない" }
+        ]
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": "(同人誌)" },
+        "event": "C80",
+        "leading_bracket_raw": "QP：flapper (さくら小春＆小原トメ太)",
+        "circle": "QP：flapper",
+        "authors": { "raw": "さくら小春＆小原トメ太", "values": ["さくら小春＆小原トメ太"] },
+        "title": "Where is the Friend shop？",
+        "parody": { "raw": "僕は友達が少ない", "canonical": "僕は友達が少ない", "evidence": "confirmed_dictionary" },
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [],
+        "is_dl": false,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-012",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-003"],
+      "tags": ["author-splitting", "ambiguous-separator", "multiplication-sign", "dl"],
+      "input": {
+        "filename": "(C106) [multiplication (3×3)] ピノコニー・裏 Ver.参 (崩壊： スターレイル) [DL版].zip",
+        "parody_evidence": [
+          { "raw": "崩壊： スターレイル", "kind": "confirmed_dictionary", "canonical": "崩壊： スターレイル" }
+        ]
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": "C106",
+        "leading_bracket_raw": "multiplication (3×3)",
+        "circle": "multiplication",
+        "authors": { "raw": "3×3", "values": ["3×3"] },
+        "title": "ピノコニー・裏 Ver.参",
+        "parody": { "raw": "崩壊： スターレイル", "canonical": "崩壊： スターレイル", "evidence": "confirmed_dictionary" },
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [
+          { "raw": "[DL版]", "kind": "distribution_marker" }
+        ],
+        "is_dl": true,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-013",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-003"],
+      "tags": ["author-splitting", "ambiguous-separator", "slash", "language-marker"],
+      "input": {
+        "filename": "(蒲田鎮守府弐) [Satellites／極彩色 (サテツ／彩社長)] 縛虐の共 (艦隊これくしょん -艦これ-) [Chinese].zip",
+        "parody_evidence": [
+          { "raw": "艦隊これくしょん -艦これ-", "kind": "confirmed_dictionary", "canonical": "艦隊これくしょん -艦これ-" }
+        ]
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": "蒲田鎮守府弐",
+        "leading_bracket_raw": "Satellites／極彩色 (サテツ／彩社長)",
+        "circle": "Satellites／極彩色",
+        "authors": { "raw": "サテツ／彩社長", "values": ["サテツ／彩社長"] },
+        "title": "縛虐の共",
+        "parody": { "raw": "艦隊これくしょん -艦これ-", "canonical": "艦隊これくしょん -艦これ-", "evidence": "confirmed_dictionary" },
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [
+          { "raw": "[Chinese]", "kind": "language_marker" }
+        ],
+        "is_dl": false,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-014",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-003"],
+      "tags": ["nested", "circle-author"],
+      "input": {
+        "filename": "(C105) [macdoll (士嬢マコ(・c_・ ))] 挿しつ射されつふたなり姉妹 (オリジナル).zip",
+        "parody_evidence": [
+          { "raw": "オリジナル", "kind": "confirmed_dictionary", "canonical": "オリジナル" }
+        ]
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": "C105",
+        "leading_bracket_raw": "macdoll (士嬢マコ(・c_・ ))",
+        "circle": "macdoll",
+        "authors": { "raw": "士嬢マコ(・c_・ )", "values": ["士嬢マコ(・c_・ )"] },
+        "title": "挿しつ射されつふたなり姉妹",
+        "parody": { "raw": "オリジナル", "canonical": "オリジナル", "evidence": "confirmed_dictionary" },
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [],
+        "is_dl": false,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-015",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-003"],
+      "tags": ["malformed", "extra-closing-parenthesis", "external-metadata"],
+      "input": {
+        "filename": "(C104) [70 Nenshiki Yuukyuu Kikan (Ohagi-san))] Ripe flower buds.zip",
+        "parody_evidence": []
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": "C104",
+        "leading_bracket_raw": "70 Nenshiki Yuukyuu Kikan (Ohagi-san))",
+        "circle": null,
+        "authors": { "raw": null, "values": [] },
+        "title": "Ripe flower buds",
+        "parody": null,
+        "identifiers": [],
+        "other_info": [
+          { "raw": "70 Nenshiki Yuukyuu Kikan (Ohagi-san))", "reason": "malformed_circle_author" }
+        ],
+        "ignored_segments": [],
+        "is_dl": false,
+        "parse_status": "partial",
+        "next_action": "external_metadata"
+      }
+    },
+    {
+      "id": "parser-v2-case-016",
+      "review_status": "accepted",
+      "origin": { "kind": "bdd_example", "reference": "parser-v2-014" },
+      "decisions": ["DEC-003"],
+      "tags": ["malformed", "non-tail-parenthesis", "external-metadata", "synthetic"],
+      "input": {
+        "filename": "(C100) [社團 (作者) 補充] 作品名稱.zip",
+        "parody_evidence": []
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": "C100",
+        "leading_bracket_raw": "社團 (作者) 補充",
+        "circle": null,
+        "authors": { "raw": null, "values": [] },
+        "title": "作品名稱",
+        "parody": null,
+        "identifiers": [],
+        "other_info": [
+          { "raw": "社團 (作者) 補充", "reason": "author_parenthesis_not_at_tail" }
+        ],
+        "ignored_segments": [],
+        "is_dl": false,
+        "parse_status": "partial",
+        "next_action": "external_metadata"
+      }
+    },
+    {
+      "id": "parser-v2-case-017",
+      "review_status": "accepted",
+      "origin": { "kind": "bdd_example", "reference": "parser-v2-003" },
+      "decisions": ["DEC-002"],
+      "tags": ["trailing-parentheses", "insufficient-evidence", "synthetic"],
+      "input": {
+        "filename": "[社團] 作品名稱 (角色名稱).zip",
+        "parody_evidence": []
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": null,
+        "leading_bracket_raw": "社團",
+        "circle": "社團",
+        "authors": { "raw": null, "values": [] },
+        "title": "作品名稱",
+        "parody": null,
+        "identifiers": [],
+        "other_info": [
+          { "raw": "角色名稱", "reason": "insufficient_parody_evidence" }
+        ],
+        "ignored_segments": [],
+        "is_dl": false,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-018",
+      "review_status": "accepted",
+      "origin": { "kind": "bdd_example", "reference": "parser-v2-006" },
+      "decisions": ["DEC-002", "DEC-005"],
+      "tags": ["trailing-parentheses", "alias", "synthetic"],
+      "input": {
+        "filename": "[社團] 作品名稱 (ポケモン).zip",
+        "parody_evidence": [
+          { "raw": "ポケモン", "kind": "confirmed_alias", "canonical": "ポケットモンスター" }
+        ]
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": null,
+        "leading_bracket_raw": "社團",
+        "circle": "社團",
+        "authors": { "raw": null, "values": [] },
+        "title": "作品名稱",
+        "parody": { "raw": "ポケモン", "canonical": "ポケットモンスター", "evidence": "confirmed_alias" },
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [],
+        "is_dl": false,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-019",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-002", "DEC-005"],
+      "tags": ["trailing-parentheses", "alias", "version-marker"],
+      "input": {
+        "filename": "(C93) [翼 (緋ノ丘シュウジ)] 倫理崩壊 (Fate Grand Order) (修正版).zip",
+        "parody_evidence": [
+          { "raw": "Fate Grand Order", "kind": "confirmed_alias", "canonical": "Fate/Grand Order" }
+        ]
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": "C93",
+        "leading_bracket_raw": "翼 (緋ノ丘シュウジ)",
+        "circle": "翼",
+        "authors": { "raw": "緋ノ丘シュウジ", "values": ["緋ノ丘シュウジ"] },
+        "title": "倫理崩壊",
+        "parody": { "raw": "Fate Grand Order", "canonical": "Fate/Grand Order", "evidence": "confirmed_alias" },
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [
+          { "raw": "(修正版)", "kind": "version_marker" }
+        ],
+        "is_dl": false,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-020",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-002", "DEC-005"],
+      "tags": ["trailing-parentheses", "title-parentheses", "alias"],
+      "input": {
+        "filename": "(C100) [Part K (羊羽忍)] 愛されたいカーマは素直になれない。 (※チョロい) (Fate Grand Order).zip",
+        "parody_evidence": [
+          { "raw": "Fate Grand Order", "kind": "confirmed_alias", "canonical": "Fate/Grand Order" }
+        ]
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": "C100",
+        "leading_bracket_raw": "Part K (羊羽忍)",
+        "circle": "Part K",
+        "authors": { "raw": "羊羽忍", "values": ["羊羽忍"] },
+        "title": "愛されたいカーマは素直になれない。 (※チョロい)",
+        "parody": { "raw": "Fate Grand Order", "canonical": "Fate/Grand Order", "evidence": "confirmed_alias" },
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [],
+        "is_dl": false,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-021",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-002", "DEC-003"],
+      "tags": ["fullwidth-parentheses", "bare-dl-marker"],
+      "input": {
+        "filename": "[clear glass (めにも)] ヒュプノスとタナトスのアリス DL版 （神様のメモ帳）.zip",
+        "parody_evidence": [
+          { "raw": "神様のメモ帳", "kind": "confirmed_dictionary", "canonical": "神様のメモ帳" }
+        ]
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": null,
+        "leading_bracket_raw": "clear glass (めにも)",
+        "circle": "clear glass",
+        "authors": { "raw": "めにも", "values": ["めにも"] },
+        "title": "ヒュプノスとタナトスのアリス",
+        "parody": { "raw": "神様のメモ帳", "canonical": "神様のメモ帳", "evidence": "confirmed_dictionary" },
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [
+          { "raw": "DL版", "kind": "distribution_marker" }
+        ],
+        "is_dl": true,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-022",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-002"],
+      "tags": ["version-marker", "no-parody"],
+      "input": {
+        "filename": "(C92) [みくろぺえじ (黒本君)] JC拉致って性教育2 (別スキャン).zip",
+        "parody_evidence": []
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": "C92",
+        "leading_bracket_raw": "みくろぺえじ (黒本君)",
+        "circle": "みくろぺえじ",
+        "authors": { "raw": "黒本君", "values": ["黒本君"] },
+        "title": "JC拉致って性教育2",
+        "parody": null,
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [
+          { "raw": "(別スキャン)", "kind": "version_marker" }
+        ],
+        "is_dl": false,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-023",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-003", "DEC-014", "DEC-015"],
+      "tags": ["identifier", "author-splitting", "ascii-comma", "dl"],
+      "input": {
+        "filename": "[RJ407766][性癖音屋 (椎名悠輝, 瀬戸こうへい)] ロリ漫画家とファンのおじさんとその娘 [DL版].zip",
+        "parody_evidence": []
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": null,
+        "leading_bracket_raw": "性癖音屋 (椎名悠輝, 瀬戸こうへい)",
+        "circle": "性癖音屋",
+        "authors": { "raw": "椎名悠輝, 瀬戸こうへい", "values": ["椎名悠輝", "瀬戸こうへい"] },
+        "title": "ロリ漫画家とファンのおじさんとその娘",
+        "parody": null,
+        "identifiers": [
+          { "scheme": "RJ", "value": "RJ407766", "raw": "[RJ407766]" }
+        ],
+        "other_info": [],
+        "ignored_segments": [
+          { "raw": "[DL版]", "kind": "distribution_marker" }
+        ],
+        "is_dl": true,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-024",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-001", "DEC-003"],
+      "tags": ["date-prefix", "classification", "dl", "no-parody"],
+      "input": {
+        "filename": "(同人誌) [180529] [俺だけが得する音声工房 (高月柊也)] ダブルサキュバスの搾精風俗へようこそ! [DL版].zip",
+        "parody_evidence": []
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": "(同人誌)" },
+        "event": null,
+        "leading_bracket_raw": "俺だけが得する音声工房 (高月柊也)",
+        "circle": "俺だけが得する音声工房",
+        "authors": { "raw": "高月柊也", "values": ["高月柊也"] },
+        "title": "ダブルサキュバスの搾精風俗へようこそ!",
+        "parody": null,
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [
+          { "raw": "[180529]", "kind": "date_marker" },
+          { "raw": "[DL版]", "kind": "distribution_marker" }
+        ],
+        "is_dl": true,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-025",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-002", "DEC-023"],
+      "tags": ["percent-encoding", "event", "classification", "rename-candidate"],
+      "input": {
+        "filename": "%28C77%29%20%28%E5%90%8C%E4%BA%BA%E8%AA%8C%29%20%5B%E9%9B%B7%E7%A5%9E%E4%BC%9A%5D%20%E3%83%A9%E3%83%96%E3%83%9E%E3%83%8A%E3%82%AB%20%28%E3%83%A9%E3%83%96%E3%83%97%E3%83%A9%E3%82%B9%29.zip",
+        "parody_evidence": []
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": "(同人誌)" },
+        "event": "C77",
+        "leading_bracket_raw": "雷神会",
+        "circle": "雷神会",
+        "authors": { "raw": null, "values": [] },
+        "title": "ラブマナカ",
+        "parody": null,
+        "identifiers": [],
+        "other_info": [
+          { "raw": "ラブプラス", "reason": "insufficient_parody_evidence" }
+        ],
+        "ignored_segments": [],
+        "is_dl": false,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-026",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-024"],
+      "tags": ["source-marker", "event", "circle-author"],
+      "input": {
+        "filename": "[firelee@2DJGAME](C78) (同人誌) [へらぶな(いるまかみり)] ツマA+ツマB.zip",
+        "parody_evidence": []
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": "(同人誌)" },
+        "event": "C78",
+        "leading_bracket_raw": "へらぶな(いるまかみり)",
+        "circle": "へらぶな",
+        "authors": { "raw": "いるまかみり", "values": ["いるまかみり"] },
+        "title": "ツマA+ツマB",
+        "parody": null,
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [
+          { "raw": "[firelee@2DJGAME]", "kind": "source_marker" }
+        ],
+        "is_dl": false,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-027",
+      "review_status": "accepted",
+      "origin": { "kind": "bdd_example", "reference": "shadow-underscore" },
+      "decisions": ["DEC-025"],
+      "tags": ["underscore", "preserve-raw"],
+      "input": {
+        "filename": "[Circle_Name] Work_Title.zip",
+        "parody_evidence": []
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": null,
+        "leading_bracket_raw": "Circle_Name",
+        "circle": "Circle_Name",
+        "authors": { "raw": null, "values": [] },
+        "title": "Work_Title",
+        "parody": null,
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [],
+        "is_dl": false,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-028",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-026"],
+      "tags": ["exact-marker", "case-insensitive", "dl", "circle"],
+      "input": {
+        "filename": "[Digital Lover] D.L. action 56 [Dl版].zip",
+        "parody_evidence": []
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": null,
+        "leading_bracket_raw": "Digital Lover",
+        "circle": "Digital Lover",
+        "authors": { "raw": null, "values": [] },
+        "title": "D.L. action 56",
+        "parody": null,
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [
+          { "raw": "[Dl版]", "kind": "distribution_marker" }
+        ],
+        "is_dl": true,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-029",
+      "review_status": "accepted",
+      "origin": { "kind": "bdd_example", "reference": "shadow-mixed-markers" },
+      "decisions": ["DEC-002", "DEC-027", "DEC-028"],
+      "tags": ["mixed-markers", "unknown-marker", "dl", "no-parody"],
+      "input": {
+        "filename": "[社團] 作品名稱 (原作候選) [DL版] [音声付き].zip",
+        "parody_evidence": []
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": null,
+        "leading_bracket_raw": "社團",
+        "circle": "社團",
+        "authors": { "raw": null, "values": [] },
+        "title": "作品名稱",
+        "parody": null,
+        "identifiers": [],
+        "other_info": [
+          { "raw": "原作候選", "reason": "insufficient_parody_evidence" },
+          { "raw": "[音声付き]", "reason": "unclassified_trailing_marker" }
+        ],
+        "ignored_segments": [
+          { "raw": "[DL版]", "kind": "distribution_marker" }
+        ],
+        "is_dl": true,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-030",
+      "review_status": "accepted",
+      "origin": { "kind": "bdd_example", "reference": "shadow-unknown-marker" },
+      "decisions": ["DEC-028"],
+      "tags": ["unknown-marker", "other-info"],
+      "input": {
+        "filename": "[社團] 作品名稱 [無毒漢化組].zip",
+        "parody_evidence": []
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": null,
+        "leading_bracket_raw": "社團",
+        "circle": "社團",
+        "authors": { "raw": null, "values": [] },
+        "title": "作品名稱",
+        "parody": null,
+        "identifiers": [],
+        "other_info": [
+          { "raw": "[無毒漢化組]", "reason": "unclassified_trailing_marker" }
+        ],
+        "ignored_segments": [],
+        "is_dl": false,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    },
+    {
+      "id": "parser-v2-case-031",
+      "review_status": "accepted",
+      "origin": { "kind": "collection_db" },
+      "decisions": ["DEC-029"],
+      "tags": ["fullwidth-parentheses", "preserve-raw", "title"],
+      "input": {
+        "filename": "★五月女レイナ編（セリフ、効果音付き）本編",
+        "parody_evidence": []
+      },
+      "expected": {
+        "classification": { "top_level": "同人誌", "subcategory": null, "raw_marker": null },
+        "event": null,
+        "leading_bracket_raw": null,
+        "circle": null,
+        "authors": { "raw": null, "values": [] },
+        "title": "★五月女レイナ編（セリフ、効果音付き）本編",
+        "parody": null,
+        "identifiers": [],
+        "other_info": [],
+        "ignored_segments": [],
+        "is_dl": false,
+        "parse_status": "complete",
+        "next_action": "none"
+      }
+    }
+  ]
+}
