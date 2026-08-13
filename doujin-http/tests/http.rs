@@ -284,9 +284,10 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("src=\"/assets/app.js?v=38\" defer"));
+    assert!(document.contains("src=\"/assets/app.js?v=39\" defer"));
     assert!(document.contains("id=\"library-scroll-sentinel\""));
     assert!(document.contains("id=\"library-load-more\""));
+    assert!(document.contains("id=\"library-load-announcer\""));
     assert!(document.contains("全選已載入"));
     assert!(document.contains("新載入結果不會自動加入"));
     assert!(!document.contains("目前頁面選取"));
@@ -353,6 +354,11 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("const RECENT_LIMIT = 20"));
     assert!(script.contains("const PER_PAGE = 48"));
     assert!(script.contains("loadMoreCollections"));
+    assert!(script.contains("if (libraryLoadPromise) return libraryLoadPromise"));
+    assert!(script.contains("function moveLibraryFocus"));
+    assert!(script.contains("button?.scrollIntoView({ block: \"nearest\" })"));
+    assert!(script.contains("已顯示全部 ${formatNumber(state.total)} 筆收藏"));
+    assert!(script.contains("已載入 ${formatNumber(additions.length)} 筆，尚有 ${formatNumber(remaining)} 筆"));
     assert!(script.contains("rootMargin: \"1200px 0px\""));
     assert!(script.contains("/api/collections"));
     assert!(script.contains("rememberLaunch(state.selected, kind)"));

@@ -126,6 +126,7 @@
   const thumbnailBindings = new WeakMap();
   const thumbnailTrackers = new Map();
   const thumbnailRequestQueue = [];
+  let libraryLoadPromise = null;
   let thumbnailRequestsInFlight = 0;
   let lastThumbnailRequestEpoch = 0;
   let lastThumbnailStatusId = 0;
@@ -178,6 +179,7 @@
       loadMoreSpinner: byId("library-load-more-spinner"),
       loadMoreLabel: byId("library-load-more-label"),
       retryLibraryLoad: byId("retry-library-load"),
+      libraryLoadAnnouncer: byId("library-load-announcer"),
       libraryScrollSentinel: byId("library-scroll-sentinel"),
       detailPane: byId("detail-pane"),
       detailPlaceholder: byId("detail-placeholder"),
@@ -1293,7 +1295,17 @@
   }
 
   async function loadMoreCollections() {
+    if (libraryLoadPromise) return libraryLoadPromise;
     if (state.route !== "library" || !state.libraryLoaded || state.libraryLoading || state.page >= state.totalPages) return false;
+    libraryLoadPromise = requestNextCollectionPage();
+    try {
+      return await libraryLoadPromise;
+    } finally {
+      libraryLoadPromise = null;
+    }
+  }
+
+  async function requestNextCollectionPage() {
     const nextPage = state.page + 1;
     const requestNumber = ++state.requestNumber;
     state.libraryLoading = true;
@@ -1314,12 +1326,19 @@
       appendCollectionItems(additions, startIndex);
       updateLibrarySummary();
       updateSelectionUI();
+      if (additions.length) {
+        const remaining = Math.max(0, state.total - state.items.length);
+        ui.libraryLoadAnnouncer.textContent = remaining > 0
+          ? `已載入 ${formatNumber(additions.length)} 筆，尚有 ${formatNumber(remaining)} 筆`
+          : `已載入 ${formatNumber(additions.length)} 筆，已顯示全部 ${formatNumber(state.total)} 筆`;
+      }
       setServiceState("online", "本機服務正常");
       return true;
     } catch (error) {
       if (requestNumber !== state.requestNumber) return false;
       state.libraryLoadError = true;
       setServiceState("offline", "要求失敗");
+      ui.libraryLoadAnnouncer.textContent = "更多收藏載入失敗，可使用重試載入";
       toast(`無法載入更多收藏：${error.message}`, true);
       return false;
     } finally {
@@ -1412,10 +1431,12 @@
   function renderLibraryLoadState() {
     if (!state.libraryLoaded || state.total === 0) {
       ui.loadMore.hidden = true;
+      ui.loadMore.setAttribute("aria-busy", "false");
       return;
     }
+    ui.loadMore.hidden = false;
+    ui.loadMore.setAttribute("aria-busy", String(state.libraryLoading));
     if (state.libraryLoading) {
-      ui.loadMore.hidden = false;
       ui.loadMoreSpinner.hidden = false;
       ui.retryLibraryLoad.hidden = true;
       ui.loadMoreLabel.textContent = `正在載入更多收藏…已載入 ${formatNumber(state.items.length)} 筆`;
@@ -1423,15 +1444,17 @@
     }
     ui.loadMoreSpinner.hidden = true;
     if (state.libraryLoadError) {
-      ui.loadMore.hidden = false;
       ui.retryLibraryLoad.hidden = false;
+      ui.retryLibraryLoad.textContent = "重試載入";
       ui.loadMoreLabel.textContent = "更多收藏載入失敗";
       return;
     }
-    ui.retryLibraryLoad.hidden = true;
     const allLoaded = state.page >= state.totalPages;
-    ui.loadMore.hidden = !allLoaded;
-    if (allLoaded) ui.loadMoreLabel.textContent = `已載入全部 ${formatNumber(state.total)} 筆收藏`;
+    ui.retryLibraryLoad.hidden = allLoaded;
+    ui.retryLibraryLoad.textContent = "載入更多";
+    ui.loadMoreLabel.textContent = allLoaded
+      ? `已顯示全部 ${formatNumber(state.total)} 筆收藏`
+      : `已載入 ${formatNumber(state.items.length)} / ${formatNumber(state.total)} 筆收藏`;
   }
 
   function setLayout(layout) {
@@ -1466,7 +1489,9 @@
     renderDetail(collection);
     if (updateRoute && state.route === "library") navigateLibrary({ replace: true });
     if (focus) {
-      document.querySelector(`[data-collection-id="${collection.id}"]`)?.focus({ preventScroll: true });
+      const button = document.querySelector(`[data-collection-id="${collection.id}"]`);
+      button?.focus({ preventScroll: true });
+      button?.scrollIntoView({ block: "nearest" });
     }
   }
 
@@ -3266,9 +3291,19 @@
     }
     if (!["j", "k", "J", "K"].includes(event.key)) return;
     event.preventDefault();
+    moveLibraryFocus(event.key.toLowerCase() === "j" ? 1 : -1);
+  }
+
+  async function moveLibraryFocus(direction) {
     if (!state.items.length) return;
     const current = state.items.findIndex((item) => item.id === state.selected?.id);
-    const direction = event.key.toLowerCase() === "j" ? 1 : -1;
+    if (direction > 0 && current === state.items.length - 1 && state.page < state.totalPages) {
+      const firstNewIndex = state.items.length;
+      if (await loadMoreCollections() && state.items[firstNewIndex]) {
+        selectCollection(state.items[firstNewIndex], { focus: true });
+      }
+      return;
+    }
     const next = Math.min(state.items.length - 1, Math.max(0, (current < 0 ? 0 : current) + direction));
     selectCollection(state.items[next], { focus: true });
   }
