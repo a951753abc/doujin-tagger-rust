@@ -132,6 +132,13 @@
     reviewRequestNumber: 0,
     reviewReturnId: null,
     candidates: [],
+    duplicateCandidates: [],
+    duplicateLoaded: false,
+    duplicateLoading: false,
+    duplicateLevel: "",
+    duplicateJob: null,
+    duplicateFailures: [],
+    duplicateJobTimer: null,
     vocabularyGroups: [],
     vocabularyLoaded: false,
     preflight: null,
@@ -387,6 +394,20 @@
       workBasketSend: byId("work-basket-send"),
       workbenchCount: byId("workbench-count"),
       reviewCount: byId("review-count"),
+      duplicateCount: byId("duplicate-count"),
+      duplicateLevel: byId("duplicate-level"),
+      duplicateLoading: byId("duplicate-loading"),
+      duplicateGroups: byId("duplicate-groups"),
+      duplicateEmpty: byId("duplicate-empty"),
+      duplicateSummary: byId("duplicate-summary"),
+      duplicateProgress: byId("duplicate-progress"),
+      duplicateProgressBar: byId("duplicate-progress-bar"),
+      duplicateJobStatus: byId("duplicate-job-status"),
+      duplicateJobCounts: byId("duplicate-job-counts"),
+      duplicateJobDetail: byId("duplicate-job-detail"),
+      duplicateFailures: byId("duplicate-failures"),
+      startDuplicateScan: byId("start-duplicate-scan"),
+      retryDuplicateFailures: byId("retry-duplicate-failures"),
       reviewTotal: byId("review-total"),
       reviewPosition: byId("review-position"),
       reviewKind: byId("review-kind"),
@@ -595,6 +616,13 @@
     ui.workBasketClearSelection.addEventListener("click", clearWorkBasketSelection);
     ui.workBasketClear.addEventListener("click", clearWorkBasket);
     ui.workBasketSend.addEventListener("click", sendWorkBasketToWorkbench);
+    ui.startDuplicateScan.addEventListener("click", startDuplicateScan);
+    ui.retryDuplicateFailures.addEventListener("click", retryDuplicateFailures);
+    byId("refresh-duplicates").addEventListener("click", () => loadDuplicateCandidates(true));
+    ui.duplicateLevel.addEventListener("change", () => {
+      state.duplicateLevel = ui.duplicateLevel.value;
+      loadDuplicateCandidates(true);
+    });
     byId("retry-work-basket").addEventListener("click", () => loadWorkBasket({ force: true }));
     ui.batchTagForm.addEventListener("submit", batchAddTag);
     ui.batchMetadataForm.elements.field.addEventListener("change", syncBatchMetadataField);
@@ -684,7 +712,7 @@
     const previousRoute = state.route;
     const parsedRoute = parseRouteHash();
     const route = parsedRoute.route;
-    const nextRoute = ["shelf", "library", "basket", "review", "workbench", "stats", "settings"].includes(route) ? route : "shelf";
+    const nextRoute = ["shelf", "library", "basket", "review", "duplicates", "workbench", "stats", "settings"].includes(route) ? route : "shelf";
     if (previousRoute === "library" && nextRoute !== "library") {
       if (!state.leavingLibraryContextCaptured) rememberLibraryContext();
       state.leavingLibraryContextCaptured = false;
@@ -755,6 +783,7 @@
       scheduleLibraryLoadCheck();
     }
     if (state.route === "workbench") loadWorkbench();
+    if (state.route === "duplicates") loadDuplicateCandidates();
     if (state.route === "basket") loadWorkBasket();
     if (state.route === "review") {
       const preferredId = state.reviewReturnId || currentReviewItem()?.collection.id;
@@ -914,7 +943,7 @@
   }
 
   function routeTitle(route) {
-    return { shelf: "書架", library: "全部藏書", basket: "工作籃", review: "品質審核", workbench: "工作台", stats: "統計", settings: "設定" }[route];
+    return { shelf: "書架", library: "全部藏書", basket: "工作籃", review: "品質審核", duplicates: "重複作品", workbench: "工作台", stats: "統計", settings: "設定" }[route];
   }
 
   function startActivityMonitoring() {
@@ -4208,6 +4237,281 @@
     if (!state.vocabularyLoaded) loadVocabularyCandidates();
   }
 
+  async function loadDuplicateCandidates(force = false) {
+    if (state.duplicateLoading || (state.duplicateLoaded && !force)) return;
+    state.duplicateLoading = true;
+    ui.duplicateLoading.hidden = false;
+    try {
+      const query = state.duplicateLevel ? `?level=${encodeURIComponent(state.duplicateLevel)}` : "";
+      const [candidates, envelope] = await Promise.all([
+        api(`/api/duplicates${query}`),
+        api("/api/duplicate-jobs/current"),
+      ]);
+      state.duplicateCandidates = candidates.items || [];
+      state.duplicateLoaded = true;
+      state.duplicateJob = envelope.job || null;
+      if (state.duplicateJob?.failed) await loadDuplicateFailures();
+      renderDuplicateCandidates();
+      renderDuplicateJob();
+      if (state.duplicateJob?.status === "running") scheduleDuplicateJobPoll();
+    } catch (error) {
+      toast(`無法讀取重複作品：${error.message}`, true);
+    } finally {
+      state.duplicateLoading = false;
+      ui.duplicateLoading.hidden = true;
+    }
+  }
+
+  async function startDuplicateScan() {
+    ui.startDuplicateScan.disabled = true;
+    ui.startDuplicateScan.textContent = "正在建立工作…";
+    try {
+      state.duplicateJob = await api("/api/duplicate-jobs", { method: "POST" });
+      state.duplicateLoaded = false;
+      renderDuplicateJob();
+      scheduleDuplicateJobPoll();
+      toast(`已將 ${formatNumber(state.duplicateJob.total)} 本收藏排入背景指紋工作`);
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      ui.startDuplicateScan.disabled = false;
+      ui.startDuplicateScan.textContent = "掃描重複作品";
+    }
+  }
+
+  async function retryDuplicateFailures() {
+    if (!state.duplicateJob?.failed) return;
+    ui.retryDuplicateFailures.disabled = true;
+    try {
+      state.duplicateJob = await api(`/api/duplicate-jobs/${state.duplicateJob.id}/retry-failures`, { method: "POST" });
+      state.duplicateFailures = [];
+      renderDuplicateJob();
+      scheduleDuplicateJobPoll();
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      ui.retryDuplicateFailures.disabled = false;
+    }
+  }
+
+  function scheduleDuplicateJobPoll() {
+    if (state.duplicateJobTimer != null) window.clearTimeout(state.duplicateJobTimer);
+    if (state.duplicateJob?.status !== "running") return;
+    state.duplicateJobTimer = window.setTimeout(async () => {
+      try {
+        state.duplicateJob = await api(`/api/duplicate-jobs/${state.duplicateJob.id}`);
+        renderDuplicateJob();
+        if (state.duplicateJob.status === "running") scheduleDuplicateJobPoll();
+        else {
+          state.duplicateLoaded = false;
+          await loadDuplicateCandidates(true);
+        }
+      } catch (error) {
+        toast(`無法更新 duplicate job #${state.duplicateJob?.id || "?"}：${error.message}`, true);
+      }
+    }, 2000);
+  }
+
+  function renderDuplicateJob() {
+    const job = state.duplicateJob;
+    ui.duplicateProgress.hidden = !job;
+    ui.retryDuplicateFailures.hidden = !job?.failed || job?.status === "running";
+    ui.duplicateFailures.hidden = !job?.failed;
+    if (!job) {
+      ui.duplicateJobDetail.textContent = "來源未變時沿用快取；工作固定同時處理 2 本，可離開此頁繼續。";
+      return;
+    }
+    const complete = Number(job.processed || 0) + Number(job.failed || 0);
+    ui.duplicateProgressBar.max = Math.max(1, Number(job.total || 0));
+    ui.duplicateProgressBar.value = complete;
+    ui.duplicateJobStatus.textContent = job.status === "running"
+      ? `指紋工作 #${job.id} 處理中`
+      : job.failed ? `指紋工作 #${job.id} 完成，但有失敗項目` : `指紋工作 #${job.id} 已完成`;
+    ui.duplicateJobCounts.textContent = `${formatNumber(complete)} / ${formatNumber(job.total)} · 等待 ${formatNumber(job.pending)} · 執行 ${formatNumber(job.running)} · 失敗 ${formatNumber(job.failed)} · 快取 ${formatNumber(job.reused_cache || 0)}`;
+    ui.duplicateJobDetail.textContent = job.failed
+      ? "損毀或不支援的來源會保留逐筆失敗；其他收藏不受影響。修正來源後可只重試失敗項目。"
+      : "此工作不顯示 ETA：檔案大小與壓縮率差異太大，估算會誤導。";
+    ui.duplicateFailures.replaceChildren();
+    state.duplicateFailures.forEach((failure) => {
+      const item = el("li", "");
+      item.append(
+        el("strong", "", `收藏 #${failure.collection_id} · ${failure.error_kind || "fingerprint_failed"}`),
+        el("code", "", failure.path || "current path 已不存在"),
+        el("span", "", `${failure.error_message || "無法建立指紋"} · 已嘗試 ${formatNumber(failure.attempts)} 次`),
+      );
+      ui.duplicateFailures.append(item);
+    });
+  }
+
+  async function loadDuplicateFailures() {
+    if (!state.duplicateJob?.id) return;
+    try {
+      const response = await api(`/api/duplicate-jobs/${state.duplicateJob.id}/failures`);
+      state.duplicateFailures = response.items || [];
+    } catch (error) {
+      state.duplicateFailures = [];
+      toast(`無法讀取 fingerprint 失敗清單：${error.message}`, true);
+    }
+  }
+
+  function renderDuplicateCandidates() {
+    const candidates = state.duplicateCandidates;
+    ui.duplicateGroups.replaceChildren();
+    ui.duplicateEmpty.hidden = candidates.length !== 0;
+    ui.duplicateSummary.textContent = candidates.length
+      ? `列出 ${formatNumber(candidates.length)} 組候選。Exact 與 content 是內容證據；probable 一律需要人工裁決。`
+      : "目前篩選沒有待裁決候選；偵測器不會自動刪除或合併。";
+    ui.duplicateCount.textContent = String(candidates.filter((candidate) => !candidate.reviewed).length);
+    ui.duplicateCount.hidden = candidates.every((candidate) => candidate.reviewed);
+    candidates.forEach((candidate, index) => ui.duplicateGroups.append(duplicateCandidateCard(candidate, index)));
+  }
+
+  function duplicateCandidateCard(candidate, index) {
+    const card = el("article", `duplicate-group level-${candidate.level}${candidate.reviewed ? " is-reviewed" : ""}`);
+    const header = el("header", "duplicate-group-header");
+    const labels = { exact: "Exact duplicate", content: "Same content", probable: "Probable same work" };
+    const status = el("div", "duplicate-level-copy");
+    status.append(
+      el("p", "section-index", `PAIR ${String(index + 1).padStart(3, "0")} / ${candidate.level.toUpperCase()}`),
+      el("h2", "", labels[candidate.level] || candidate.level),
+      el("span", `duplicate-confidence level-${candidate.level}`, `${formatPercent(candidate.confidence)} 信心${candidate.reviewed ? " · 已確認重複" : ""}`),
+    );
+    const reasons = el("ul", "duplicate-reasons");
+    candidate.reasons.forEach((reason) => reasons.append(el("li", "", reason)));
+    header.append(status, reasons);
+    const comparison = el("div", "duplicate-comparison");
+    comparison.append(duplicateEvidenceColumn(candidate, "left"), duplicateEvidenceColumn(candidate, "right"));
+    const footer = el("footer", "duplicate-group-actions");
+    const notDuplicate = el("button", "secondary-button", "不是重複");
+    notDuplicate.type = "button";
+    notDuplicate.addEventListener("click", () => decideDuplicateCandidate(candidate, "exclude"));
+    const confirm = el("button", "primary-button", candidate.reviewed ? "已確認為重複" : "確認為重複");
+    confirm.type = "button";
+    confirm.disabled = candidate.reviewed;
+    confirm.addEventListener("click", () => decideDuplicateCandidate(candidate, "confirm"));
+    const basket = el("button", "text-button", "兩本加入 Work Basket");
+    basket.type = "button";
+    basket.addEventListener("click", () => addDuplicatePairToBasket(candidate));
+    footer.append(notDuplicate, confirm, basket);
+    card.append(header, comparison, footer);
+    return card;
+  }
+
+  function duplicateEvidenceColumn(candidate, side) {
+    const evidence = candidate[side];
+    const collection = evidence.collection;
+    const section = el("section", "duplicate-evidence");
+    const cover = document.createElement("img");
+    cover.className = "duplicate-cover";
+    cover.alt = `${displayTitle(collection)}封面`;
+    cover.width = 112;
+    cover.height = 150;
+    bindThumbnail(cover, collection.id);
+    const copy = el("div", "duplicate-evidence-copy");
+    copy.append(
+      el("p", "duplicate-side-label", side === "left" ? "COPY A" : "COPY B"),
+      el("h3", "", displayTitle(collection)),
+      el("p", "duplicate-bookline", [collection.circle, collection.event].filter(Boolean).join(" · ") || "社團／場次未設定"),
+    );
+    const facts = el("dl", "duplicate-facts");
+    const factRows = [
+      ["位置", collection.path],
+      ["來源", `${collection.root?.label || "未登記來源"} · ${collection.root?.source === "downloads" ? "新收藏" : "典藏庫"}`],
+      ["內容", `${formatBytes(evidence.file_size)} · ${formatNumber(evidence.page_count)} pages · ${formatNumber(evidence.archive_entry_count)} entries`],
+      ["Metadata", `${formatNumber(evidence.metadata_completeness)} / 6 欄 · ${formatNumber(evidence.tag_count)} tags · ${formatNumber(evidence.manual_assertion_count)} manual`],
+      ["Identifier", evidence.identifiers?.join("、") || "沒有可靠 identifier"],
+      ["解析度", evidence.max_image_width ? `${evidence.max_image_width} × ${evidence.max_image_height}` : "本版未取樣；不以檔案大小推定品質"],
+    ];
+    factRows.forEach(([label, value]) => facts.append(el("dt", "", label), el("dd", "", value)));
+    const actions = el("div", "duplicate-copy-actions");
+    const detail = el("button", "text-button", "查看 Detail");
+    detail.type = "button";
+    detail.addEventListener("click", () => navigateToCollection(collection));
+    const open = el("button", "text-button", "在系統中開啟");
+    open.type = "button";
+    open.addEventListener("click", () => openDuplicateCollection(collection));
+    const basket = el("button", "text-button", "加入 Work Basket");
+    basket.type = "button";
+    basket.addEventListener("click", () => addDuplicateCollectionsToBasket([collection.id], "已將這本加入 Work Basket"));
+    const remove = el("button", "danger-text-button", "送入既有刪除流程");
+    remove.type = "button";
+    remove.addEventListener("click", () => handoffDuplicateDelete(collection));
+    actions.append(detail, open, basket, remove);
+    copy.append(facts, actions);
+    section.append(cover, copy);
+    return section;
+  }
+
+  async function decideDuplicateCandidate(candidate, decision) {
+    const left = candidate.left;
+    const right = candidate.right;
+    const action = decision === "exclude" ? "標記不是重複" : "確認為重複";
+    if (!window.confirm(`${action}？這只保存裁決，不會刪除或合併收藏。`)) return;
+    try {
+      await api(`/api/duplicates/${left.collection.id}/${right.collection.id}/${decision}`, {
+        method: "POST",
+        body: {
+          left_fingerprint_identity: left.fingerprint_identity,
+          right_fingerprint_identity: right.fingerprint_identity,
+        },
+      });
+      state.duplicateLoaded = false;
+      await loadDuplicateCandidates(true);
+      toast(decision === "exclude" ? "已保存排除；內容不變時不會再次建議" : "已標記 reviewed；兩筆收藏與檔案都保持不變");
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  async function addDuplicatePairToBasket(candidate) {
+    return addDuplicateCollectionsToBasket(
+      [candidate.left.collection.id, candidate.right.collection.id],
+      "兩本候選已加入 Work Basket，可跨頁保留比較清單",
+    );
+  }
+
+  async function addDuplicateCollectionsToBasket(collectionIds, successMessage) {
+    try {
+      const basket = await api("/api/work-baskets/1/collections", {
+        method: "POST",
+        body: { collection_ids: collectionIds },
+      });
+      applyWorkBasket(basket);
+      toast(successMessage);
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  async function openDuplicateCollection(collection) {
+    try {
+      await api(`/api/collections/${collection.id}/open`, { method: "POST" });
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  function handoffDuplicateDelete(collection) {
+    replaceOperationSelection(state.selectedIds, state.selectedRecords, [{ collection }]);
+    state.selectionContext = "duplicate_delete_handoff";
+    updateSelectionUI();
+    location.hash = "workbench";
+    window.setTimeout(prepareDelete, 0);
+  }
+
+  function formatBytes(bytes) {
+    const value = Number(bytes) || 0;
+    if (value < 1024) return `${formatNumber(value)} B`;
+    const units = ["KiB", "MiB", "GiB", "TiB"];
+    let scaled = value / 1024;
+    let unit = units[0];
+    for (let index = 1; index < units.length && scaled >= 1024; index += 1) {
+      scaled /= 1024;
+      unit = units[index];
+    }
+    return `${scaled.toLocaleString("zh-TW", { maximumFractionDigits: scaled >= 100 ? 0 : 1 })} ${unit}`;
+  }
+
   function renderWorkbenchSelection() {
     if (!ui.selectedCollectionList) return;
     const collections = selectedCollections();
@@ -4220,6 +4524,8 @@
         ? `縮圖失敗工作清單包含 ${formatNumber(collections.length)} 筆收藏；可逐筆查看，或返回設定重試整批失敗項目。`
         : state.selectionContext === "work_basket"
           ? `操作清單由工作籃明確載入 ${formatNumber(collections.length)} 本固定收藏。後續操作仍使用既有確認、進度與後端安全驗證。`
+          : state.selectionContext === "duplicate_delete_handoff"
+            ? "這本收藏由重複作品頁明確送入刪除流程；請再次核對完整 path，再選擇資源回收桶或永久刪除。"
         : `本次操作清單包含 ${formatNumber(collections.length)} 筆已選收藏；目前查詢已載入 ${formatNumber(state.items.length)} 筆，共符合 ${formatNumber(state.total)} 筆。`
       : "目前沒有批次操作清單。";
     collections.forEach((collection, index) => {

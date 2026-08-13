@@ -19,7 +19,8 @@ use doujin_storage::metadata::{
 };
 use doujin_storage::thumbnails::{ThumbnailErrorKind, ThumbnailStatus};
 use doujin_thumbnails::{
-    ThumbnailConfig, ThumbnailError, ThumbnailGenerationSuccess, transparent_placeholder_webp,
+    ThumbnailConfig, ThumbnailError, ThumbnailGenerationSuccess,
+    calculate_source_content_fingerprint, transparent_placeholder_webp,
 };
 use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
 use serde_json::Value;
@@ -283,6 +284,156 @@ impl RunningServer {
 }
 
 #[tokio::test]
+async fn duplicate_api_has_persistent_jobs_candidates_filters_and_fingerprint_bound_decisions() {
+    let tree = TestTree::new("duplicate-api");
+    tree.image_zip(
+        "[Circle] Exact Original.zip",
+        &[
+            ("001.png", [200, 20, 30, 255]),
+            ("002.png", [30, 20, 200, 255]),
+        ],
+    );
+    fs::copy(
+        tree.library().join("[Circle] Exact Original.zip"),
+        tree.library().join("[Circle] Exact Copy.zip"),
+    )
+    .expect("copy exact ZIP");
+    tree.image_zip("[Other] Unique.zip", &[("001.png", [10, 160, 80, 255])]);
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application
+        .run_scan(&[ScanRoot {
+            path: tree.library(),
+            source: SourceKind::Downloads,
+            label: "下載區".to_owned(),
+        }])
+        .expect("scan duplicate fixtures");
+    let shared = share_application(application);
+    let server = RunningServer::start_shared(Arc::clone(&shared)).await;
+
+    let started = server.request("POST", "/api/duplicate-jobs", &[]).await;
+    assert_eq!(200, started.status);
+    assert_eq!(3, started.json["total"]);
+    assert_eq!(2, started.json["concurrency_limit"]);
+    assert_eq!(Value::Null, started.json["estimated_seconds_remaining"]);
+    let job_id = started.json["id"].as_i64().expect("job ID");
+
+    loop {
+        let request = shared
+            .lock()
+            .expect("application")
+            .claim_duplicate_fingerprint()
+            .expect("claim fingerprint");
+        let Some(request) = request else { break };
+        let result = calculate_source_content_fingerprint(&request.source_path);
+        shared
+            .lock()
+            .expect("application")
+            .finish_duplicate_fingerprint(&request, result)
+            .expect("finish fingerprint");
+    }
+    let completed = server
+        .request("GET", &format!("/api/duplicate-jobs/{job_id}"), &[])
+        .await;
+    assert_eq!(200, completed.status);
+    assert_eq!("completed", completed.json["status"]);
+    assert_eq!(3, completed.json["processed"]);
+
+    let candidates = server.request("GET", "/api/duplicates", &[]).await;
+    assert_eq!(200, candidates.status);
+    assert_eq!(1, candidates.json["total"]);
+    assert_eq!("exact", candidates.json["items"][0]["level"]);
+    assert!(
+        candidates.json["items"][0]["left"]["collection"]["path"]
+            .as_str()
+            .expect("left path")
+            .ends_with(".zip")
+    );
+    assert_eq!(2, candidates.json["items"][0]["left"]["page_count"]);
+    assert!(
+        candidates.json["items"][0]["reasons"][0]
+            .as_str()
+            .expect("reason")
+            .contains("SHA-256")
+    );
+    let exact = server
+        .request("GET", "/api/duplicates?level=exact", &[])
+        .await;
+    assert_eq!(1, exact.json["total"]);
+    let probable = server
+        .request("GET", "/api/duplicates?level=probable", &[])
+        .await;
+    assert_eq!(0, probable.json["total"]);
+    let invalid = server
+        .request("GET", "/api/duplicates?level=tombstone", &[])
+        .await;
+    assert_eq!(400, invalid.status);
+    assert_eq!("invalid_duplicate_level", invalid.json["error"]["code"]);
+
+    let pair = &candidates.json["items"][0];
+    let left_id = pair["left"]["collection"]["id"].as_i64().expect("left ID");
+    let right_id = pair["right"]["collection"]["id"]
+        .as_i64()
+        .expect("right ID");
+    let decision = serde_json::json!({
+        "left_fingerprint_identity": pair["left"]["fingerprint_identity"],
+        "right_fingerprint_identity": pair["right"]["fingerprint_identity"],
+    });
+    let confirmed = server
+        .request_json(
+            "POST",
+            &format!("/api/duplicates/{left_id}/{right_id}/confirm"),
+            &decision,
+        )
+        .await;
+    assert_eq!(200, confirmed.status);
+    assert_eq!("confirmed", confirmed.json["status"]);
+    assert_eq!(
+        true,
+        server.request("GET", "/api/duplicates", &[]).await.json["items"][0]["reviewed"]
+    );
+
+    let stale = server
+        .request_json(
+            "POST",
+            &format!("/api/duplicates/{left_id}/{right_id}/exclude"),
+            &serde_json::json!({
+                "left_fingerprint_identity": "stale",
+                "right_fingerprint_identity": decision["right_fingerprint_identity"],
+            }),
+        )
+        .await;
+    assert_eq!(409, stale.status);
+    let excluded = server
+        .request_json(
+            "POST",
+            &format!("/api/duplicates/{left_id}/{right_id}/exclude"),
+            &decision,
+        )
+        .await;
+    assert_eq!(200, excluded.status);
+    assert_eq!(
+        0,
+        server.request("GET", "/api/duplicates", &[]).await.json["total"]
+    );
+
+    // Duplicate review has no delete or consolidation route. File deletion stays
+    // exclusively behind `/api/file-actions/delete`.
+    assert_eq!(
+        404,
+        server
+            .request(
+                "POST",
+                &format!("/api/duplicates/{left_id}/{right_id}/delete"),
+                &[]
+            )
+            .await
+            .status
+    );
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers() {
     let repository = CatalogRepository::open_in_memory().expect("open catalog");
     let application = ApplicationService::new(repository, NoopRecycleBin);
@@ -307,8 +458,10 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("href=\"/assets/app.css?v=50\""));
-    assert!(document.contains("src=\"/assets/app.js?v=53\" defer"));
+    assert!(document.contains("href=\"/assets/app.css?v=54\""));
+    assert!(document.contains("src=\"/assets/app.js?v=54\" defer"));
+    assert!(document.contains("id=\"duplicates-view\""));
+    assert!(document.contains("id=\"start-duplicate-scan\""));
     assert!(document.contains("id=\"rename-preflight-form\""));
     assert!(document.contains("id=\"rename-preflight-items\""));
     assert!(document.contains("id=\"review-view\""));
@@ -493,6 +646,10 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("/api/vocabulary/preflight"));
     assert!(script.contains("/api/vocabulary/merge"));
     assert!(script.contains("/api/vocabulary/reject"));
+    assert!(script.contains("/api/duplicate-jobs"));
+    assert!(script.contains("/api/duplicates"));
+    assert!(script.contains("handoffDuplicateDelete"));
+    assert!(script.contains("prepareDelete"));
     assert!(script.contains("function removeVocabularyVariant"));
     assert!(script.contains("loadMetadataEvidence"));
     assert!(script.contains("renderDataQualitySummary"));

@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>私藏編目室</title>
-  <link rel="stylesheet" href="/assets/app.css?v=50">
-  <script src="/assets/app.js?v=53" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=54">
+  <script src="/assets/app.js?v=54" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -47,6 +47,7 @@
           <a href="#library" data-route="library">全部藏書</a>
           <a href="#basket" data-route="basket">工作籃 <b class="nav-count" id="work-basket-count" hidden>0</b></a>
           <a href="#review" data-route="review">品質審核 <b class="nav-count" id="review-count" hidden>0</b></a>
+          <a href="#duplicates" data-route="duplicates">重複作品 <b class="nav-count" id="duplicate-count" hidden>0</b></a>
           <a href="#workbench" data-route="workbench">工作台 <b class="nav-count" id="workbench-count" hidden>0</b></a>
           <a href="#stats" data-route="stats">統計</a>
           <a href="#settings" data-route="settings">設定</a>
@@ -561,6 +562,42 @@
               <div><h3>目前沒有名稱變體候選</h3><p>已拒絕的組合不會再次出現；已合併的 alias 會沿用既有 metadata 優先序。</p></div>
             </div>
           </section>
+        </div>
+      </section>
+
+      <section class="view duplicate-view" id="duplicates-view" data-view="duplicates" aria-labelledby="duplicates-heading" hidden>
+        <header class="page-heading duplicate-page-heading">
+          <div><p class="eyebrow">DUPLICATE WORKS / 重複作品</p><h1 id="duplicates-heading">把相似變成可裁決的證據</h1></div>
+          <p>偵測器只列出候選並保存人工判斷；確認重複不會合併身分，也不會刪除任何檔案。</p>
+        </header>
+        <section class="duplicate-scan-bar" aria-labelledby="duplicate-scan-heading">
+          <div><p class="section-index">FINGERPRINT INDEX / 內容索引</p><h2 id="duplicate-scan-heading">背景建立作品指紋</h2><p id="duplicate-job-detail">來源未變時沿用快取；工作固定同時處理 2 本，可離開此頁繼續。</p></div>
+          <div class="duplicate-scan-actions">
+            <button class="secondary-button" id="start-duplicate-scan" type="button">掃描重複作品</button>
+            <button class="text-button" id="retry-duplicate-failures" type="button" hidden>重試失敗項目</button>
+          </div>
+          <div class="duplicate-progress" id="duplicate-progress" role="status" aria-live="polite" hidden>
+            <div><strong id="duplicate-job-status">準備建立指紋…</strong><span id="duplicate-job-counts"></span></div>
+            <progress id="duplicate-progress-bar" max="1" value="0"></progress>
+            <ol class="duplicate-failures" id="duplicate-failures" hidden></ol>
+          </div>
+        </section>
+        <div class="duplicate-toolbar">
+          <p id="duplicate-summary">先建立指紋，系統才會列出 exact、content 與 probable 候選。</p>
+          <label>證據層級
+            <select id="duplicate-level">
+              <option value="">全部候選</option>
+              <option value="exact">Exact file</option>
+              <option value="content">Same content</option>
+              <option value="probable">Probable work</option>
+            </select>
+          </label>
+          <button class="text-button" id="refresh-duplicates" type="button">重新整理</button>
+        </div>
+        <div class="review-loading" id="duplicate-loading" hidden><span class="loader" aria-hidden="true"></span> 正在整理重複證據…</div>
+        <div class="duplicate-groups" id="duplicate-groups" aria-live="polite"></div>
+        <div class="workbench-empty duplicate-empty" id="duplicate-empty" hidden>
+          <span aria-hidden="true">清</span><div><h2>目前沒有符合條件的候選</h2><p>已標記「不是重複」的 pair 會保持安靜；內容改變後才會重新評估。</p></div>
         </div>
       </section>
 

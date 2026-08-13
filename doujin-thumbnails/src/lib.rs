@@ -14,6 +14,7 @@ use doujin_storage::thumbnails::ThumbnailErrorKind;
 use image::error::ImageError;
 use image::imageops::FilterType;
 use image::{DynamicImage, ImageReader, Limits};
+use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 
 const MAX_SOURCE_IMAGE_BYTES: u64 = 100 * 1024 * 1024;
@@ -24,6 +25,22 @@ const MAX_SOURCE_ENTRIES: usize = 10_000;
 const MAX_CANDIDATE_SCAN_ENTRIES: usize = 96;
 const MAX_CANDIDATE_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_COVER_CANDIDATES: usize = 24;
+pub const DUPLICATE_FINGERPRINT_ALGORITHM_VERSION: &str = "sha256-pages-v1";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceContentFingerprint {
+    pub source_fingerprint: String,
+    pub source_size: u64,
+    pub file_sha256: Option<String>,
+    pub archive_entry_count: usize,
+    pub image_count: usize,
+    /// SHA-256 of the sorted multiset of page SHA-256 values. Entry names and ZIP
+    /// container metadata intentionally do not participate.
+    pub content_fingerprint: String,
+    /// SHA-256 values in natural page order, used as conservative near-match evidence.
+    pub page_hashes: Vec<String>,
+    pub perceptual_hashes: Option<Vec<String>>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThumbnailConfig {
@@ -152,6 +169,309 @@ pub fn source_fingerprint(source_path: &Path) -> Result<String, ThumbnailError> 
         ));
     }
     Ok(fingerprint)
+}
+
+/// Calculates a versioned duplicate-work fingerprint without unpacking an archive
+/// into memory or onto disk. ZIP image entries are streamed through SHA-256 one at
+/// a time and retain the thumbnail pipeline's entry-count and per-image limits.
+pub fn calculate_source_content_fingerprint(
+    source_path: &Path,
+) -> Result<SourceContentFingerprint, ThumbnailError> {
+    let metadata = fs::symlink_metadata(source_path).map_err(source_io)?;
+    if metadata.file_type().is_symlink() {
+        return Err(ThumbnailError::new(
+            ThumbnailErrorKind::Unsupported,
+            "收藏來源不可為 symbolic link",
+        ));
+    }
+    if metadata.is_file() {
+        calculate_zip_content_fingerprint(source_path)
+    } else if metadata.is_dir() {
+        calculate_directory_content_fingerprint(source_path)
+    } else {
+        Err(ThumbnailError::new(
+            ThumbnailErrorKind::Unsupported,
+            "收藏來源不是 ZIP 檔案或圖片資料夾",
+        ))
+    }
+}
+
+/// Cheap, strong-enough cache identity used before deciding whether full content
+/// hashing is necessary. Directory identity covers every supported image's path,
+/// size, and mtime; archive identity covers the ZIP path, size, and mtime.
+pub fn duplicate_source_fingerprint(source_path: &Path) -> Result<String, ThumbnailError> {
+    let metadata = fs::symlink_metadata(source_path).map_err(source_io)?;
+    if metadata.file_type().is_symlink() {
+        return Err(ThumbnailError::new(
+            ThumbnailErrorKind::Unsupported,
+            "收藏來源不可為 symbolic link",
+        ));
+    }
+    if metadata.is_dir() {
+        Ok(directory_source_identity(source_path)?.0)
+    } else if metadata.is_file() {
+        source_fingerprint(source_path)
+    } else {
+        Err(ThumbnailError::new(
+            ThumbnailErrorKind::Unsupported,
+            "收藏來源不是 ZIP 檔案或圖片資料夾",
+        ))
+    }
+}
+
+fn calculate_zip_content_fingerprint(
+    source_path: &Path,
+) -> Result<SourceContentFingerprint, ThumbnailError> {
+    let before = source_fingerprint(source_path)?;
+    let source_size = fs::metadata(source_path).map_err(source_io)?.len();
+    let file_sha256 = hash_file(source_path)?;
+    let file = File::open(source_path).map_err(source_io)?;
+    let mut archive = ZipArchive::new(file).map_err(|error| {
+        ThumbnailError::new(
+            ThumbnailErrorKind::InvalidArchive,
+            format!("無法讀取 ZIP：{error}"),
+        )
+    })?;
+    let archive_entry_count = archive.len();
+    if archive_entry_count > MAX_SOURCE_ENTRIES {
+        return Err(ThumbnailError::new(
+            ThumbnailErrorKind::ResourceLimit,
+            format!("ZIP entry 數超過 {MAX_SOURCE_ENTRIES} 筆限制"),
+        ));
+    }
+
+    let mut identities = HashMap::new();
+    let mut pages = Vec::new();
+    for index in 0..archive_entry_count {
+        let mut entry = archive.by_index(index).map_err(|error| {
+            ThumbnailError::new(
+                ThumbnailErrorKind::InvalidArchive,
+                format!("無法讀取 ZIP entry #{index}：{error}"),
+            )
+        })?;
+        if entry.is_dir() || entry.is_symlink() {
+            continue;
+        }
+        let raw_name = entry.name().to_owned();
+        if !is_supported_image(Path::new(&raw_name)) {
+            continue;
+        }
+        let name = normalize_entry_path(&raw_name).ok_or_else(|| {
+            ThumbnailError::new(
+                ThumbnailErrorKind::InvalidArchive,
+                format!("ZIP 圖片 entry path 不安全：{raw_name}"),
+            )
+        })?;
+        if name.split('/').any(|part| part == "__MACOSX") {
+            continue;
+        }
+        if identities.insert(name.clone(), index).is_some() {
+            return Err(ThumbnailError::new(
+                ThumbnailErrorKind::InvalidArchive,
+                format!("ZIP 包含重複的圖片 entry identity：{name}"),
+            ));
+        }
+        if entry.size() > MAX_SOURCE_IMAGE_BYTES {
+            return Err(ThumbnailError::new(
+                ThumbnailErrorKind::ResourceLimit,
+                format!("ZIP 圖片 {name} 解壓後超過 100 MiB 限制"),
+            ));
+        }
+        let hash = hash_bounded_reader(&mut entry, MAX_SOURCE_IMAGE_BYTES, &name)?;
+        pages.push((name, hash));
+    }
+    if pages.is_empty() {
+        return Err(ThumbnailError::new(
+            ThumbnailErrorKind::NoSupportedImage,
+            "ZIP 內沒有支援的圖片",
+        ));
+    }
+    pages.sort_by(|left, right| natural_cmp(&left.0, &right.0));
+    let page_hashes = pages.into_iter().map(|(_, hash)| hash).collect::<Vec<_>>();
+    let after = source_fingerprint(source_path)?;
+    if before != after {
+        return Err(ThumbnailError::new(
+            ThumbnailErrorKind::SourceIo,
+            "收藏來源在 fingerprint 計算期間發生變更，請重試",
+        ));
+    }
+    Ok(SourceContentFingerprint {
+        source_fingerprint: after,
+        source_size,
+        file_sha256: Some(file_sha256),
+        archive_entry_count,
+        image_count: page_hashes.len(),
+        content_fingerprint: combine_page_hashes(&page_hashes),
+        page_hashes,
+        perceptual_hashes: None,
+    })
+}
+
+fn calculate_directory_content_fingerprint(
+    source_path: &Path,
+) -> Result<SourceContentFingerprint, ThumbnailError> {
+    let (before, source_size, paths) = directory_source_identity(source_path)?;
+    if paths.is_empty() {
+        return Err(ThumbnailError::new(
+            ThumbnailErrorKind::NoSupportedImage,
+            "圖片資料夾內沒有支援的圖片",
+        ));
+    }
+    let mut pages = Vec::with_capacity(paths.len());
+    for path in &paths {
+        let relative = path
+            .strip_prefix(source_path)
+            .map_err(|_| {
+                ThumbnailError::new(
+                    ThumbnailErrorKind::Unsupported,
+                    format!("圖片不在收藏來源內：{}", path.display()),
+                )
+            })?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let size = fs::metadata(path).map_err(source_io)?.len();
+        if size > MAX_SOURCE_IMAGE_BYTES {
+            return Err(ThumbnailError::new(
+                ThumbnailErrorKind::ResourceLimit,
+                format!("圖片 {relative} 超過 100 MiB 限制"),
+            ));
+        }
+        pages.push((relative, hash_file(path)?));
+    }
+    pages.sort_by(|left, right| natural_cmp(&left.0, &right.0));
+    let page_hashes = pages.into_iter().map(|(_, hash)| hash).collect::<Vec<_>>();
+    let (after, after_size, _) = directory_source_identity(source_path)?;
+    if before != after || source_size != after_size {
+        return Err(ThumbnailError::new(
+            ThumbnailErrorKind::SourceIo,
+            "收藏來源在 fingerprint 計算期間發生變更，請重試",
+        ));
+    }
+    Ok(SourceContentFingerprint {
+        source_fingerprint: after,
+        source_size,
+        file_sha256: None,
+        archive_entry_count: page_hashes.len(),
+        image_count: page_hashes.len(),
+        content_fingerprint: combine_page_hashes(&page_hashes),
+        page_hashes,
+        perceptual_hashes: None,
+    })
+}
+
+fn directory_source_identity(
+    source_path: &Path,
+) -> Result<(String, u64, Vec<PathBuf>), ThumbnailError> {
+    let mut paths = Vec::new();
+    collect_directory_images(source_path, source_path, 0, &mut paths)?;
+    paths.sort_by(|left, right| {
+        natural_cmp(
+            &left
+                .strip_prefix(source_path)
+                .unwrap_or(left)
+                .to_string_lossy(),
+            &right
+                .strip_prefix(source_path)
+                .unwrap_or(right)
+                .to_string_lossy(),
+        )
+    });
+    let mut identity = Sha256::new();
+    identity.update(b"doujin-directory-source-v1\0");
+    let mut total_size = 0u64;
+    for path in &paths {
+        let relative = path.strip_prefix(source_path).map_err(|_| {
+            ThumbnailError::new(
+                ThumbnailErrorKind::Unsupported,
+                format!("圖片不在收藏來源內：{}", path.display()),
+            )
+        })?;
+        let metadata = fs::metadata(path).map_err(source_io)?;
+        let modified = metadata
+            .modified()
+            .map_err(source_io)?
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let name = relative.to_string_lossy().replace('\\', "/");
+        update_framed(&mut identity, name.as_bytes());
+        identity.update(metadata.len().to_le_bytes());
+        identity.update(modified.as_secs().to_le_bytes());
+        identity.update(modified.subsec_nanos().to_le_bytes());
+        total_size = total_size.saturating_add(metadata.len());
+    }
+    Ok((
+        format!("directory-v1:{}", hex_digest(identity.finalize())),
+        total_size,
+        paths,
+    ))
+}
+
+fn hash_file(path: &Path) -> Result<String, ThumbnailError> {
+    let mut file = File::open(path).map_err(source_io)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 128 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(source_io)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex_digest(hasher.finalize()))
+}
+
+fn hash_bounded_reader(
+    reader: &mut impl Read,
+    limit: u64,
+    entry_name: &str,
+) -> Result<String, ThumbnailError> {
+    let mut reader = reader.take(limit + 1);
+    let mut hasher = Sha256::new();
+    let mut total = 0u64;
+    let mut buffer = [0u8; 128 * 1024];
+    loop {
+        let read = reader.read(&mut buffer).map_err(zip_entry_io)?;
+        if read == 0 {
+            break;
+        }
+        total = total.saturating_add(read as u64);
+        if total > limit {
+            return Err(ThumbnailError::new(
+                ThumbnailErrorKind::ResourceLimit,
+                format!("ZIP 圖片 {entry_name} 解壓後超過 100 MiB 限制"),
+            ));
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex_digest(hasher.finalize()))
+}
+
+fn combine_page_hashes(page_hashes: &[String]) -> String {
+    let mut sorted = page_hashes.to_vec();
+    sorted.sort_unstable();
+    let mut hasher = Sha256::new();
+    hasher.update(b"doujin-page-multiset-v1\0");
+    hasher.update((sorted.len() as u64).to_le_bytes());
+    for page_hash in sorted {
+        update_framed(&mut hasher, page_hash.as_bytes());
+    }
+    hex_digest(hasher.finalize())
+}
+
+fn update_framed(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+}
+
+fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = bytes.as_ref();
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
 }
 
 pub fn cover_source_fingerprint(
@@ -973,6 +1293,73 @@ mod tests {
             cover_candidates(&oversized_source, MAX_COVER_CANDIDATES)
                 .expect("skip resource-limited candidate")
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn duplicate_fingerprint_distinguishes_exact_file_from_same_page_content() {
+        let tree = TestTree::new("duplicate-fingerprint");
+        let first = tree.0.join("first.zip");
+        let exact_copy = tree.0.join("renamed-copy.zip");
+        let repacked = tree.0.join("repacked.zip");
+        let first_page = png(16, 24, [190, 30, 20, 255]);
+        let second_page = png(16, 24, [20, 30, 190, 255]);
+        zip_with_images(
+            File::create(&first).expect("create first ZIP"),
+            &[
+                ("page-01.png", first_page.clone()),
+                ("page-02.png", second_page.clone()),
+            ],
+        );
+        fs::copy(&first, &exact_copy).expect("copy exact ZIP");
+        zip_with_images(
+            File::create(&repacked).expect("create repacked ZIP"),
+            &[
+                ("renamed/002.png", second_page),
+                ("renamed/001.png", first_page),
+            ],
+        );
+
+        let first = calculate_source_content_fingerprint(&first).expect("first fingerprint");
+        let exact = calculate_source_content_fingerprint(&exact_copy).expect("exact fingerprint");
+        let repacked =
+            calculate_source_content_fingerprint(&repacked).expect("repacked fingerprint");
+        assert_eq!(first.file_sha256, exact.file_sha256);
+        assert_eq!(first.content_fingerprint, exact.content_fingerprint);
+        assert_ne!(first.source_fingerprint, exact.source_fingerprint);
+        assert_ne!(first.file_sha256, repacked.file_sha256);
+        assert_eq!(first.content_fingerprint, repacked.content_fingerprint);
+        assert_eq!(first.page_hashes, repacked.page_hashes);
+        assert_eq!(2, repacked.image_count);
+        assert_eq!(2, repacked.archive_entry_count);
+    }
+
+    #[test]
+    fn duplicate_fingerprint_streams_directories_and_rejects_ambiguous_zip_entries() {
+        let tree = TestTree::new("duplicate-fingerprint-safety");
+        let directory = tree.0.join("pages");
+        fs::create_dir(&directory).expect("create pages directory");
+        fs::write(directory.join("01.png"), png(8, 8, [1, 2, 3, 255])).expect("page one");
+        fs::write(directory.join("02.png"), png(8, 8, [4, 5, 6, 255])).expect("page two");
+        let fingerprint =
+            calculate_source_content_fingerprint(&directory).expect("directory fingerprint");
+        assert_eq!(None, fingerprint.file_sha256);
+        assert_eq!(2, fingerprint.image_count);
+        assert!(fingerprint.source_fingerprint.starts_with("directory-v1:"));
+
+        let ambiguous = tree.0.join("ambiguous.zip");
+        zip_with_images(
+            File::create(&ambiguous).expect("create ambiguous ZIP"),
+            &[
+                ("pages/01.png", png(8, 8, [1, 2, 3, 255])),
+                ("pages\\01.png", png(8, 8, [4, 5, 6, 255])),
+            ],
+        );
+        assert_eq!(
+            ThumbnailErrorKind::InvalidArchive,
+            calculate_source_content_fingerprint(&ambiguous)
+                .expect_err("reject duplicate normalized identity")
+                .kind
         );
     }
 }

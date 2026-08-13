@@ -1,5 +1,6 @@
 //! Application use cases over the scanner, repository, and file-operation service.
 
+pub mod duplicates;
 pub mod external_search;
 pub mod rename;
 

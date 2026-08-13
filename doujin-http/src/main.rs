@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use doujin_app::duplicates::{DUPLICATE_WORKER_COUNT, DuplicateFingerprintRequest};
 use doujin_app::external_search::{
     ExternalMetadataProvider, ExternalSearchProviderError, ExternalSearchProviderIssue,
     ExternalSearchProviderResponse, ExternalSearchRequest, ExternalSearchStartOutcome,
@@ -19,7 +20,10 @@ use doujin_provider_ehentai::EhentaiProvider;
 use doujin_storage::CatalogRepository;
 use doujin_storage::settings::StoredApplicationSettings;
 use doujin_storage::thumbnails::DEFAULT_THUMBNAIL_PRIORITY;
-use doujin_thumbnails::{ThumbnailConfig, ThumbnailGenerationRequest, generate_thumbnail};
+use doujin_thumbnails::{
+    ThumbnailConfig, ThumbnailGenerationRequest, calculate_source_content_fingerprint,
+    generate_thumbnail,
+};
 use serde::Deserialize;
 
 mod instance;
@@ -192,6 +196,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if recovered_thumbnails > 0 {
         println!("已回復 {recovered_thumbnails} 筆中斷的 thumbnail jobs");
     }
+    let recovered_duplicates = application.recover_interrupted_duplicate_scan_items()?;
+    if recovered_duplicates > 0 {
+        println!("已回復 {recovered_duplicates} 筆中斷的 duplicate fingerprint items");
+    }
     match application.reconcile_thumbnail_settings() {
         Ok(enqueued) if enqueued > 0 => {
             println!("thumbnail 設定或來源變更，已重新排程 {enqueued} 筆既有工作");
@@ -230,6 +238,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .spawn(move || run_thumbnail_worker(thumbnail_application, thumbnail_stopping))?,
         );
     }
+    let mut duplicate_workers = Vec::with_capacity(DUPLICATE_WORKER_COUNT);
+    for worker_index in 0..DUPLICATE_WORKER_COUNT {
+        let duplicate_application = Arc::clone(&application);
+        let duplicate_stopping = Arc::clone(&stopping);
+        duplicate_workers.push(
+            thread::Builder::new()
+                .name(format!("duplicate-worker-{}", worker_index + 1))
+                .spawn(move || run_duplicate_worker(duplicate_application, duplicate_stopping))?,
+        );
+    }
 
     let shutdown_stopping = Arc::clone(&stopping);
     let serve_result = serve_shared_with_shutdown(listener, application, async move {
@@ -246,8 +264,61 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             return Err("thumbnail worker 非預期中止".into());
         }
     }
+    for duplicate_worker in duplicate_workers {
+        if duplicate_worker.join().is_err() {
+            return Err("duplicate fingerprint worker 非預期中止".into());
+        }
+    }
     serve_result?;
     Ok(())
+}
+
+fn run_duplicate_worker<R>(application: SharedApplication<R>, stopping: Arc<AtomicBool>)
+where
+    R: RecycleBin + Send + 'static,
+{
+    while !stopping.load(Ordering::Acquire) {
+        let request = match application.lock() {
+            Ok(mut application) => match application.claim_duplicate_fingerprint() {
+                Ok(request) => request,
+                Err(error) => {
+                    eprintln!("duplicate worker 無法領取工作：{error}");
+                    None
+                }
+            },
+            Err(_) => {
+                eprintln!("duplicate worker 無法取得 application service");
+                return;
+            }
+        };
+        let Some(request) = request else {
+            thread::sleep(WORKER_POLL_INTERVAL);
+            continue;
+        };
+        finish_duplicate_request(&application, request);
+    }
+}
+
+fn finish_duplicate_request<R>(
+    application: &SharedApplication<R>,
+    request: DuplicateFingerprintRequest,
+) where
+    R: RecycleBin,
+{
+    // Intentionally outside the application mutex: hashing and ZIP streaming can
+    // take seconds without blocking interactive API calls.
+    let result = calculate_source_content_fingerprint(&request.source_path);
+    match application.lock() {
+        Ok(mut application) => {
+            if let Err(error) = application.finish_duplicate_fingerprint(&request, result) {
+                eprintln!(
+                    "duplicate fingerprint {}/{} 無法寫回：{error}",
+                    request.job_id, request.collection_id
+                );
+            }
+        }
+        Err(_) => eprintln!("duplicate worker 無法取得 application service"),
+    }
 }
 
 fn run_thumbnail_worker<R>(application: SharedApplication<R>, stopping: Arc<AtomicBool>)
