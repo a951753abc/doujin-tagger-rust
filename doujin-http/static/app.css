@@ -1899,8 +1899,13 @@ html[data-route="settings"] .header-search {
 .activity-item.partial .activity-status {
   color: var(--danger);
 }
-.activity-item .text-button {
+.activity-actions {
   grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+.activity-actions .text-button {
   justify-self: start;
   min-height: 36px;
   padding: 5px 0;
@@ -3315,6 +3320,16 @@ img[data-thumbnail-status="failed"] {
   background: var(--paper-deep);
   object-fit: cover;
 }
+.selected-collection-actions {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+}
+.selected-collection-actions .text-button {
+  min-height: 32px;
+  padding: 4px 0;
+  font-size: 0.75rem;
+}
 .file-operation-strip {
   display: grid;
   gap: 18px;
@@ -3655,6 +3670,19 @@ img[data-thumbnail-status="failed"] {
   font-size: 0.75rem;
   line-height: 1.5;
 }
+.thumbnail-cache-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.thumbnail-cache-actions[hidden] {
+  display: none;
+}
+.thumbnail-cache-actions .text-button,
+.thumbnail-cache-actions .secondary-button {
+  min-height: 36px;
+}
 .roots-settings {
   padding-top: 28px;
   border-top: 1px solid var(--line);
@@ -3823,6 +3851,98 @@ dialog::backdrop {
   color: var(--accent-dark);
   font-family: var(--serif);
   font-size: 1.3125rem;
+}
+#scan-results-dialog {
+  width: min(760px, calc(100% - 24px));
+}
+.scan-issue-list,
+.thumbnail-cache-preflight-roots {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.scan-issue-list {
+  max-height: min(480px, 55dvh);
+  overflow-y: auto;
+  border-block: 1px solid var(--line);
+}
+.scan-issue-item {
+  display: grid;
+  gap: 7px;
+  padding: 13px 2px;
+  border-bottom: 1px solid var(--line);
+}
+.scan-issue-item:last-child {
+  border-bottom: 0;
+}
+.scan-issue-heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: baseline;
+}
+.scan-issue-heading strong {
+  color: var(--danger);
+  font-size: 0.8125rem;
+}
+.scan-issue-heading code,
+.scan-issue-path,
+.thumbnail-cache-preflight-roots code {
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+}
+.scan-issue-heading code {
+  color: var(--muted);
+}
+.scan-issue-path {
+  color: var(--ink-soft);
+}
+.scan-issue-item p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+}
+.scan-issue-item .text-button {
+  min-height: 34px;
+  padding: 4px 0;
+  justify-self: start;
+}
+.scan-results-empty {
+  padding: 24px 0;
+  color: var(--muted);
+  text-align: center;
+}
+.thumbnail-cache-preflight-roots {
+  border-block: 1px solid var(--line);
+}
+.thumbnail-cache-preflight-roots li {
+  display: grid;
+  gap: 3px;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--line);
+}
+.thumbnail-cache-preflight-roots li:last-child {
+  border-bottom: 0;
+}
+.thumbnail-cache-preflight-roots strong {
+  font-size: 0.8125rem;
+}
+.thumbnail-cache-preflight-roots code {
+  color: var(--muted);
+}
+.long-task-warning {
+  margin: 16px 0 0;
+  padding: 12px 14px;
+  border-inline-start: 3px solid var(--warning);
+  background: color-mix(in srgb, var(--warning) 10%, var(--paper-raised));
+  color: var(--ink-soft);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+.long-task-warning strong {
+  color: var(--ink);
 }
 .destructive-dialog {
   border-top: 4px solid var(--danger);

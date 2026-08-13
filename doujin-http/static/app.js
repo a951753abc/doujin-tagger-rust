@@ -66,6 +66,15 @@
     partial: "部分完成",
     failed: "搜尋失敗",
   };
+  const SCAN_ISSUE_KIND_LABELS = {
+    no_roots: "沒有來源",
+    missing_root: "來源不存在",
+    read_directory: "無法讀取資料夾",
+    read_entry: "無法讀取項目",
+    non_unicode_filename: "檔名編碼無效",
+    ingest: "無法寫入目錄",
+    reconcile: "無法核對既有收藏",
+  };
 
   const state = {
     route: "shelf",
@@ -112,8 +121,11 @@
     activityScan: null,
     activityThumbnailFailures: new Set(),
     thumbnailCacheJob: null,
+    thumbnailCachePreflight: null,
+    thumbnailCacheRetrying: false,
     thumbnailCacheTimer: null,
     settingsRoots: [],
+    selectionContext: null,
     lastBatchActivity: null,
     batchRetry: null,
     batchRunning: null,
@@ -244,9 +256,22 @@
       thumbnailCachePercent: byId("thumbnail-cache-percent"),
       thumbnailCacheProgressBar: byId("thumbnail-cache-progress-bar"),
       thumbnailCacheDetail: byId("thumbnail-cache-detail"),
+      thumbnailCacheActions: byId("thumbnail-cache-actions"),
+      thumbnailCacheViewFailures: byId("thumbnail-cache-view-failures"),
+      thumbnailCacheRetryFailures: byId("thumbnail-cache-retry-failures"),
+      thumbnailCachePreflightDialog: byId("thumbnail-cache-preflight-dialog"),
+      thumbnailCacheConfirmForm: byId("thumbnail-cache-confirm-form"),
+      thumbnailCachePreflightSummary: byId("thumbnail-cache-preflight-summary"),
+      thumbnailCachePreflightRoots: byId("thumbnail-cache-preflight-roots"),
+      thumbnailCacheConfirm: byId("thumbnail-cache-confirm"),
       rootList: byId("root-list"),
       rootForm: byId("root-form"),
       scanButton: byId("scan-button"),
+      scanResultsDialog: byId("scan-results-dialog"),
+      scanResultsSummary: byId("scan-results-summary"),
+      scanIssueList: byId("scan-issue-list"),
+      scanResultsEmpty: byId("scan-results-empty"),
+      scanResultsRetry: byId("scan-results-retry"),
       toastRegion: byId("toast-region"),
       selectionRail: byId("selection-rail"),
       selectionCount: byId("selection-count"),
@@ -378,8 +403,15 @@
     byId("clear-manual-button").addEventListener("click", clearManualMetadata);
     ui.settingsForm.addEventListener("submit", saveSettings);
     ui.thumbnailCacheForm.addEventListener("submit", startThumbnailCacheJob);
+    ui.thumbnailCacheConfirmForm.addEventListener("submit", confirmThumbnailCacheJob);
+    ui.thumbnailCacheViewFailures.addEventListener("click", openThumbnailCacheFailures);
+    ui.thumbnailCacheRetryFailures.addEventListener("click", retryThumbnailCacheFailures);
     ui.rootForm.addEventListener("submit", registerRoot);
     ui.scanButton.addEventListener("click", startScan);
+    ui.scanResultsRetry.addEventListener("click", () => {
+      ui.scanResultsDialog.close();
+      startScan();
+    });
     byId("select-loaded").addEventListener("click", selectLoadedCollections);
     byId("invert-loaded").addEventListener("click", invertLoadedSelection);
     byId("clear-selection").addEventListener("click", clearSelection);
@@ -683,11 +715,13 @@
         }));
         jobs.filter(Boolean).forEach((job) => state.activityExternalJobs.set(job.id, job));
       }
-      try {
-        const cacheJobs = await api("/api/thumbnail-cache-jobs/current");
-        updateThumbnailCacheJob(cacheJobs.job, { announce: false });
-      } catch (_) {
-        // Health already reports connectivity; keep the last known job snapshot.
+      const [cacheJobs, latestScan] = await Promise.all([
+        api("/api/thumbnail-cache-jobs/current").catch(() => null),
+        api("/api/scans/latest").catch(() => null),
+      ]);
+      if (cacheJobs) updateThumbnailCacheJob(cacheJobs.job, { announce: false });
+      if (latestScan?.scan && state.activityScan?.status !== "running") {
+        state.activityScan = scanActivity(latestScan.scan);
       }
     }
 
@@ -771,10 +805,18 @@
       const detail = scan.status === "running"
         ? "正在掃描已登記的資料夾來源；目前沒有可用的百分比。"
         : scan.message || "掃描已完成。";
-      ui.activityList.append(activityItem(`scan ${scan.status}`, scan.status === "running" ? "重新掃描進行中" : "最近一次掃描", detail, scan.status === "partial" ? "部分完成" : scan.status === "failed" ? "失敗" : scan.status === "succeeded" ? "完成" : "進行中", "查看設定", () => {
-        setActivityPanelOpen(false);
-        location.hash = "settings";
-      }));
+      const canInspect = scan.status !== "running" && (scan.id || scan.issues?.length);
+      ui.activityList.append(activityItem(
+        `scan ${scan.status}`,
+        scan.status === "running" ? "重新掃描進行中" : `最近一次掃描${scan.id ? ` #${scan.id}` : ""}`,
+        detail,
+        scan.status === "partial" ? "部分完成" : scan.status === "failed" ? "失敗" : scan.status === "succeeded" ? "完成" : "進行中",
+        canInspect ? "查看掃描結果" : "查看設定",
+        canInspect ? showScanResults : () => {
+          setActivityPanelOpen(false);
+          location.hash = "settings";
+        },
+      ));
     }
     [...activeJobs, ...failedJobs].slice(0, 8).forEach((job) => {
       const fields = job.fields.map((field) => METADATA_LABELS[field] || field).join("、");
@@ -791,10 +833,19 @@
       const running = job.status === "running";
       const hasErrors = job.status === "completed_with_errors";
       const eta = running ? formatThumbnailEta(job.estimated_seconds_remaining) : hasErrors ? `${formatNumber(job.failed)} 張失敗` : "全部完成";
-      ui.activityList.append(activityItem(`thumbnail-cache ${running ? "running" : hasErrors ? "failed" : "succeeded"}`, running ? "正在建立快取縮圖" : "最近一次快取縮圖", `${formatNumber(job.ready + job.failed)} / ${formatNumber(job.total)} · ${formatProgressPercent(job.progress_percent)} · ${eta}`, running ? "進行中" : hasErrors ? "部分完成" : "完成", "查看設定", () => {
-        setActivityPanelOpen(false);
-        location.hash = "settings";
-      }));
+      ui.activityList.append(activityItem(
+        `thumbnail-cache ${running ? "running" : hasErrors ? "failed" : "succeeded"}`,
+        running ? "正在建立快取縮圖" : `最近一次快取縮圖 #${job.id}`,
+        `${formatNumber(job.ready + job.failed)} / ${formatNumber(job.total)} · ${formatProgressPercent(job.progress_percent)} · ${eta}`,
+        running ? "進行中" : hasErrors ? "部分完成" : "完成",
+        hasErrors ? `查看 ${formatNumber(job.failed)} 本失敗收藏` : "查看設定",
+        hasErrors ? openThumbnailCacheFailures : () => {
+          setActivityPanelOpen(false);
+          location.hash = "settings";
+        },
+        hasErrors ? "重試失敗項目" : null,
+        hasErrors ? retryThumbnailCacheFailures : null,
+      ));
     }
     if (state.batchRunning) {
       const batch = state.batchRunning;
@@ -819,7 +870,7 @@
     state.activitySignature = signature;
   }
 
-  function activityItem(className, title, detail, status, actionLabel, action) {
+  function activityItem(className, title, detail, status, actionLabel, action, secondaryActionLabel = null, secondaryAction = null) {
     const item = el("li", `activity-item ${className}`);
     const copy = el("div", "");
     copy.append(el("strong", "", title), el("p", "", detail));
@@ -827,8 +878,93 @@
     const button = el("button", "text-button", actionLabel);
     button.type = "button";
     button.addEventListener("click", action);
-    item.append(copy, badge, button);
+    const actions = el("div", "activity-actions");
+    actions.append(button);
+    if (secondaryActionLabel && secondaryAction) {
+      const secondary = el("button", "text-button activity-secondary-action", secondaryActionLabel);
+      secondary.type = "button";
+      secondary.addEventListener("click", secondaryAction);
+      actions.append(secondary);
+    }
+    item.append(copy, badge, actions);
     return item;
+  }
+
+  function scanActivity(scan) {
+    const issues = Array.isArray(scan.issues) ? scan.issues : [];
+    const summary = scan.summary || null;
+    const issueCount = issues.length;
+    let message = scan.error_message || "掃描已完成。";
+    if (summary) {
+      message = `新增 ${formatNumber(summary.added || 0)}、略過 ${formatNumber(summary.skipped || 0)}、問題 ${formatNumber(issueCount)}`;
+    }
+    return {
+      id: Number(scan.id || scan.scan_run_id) || null,
+      status: scan.status || "failed",
+      summary,
+      issues,
+      errorMessage: scan.error_message || null,
+      message,
+      updatedAt: scan.completed_at || scan.updatedAt || new Date().toISOString(),
+    };
+  }
+
+  async function showScanResults() {
+    setActivityPanelOpen(false);
+    let scan = state.activityScan;
+    if (!scan) return;
+    ui.scanResultsSummary.textContent = "正在讀取掃描結果…";
+    ui.scanIssueList.replaceChildren();
+    ui.scanResultsEmpty.hidden = true;
+    ui.scanResultsDialog.showModal();
+    if (scan.id) {
+      try {
+        scan = scanActivity(await api(`/api/scans/${scan.id}`));
+        state.activityScan = scan;
+        renderActivityCenter();
+      } catch (error) {
+        ui.scanResultsSummary.textContent = `無法讀取掃描 #${scan.id}：${error.message}`;
+        ui.scanResultsEmpty.hidden = false;
+        return;
+      }
+    }
+    renderScanResults(scan);
+  }
+
+  function renderScanResults(scan) {
+    const issues = scan.issues || [];
+    const status = scan.status === "partial" ? "部分完成" : scan.status === "failed" ? "失敗" : "完成";
+    ui.scanResultsSummary.textContent = `掃描${scan.id ? ` #${scan.id}` : ""}${status}；共 ${formatNumber(issues.length)} 個逐筆問題。${scan.errorMessage ? ` ${scan.errorMessage}` : ""}`;
+    ui.scanIssueList.replaceChildren();
+    ui.scanResultsEmpty.hidden = issues.length !== 0;
+    issues.forEach((issue) => {
+      const item = el("li", "scan-issue-item");
+      const heading = el("div", "scan-issue-heading");
+      heading.append(
+        el("strong", "", SCAN_ISSUE_KIND_LABELS[issue.kind] || issue.kind || "掃描問題"),
+        el("code", "", issue.kind || "unknown"),
+      );
+      const path = el("code", "scan-issue-path", issue.path || "未指定路徑");
+      const message = el("p", "", issue.message || "沒有提供錯誤訊息");
+      const copy = el("button", "text-button", "複製路徑");
+      copy.type = "button";
+      copy.disabled = !issue.path;
+      copy.addEventListener("click", () => copyScanIssuePath(issue.path, copy));
+      item.append(heading, path, message, copy);
+      ui.scanIssueList.append(item);
+    });
+  }
+
+  async function copyScanIssuePath(path, button) {
+    if (!path) return;
+    try {
+      await navigator.clipboard.writeText(path);
+      const original = button.textContent;
+      button.textContent = "已複製";
+      window.setTimeout(() => { button.textContent = original; }, 1600);
+    } catch (_) {
+      toast("無法存取剪貼簿；請手動選取路徑", true);
+    }
   }
 
   async function openActivityCollection(collectionId) {
@@ -2542,6 +2678,7 @@
       state.selectedIds.delete(collection.id);
       state.selectedRecords.delete(collection.id);
     }
+    if (state.selectedIds.size === 0) state.selectionContext = null;
     const checkbox = ui.results.querySelector(`[data-collection-id="${collection.id}"]`)?.closest(".collection-item")?.querySelector(".collection-checkbox");
     if (checkbox) updateSelectionCheckbox(checkbox, checked);
     updateSelectionUI();
@@ -2573,6 +2710,7 @@
   function clearSelection() {
     state.selectedIds.clear();
     state.selectedRecords.clear();
+    state.selectionContext = null;
     syncResultCheckboxes();
     updateSelectionUI();
   }
@@ -2625,7 +2763,9 @@
     ui.selectionEmpty.hidden = collections.length !== 0;
     ui.batchTools.hidden = collections.length === 0;
     ui.workbenchSelectionSummary.textContent = collections.length
-      ? `本次操作清單包含 ${formatNumber(collections.length)} 筆已選收藏；目前查詢已載入 ${formatNumber(state.items.length)} 筆，共符合 ${formatNumber(state.total)} 筆。`
+      ? state.selectionContext === "thumbnail_failures"
+        ? `縮圖失敗工作清單包含 ${formatNumber(collections.length)} 筆收藏；可逐筆查看，或返回設定重試整批失敗項目。`
+        : `本次操作清單包含 ${formatNumber(collections.length)} 筆已選收藏；目前查詢已載入 ${formatNumber(state.items.length)} 筆，共符合 ${formatNumber(state.total)} 筆。`
       : "目前沒有批次操作清單。";
     collections.forEach((collection, index) => {
       const item = el("li", "selected-collection-item");
@@ -2644,7 +2784,12 @@
       const remove = el("button", "text-button", "移出清單");
       remove.type = "button";
       remove.addEventListener("click", () => toggleCollectionSelection(collection, false));
-      item.append(cover, copy, remove);
+      const view = el("button", "text-button", "查看藏書");
+      view.type = "button";
+      view.addEventListener("click", () => navigateToCollection(collection));
+      const actions = el("div", "selected-collection-actions");
+      actions.append(view, remove);
+      item.append(cover, copy, actions);
       ui.selectedCollectionList.append(item);
     });
   }
@@ -3318,14 +3463,14 @@
       checkbox.name = "root_id";
       checkbox.value = String(root.id);
       checkbox.checked = selectedIds.has(root.id);
-      checkbox.disabled = running;
+      checkbox.disabled = running || state.thumbnailCacheRetrying;
       const copy = el("span", "", root.label);
       copy.append(el("small", "", root.path));
       label.append(checkbox, copy);
       ui.thumbnailCacheRoots.append(label);
     });
-    ui.thumbnailCacheStart.disabled = running;
-    ui.thumbnailCacheStart.textContent = running ? "建立中…" : "開始建立";
+    ui.thumbnailCacheStart.disabled = running || state.thumbnailCacheRetrying;
+    ui.thumbnailCacheStart.textContent = running ? "建立中…" : state.thumbnailCacheRetrying ? "重新排入中…" : "開始建立";
   }
 
   function renderThumbnailCacheProgress() {
@@ -3339,16 +3484,20 @@
     ui.thumbnailCachePercent.textContent = percent;
     ui.thumbnailCacheProgressBar.value = job.progress_percent;
     ui.thumbnailCacheProgressBar.textContent = percent;
+    ui.thumbnailCacheActions.hidden = !hasErrors;
+    ui.thumbnailCacheViewFailures.textContent = `查看 ${formatNumber(job.failed)} 本失敗收藏`;
+    ui.thumbnailCacheRetryFailures.disabled = state.thumbnailCacheRetrying;
+    ui.thumbnailCacheRetryFailures.textContent = state.thumbnailCacheRetrying ? "重新排入中…" : "重試失敗項目";
     if (running) {
       ui.thumbnailCacheStatus.textContent = "正在建立快取縮圖";
       if (Number(job.progress_percent) === 0 && job.running > 0) {
-        ui.thumbnailCacheDetail.textContent = `已有 ${formatNumber(job.running)} 張處理中、${formatNumber(job.pending)} 張等待，已經過 ${formatDuration(job.elapsed_seconds)} · ${formatThumbnailEta(job.estimated_seconds_remaining)}`;
+        ui.thumbnailCacheDetail.textContent = `已有 ${formatNumber(job.running)} 張處理中、${formatNumber(job.pending)} 張等待，已經過 ${formatDuration(job.elapsed_seconds)} · ${formatThumbnailEta(job.estimated_seconds_remaining)}。本批開始後無法中止，可離開此頁繼續背景處理。`;
       } else {
-        ui.thumbnailCacheDetail.textContent = `完成 ${formatNumber(job.ready)}、建立中 ${formatNumber(job.running)}、等待 ${formatNumber(job.pending)} · ${formatThumbnailEta(job.estimated_seconds_remaining)}`;
+        ui.thumbnailCacheDetail.textContent = `完成 ${formatNumber(job.ready)}、建立中 ${formatNumber(job.running)}、等待 ${formatNumber(job.pending)} · ${formatThumbnailEta(job.estimated_seconds_remaining)}。本批開始後無法中止，可離開此頁繼續背景處理。`;
       }
     } else if (hasErrors) {
       ui.thumbnailCacheStatus.textContent = "快取縮圖已部分完成";
-      ui.thumbnailCacheDetail.textContent = `完成 ${formatNumber(job.ready)} 張，${formatNumber(job.failed)} 張失敗；可從收藏詳細資料個別重建。`;
+      ui.thumbnailCacheDetail.textContent = `完成 ${formatNumber(job.ready)} 張，${formatNumber(job.failed)} 張失敗；可直接查看失敗收藏或整批重新排入。`;
     } else if (job.total === 0) {
       ui.thumbnailCacheStatus.textContent = "所選範圍沒有收藏";
       ui.thumbnailCacheDetail.textContent = "不需要建立快取縮圖。";
@@ -3368,20 +3517,118 @@
       return;
     }
     ui.thumbnailCacheStart.disabled = true;
-    ui.thumbnailCacheStart.textContent = "準備中…";
+    ui.thumbnailCacheStart.textContent = "計算範圍中…";
     try {
-      const job = await api("/api/thumbnail-cache-jobs", {
+      const preflight = await api("/api/thumbnail-cache-jobs/preflight", {
         method: "POST",
         body: { root_ids: rootIds },
       });
+      state.thumbnailCachePreflight = preflight;
+      renderThumbnailCachePreflight(preflight);
+      ui.thumbnailCachePreflightDialog.showModal();
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      renderThumbnailCacheRoots();
+    }
+  }
+
+  function renderThumbnailCachePreflight(preflight) {
+    ui.thumbnailCachePreflightSummary.textContent = `${formatNumber(preflight.root_count)} 個來源，共 ${formatNumber(preflight.collection_count)} 本收藏；其中 ${formatNumber(preflight.requires_build)} 張縮圖需要建立或更新，${formatNumber(preflight.ready)} 張已有有效快取。`;
+    ui.thumbnailCachePreflightRoots.replaceChildren();
+    const rootIds = new Set(preflight.root_ids || []);
+    state.settingsRoots.filter((root) => rootIds.has(root.id)).forEach((root) => {
+      const item = el("li", "");
+      item.append(el("strong", "", root.label), el("code", "", root.path));
+      ui.thumbnailCachePreflightRoots.append(item);
+    });
+    ui.thumbnailCacheConfirm.textContent = preflight.requires_build ? `開始建立 ${formatNumber(preflight.requires_build)} 張` : "確認範圍";
+  }
+
+  async function confirmThumbnailCacheJob(event) {
+    event.preventDefault();
+    const preflight = state.thumbnailCachePreflight;
+    if (!preflight) return;
+    ui.thumbnailCacheConfirm.disabled = true;
+    ui.thumbnailCacheConfirm.textContent = "啟動中…";
+    try {
+      const job = await api("/api/thumbnail-cache-jobs", {
+        method: "POST",
+        body: { root_ids: preflight.root_ids },
+      });
+      state.thumbnailCachePreflight = null;
+      ui.thumbnailCachePreflightDialog.close();
       updateThumbnailCacheJob(job, { announce: false });
       renderThumbnailCacheRoots();
       scheduleThumbnailCachePolling();
-      if (job.status === "running") toast(`已開始檢查並建立 ${formatNumber(job.total)} 張快取縮圖`);
+      if (job.status === "running") toast(`已開始檢查並建立 ${formatNumber(job.total)} 張快取縮圖；可離開此頁`);
       else if (job.status === "completed_with_errors") toast(`快取縮圖已部分完成：${formatNumber(job.failed)} 張失敗`, true);
       else toast(job.total ? "所選範圍的快取縮圖皆已備妥" : "所選範圍沒有需要建立的收藏");
     } catch (error) {
       toast(error.message, true);
+    } finally {
+      ui.thumbnailCacheConfirm.disabled = false;
+      if (state.thumbnailCachePreflight) renderThumbnailCachePreflight(state.thumbnailCachePreflight);
+    }
+  }
+
+  async function openThumbnailCacheFailures() {
+    const job = state.thumbnailCacheJob;
+    if (!job?.failed) return;
+    if (state.selectedIds.size > 0 && !confirmSelectionClear()) return;
+    try {
+      const failures = await api("/api/thumbnail-cache-jobs/current/failures");
+      if (failures.job_id !== job.id) {
+        toast("快取縮圖工作已更新，請重新整理狀態後再試", true);
+        return;
+      }
+      if (!failures.items.length) {
+        toast("失敗收藏已不存在或無法載入", true);
+        return;
+      }
+      clearSelection();
+      failures.items.forEach((collection) => {
+        state.selectedIds.add(collection.id);
+        state.selectedRecords.set(collection.id, collection);
+      });
+      state.selectionContext = "thumbnail_failures";
+      state.filters = {};
+      state.filterTags = [];
+      state.libraryDataKey = "";
+      state.libraryRouteHash = "#library";
+      state.libraryFocusId = null;
+      state.libraryRestorePage = 1;
+      state.libraryLoaded = false;
+      syncFilterDraftFromApplied();
+      updateFilterCount();
+      updateLibraryNavHref();
+      updateSelectionUI();
+      setActivityPanelOpen(false);
+      location.hash = "workbench";
+      if (failures.missing_collection_ids.length) {
+        toast(`${formatNumber(failures.missing_collection_ids.length)} 筆失敗收藏已不在目前目錄中`, true);
+      }
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  async function retryThumbnailCacheFailures() {
+    if (state.thumbnailCacheRetrying) return;
+    state.thumbnailCacheRetrying = true;
+    renderThumbnailCacheProgress();
+    renderThumbnailCacheRoots();
+    try {
+      const job = await api("/api/thumbnail-cache-jobs/current/retry-failures", { method: "POST" });
+      updateThumbnailCacheJob(job, { announce: false });
+      scheduleThumbnailCachePolling();
+      setActivityPanelOpen(false);
+      toast(`已將 ${formatNumber(job.total)} 張失敗縮圖重新排入；已完成項目不會回滾`);
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      state.thumbnailCacheRetrying = false;
+      renderThumbnailCacheProgress();
       renderThumbnailCacheRoots();
     }
   }
@@ -3537,23 +3784,19 @@
     const original = ui.scanButton.textContent;
     ui.scanButton.disabled = true;
     ui.scanButton.textContent = "掃描中…";
-    state.activityScan = { status: "running", message: "正在掃描資料夾來源", updatedAt: new Date().toISOString() };
+    state.activityScan = { id: null, status: "running", issues: [], message: "正在掃描資料夾來源", updatedAt: new Date().toISOString() };
     renderActivityCenter();
     try {
       const report = await api("/api/scans", { method: "POST" });
       const summary = report.summary;
       const prefix = report.status === "partial" ? "掃描部分完成" : "掃描完成";
-      state.activityScan = {
-        status: report.status === "partial" ? "partial" : "succeeded",
-        message: `新增 ${formatNumber(summary.added)}、略過 ${formatNumber(summary.skipped)}、問題 ${formatNumber(report.issues.length)}`,
-        updatedAt: new Date().toISOString(),
-      };
+      state.activityScan = scanActivity(report);
       toast(`${prefix}：新增 ${formatNumber(summary.added)}、略過 ${formatNumber(summary.skipped)}、問題 ${formatNumber(report.issues.length)}`, report.status === "partial");
       invalidateDerivedData({ library: true });
       state.libraryFocusId = null;
       state.libraryDataKey = null;
     } catch (error) {
-      state.activityScan = { status: "failed", message: error.message, updatedAt: new Date().toISOString() };
+      state.activityScan = { id: null, status: "failed", issues: [], message: error.message, updatedAt: new Date().toISOString() };
       toast(error.message, true);
     } finally {
       ui.scanButton.disabled = false;

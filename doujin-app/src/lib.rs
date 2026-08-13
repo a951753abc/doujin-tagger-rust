@@ -121,6 +121,13 @@ pub struct ThumbnailCachePreparation {
     pub failed_collection_ids: Vec<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThumbnailCachePreflight {
+    pub root_ids: Vec<i64>,
+    pub collection_ids: Vec<i64>,
+    pub ready: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApplicationScanStatus {
@@ -976,7 +983,27 @@ impl<R: RecycleBin> ApplicationService<R> {
         &mut self,
         root_ids: &[i64],
     ) -> ApplicationResult<ThumbnailCachePreparation> {
-        self.thumbnail_config()?;
+        let preflight = self.thumbnail_cache_preflight(root_ids)?;
+        let collection_ids = preflight.collection_ids;
+        let mut prepared_collection_ids = Vec::with_capacity(collection_ids.len());
+        let mut failed_collection_ids = Vec::new();
+        for collection_id in collection_ids {
+            match self.request_thumbnail_with_priority(collection_id, BATCH_THUMBNAIL_PRIORITY) {
+                Ok(_) => prepared_collection_ids.push(collection_id),
+                Err(_) => failed_collection_ids.push(collection_id),
+            }
+        }
+        Ok(ThumbnailCachePreparation {
+            collection_ids: prepared_collection_ids,
+            failed_collection_ids,
+        })
+    }
+
+    pub fn thumbnail_cache_preflight(
+        &self,
+        root_ids: &[i64],
+    ) -> ApplicationResult<ThumbnailCachePreflight> {
+        let config = self.thumbnail_config()?;
         let mut selected_root_ids = root_ids.to_vec();
         selected_root_ids.sort_unstable();
         selected_root_ids.dedup();
@@ -1000,14 +1027,60 @@ impl<R: RecycleBin> ApplicationService<R> {
                 "快取建立範圍包含不存在或已停用的資料夾來源".to_owned(),
             ));
         }
-
         let collection_ids = self
             .repository
             .active_collection_ids_for_roots(&selected_root_ids)?;
+        let settings_fingerprint = config.settings_fingerprint();
+        let ready = collection_ids
+            .iter()
+            .filter(|collection_id| {
+                let Ok(state) = self.repository.thumbnail_state(**collection_id) else {
+                    return false;
+                };
+                let Ok(source_path) = self.repository.active_collection_file_path(**collection_id)
+                else {
+                    return false;
+                };
+                let Ok(current_source_fingerprint) = source_fingerprint(&source_path) else {
+                    return false;
+                };
+                let expected_cache_path = config.cache_path(**collection_id);
+                state.status == ThumbnailStatus::Ready
+                    && state.source_fingerprint == current_source_fingerprint
+                    && state.settings_fingerprint == settings_fingerprint
+                    && state.cache_path == expected_cache_path
+                    && expected_cache_path.is_file()
+            })
+            .count();
+        Ok(ThumbnailCachePreflight {
+            root_ids: selected_root_ids,
+            collection_ids,
+            ready,
+        })
+    }
+
+    pub fn thumbnail_failed_collection_ids(
+        &self,
+        collection_ids: &[i64],
+    ) -> ApplicationResult<Vec<i64>> {
+        Ok(self
+            .repository
+            .thumbnail_failed_or_missing_collection_ids(collection_ids)?)
+    }
+
+    pub fn retry_thumbnails(
+        &mut self,
+        collection_ids: &[i64],
+    ) -> ApplicationResult<ThumbnailCachePreparation> {
+        let mut collection_ids = collection_ids.to_vec();
+        collection_ids.sort_unstable();
+        collection_ids.dedup();
         let mut prepared_collection_ids = Vec::with_capacity(collection_ids.len());
         let mut failed_collection_ids = Vec::new();
         for collection_id in collection_ids {
-            match self.request_thumbnail_with_priority(collection_id, BATCH_THUMBNAIL_PRIORITY) {
+            match self.rebuild_thumbnail(collection_id).and_then(|_| {
+                self.request_thumbnail_with_priority(collection_id, BATCH_THUMBNAIL_PRIORITY)
+            }) {
                 Ok(_) => prepared_collection_ids.push(collection_id),
                 Err(_) => failed_collection_ids.push(collection_id),
             }

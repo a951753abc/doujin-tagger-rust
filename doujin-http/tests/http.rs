@@ -16,7 +16,7 @@ use doujin_storage::CatalogRepository;
 use doujin_storage::metadata::{
     ConfidenceEvidence, ExternalCandidate, ExternalCandidateOutcome, MetadataField, MetadataValue,
 };
-use doujin_storage::thumbnails::ThumbnailErrorKind;
+use doujin_storage::thumbnails::{ThumbnailErrorKind, ThumbnailStatus};
 use doujin_thumbnails::{
     ThumbnailConfig, ThumbnailError, ThumbnailGenerationSuccess, transparent_placeholder_webp,
 };
@@ -284,10 +284,13 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("src=\"/assets/app.js?v=42\" defer"));
+    assert!(document.contains("src=\"/assets/app.js?v=43\" defer"));
     assert!(document.contains("id=\"library-scroll-sentinel\""));
     assert!(document.contains("id=\"library-load-more\""));
     assert!(document.contains("id=\"library-load-announcer\""));
+    assert!(document.contains("id=\"scan-results-dialog\""));
+    assert!(document.contains("id=\"thumbnail-cache-preflight-dialog\""));
+    assert!(document.contains("id=\"thumbnail-cache-retry-failures\""));
     assert!(document.contains("全選已載入"));
     assert!(document.contains("新載入結果不會自動加入"));
     assert!(!document.contains("目前頁面選取"));
@@ -344,6 +347,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(stylesheet.contains(".batch-progress"));
     assert!(stylesheet.contains(".collection-window-spacer"));
     assert!(stylesheet.contains("contain: layout paint style"));
+    assert!(stylesheet.contains(".scan-issue-list"));
+    assert!(stylesheet.contains(".long-task-warning"));
     assert!(!stylesheet.contains("font-size: 0.6875rem;"));
     assert!(!stylesheet.contains("font-size: 0.625rem;"));
     assert!(!stylesheet.contains("font-size: 0.5625rem;"));
@@ -422,6 +427,11 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("function renderCollectionWindow"));
     assert!(script.contains("function collectionWindowRange"));
     assert!(script.contains("function ensureCollectionMounted"));
+    assert!(script.contains("function showScanResults"));
+    assert!(script.contains("function openThumbnailCacheFailures"));
+    assert!(script.contains("function retryThumbnailCacheFailures"));
+    assert!(script.contains("/api/thumbnail-cache-jobs/preflight"));
+    assert!(script.contains("/api/scans/latest"));
     assert!(script.contains("if (state.route === \"workbench\") renderWorkbenchSelection()"));
     assert!(!script.contains("document.querySelectorAll(\".collection-item-button\")"));
     assert!(!script.contains("function runSelectedRequests"));
@@ -1932,6 +1942,40 @@ async fn thumbnail_cache_job_uses_selected_roots_and_reports_progress() {
 
     let shared = share_application(application);
     let server = RunningServer::start_shared(Arc::clone(&shared)).await;
+    let preflight = server
+        .request_json(
+            "POST",
+            "/api/thumbnail-cache-jobs/preflight",
+            &serde_json::json!({ "root_ids": [selected_root_id] }),
+        )
+        .await;
+    assert_eq!(200, preflight.status);
+    assert_eq!(1, preflight.json["root_count"]);
+    assert_eq!(3, preflight.json["collection_count"]);
+    assert_eq!(1, preflight.json["ready"]);
+    assert_eq!(2, preflight.json["requires_build"]);
+    assert_eq!(false, preflight.json["cancellation_supported"]);
+    assert!(
+        shared
+            .lock()
+            .expect("application")
+            .repository()
+            .thumbnail_state(pending_id)
+            .is_err(),
+        "preflight must not enqueue thumbnail work"
+    );
+    fs::remove_file(&ready_state.cache_path).expect("remove ready cache for preflight");
+    let missing_cache_preflight = server
+        .request_json(
+            "POST",
+            "/api/thumbnail-cache-jobs/preflight",
+            &serde_json::json!({ "root_ids": [selected_root_id] }),
+        )
+        .await;
+    assert_eq!(0, missing_cache_preflight.json["ready"]);
+    assert_eq!(3, missing_cache_preflight.json["requires_build"]);
+    fs::write(&ready_state.cache_path, transparent_placeholder_webp())
+        .expect("restore ready cache after preflight");
     let started = server
         .request_json(
             "POST",
@@ -2060,6 +2104,86 @@ async fn thumbnail_cache_job_uses_selected_roots_and_reports_progress() {
     assert_eq!(
         409, invalid.status,
         "running job is rejected before new scope"
+    );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn thumbnail_cache_failures_can_be_listed_and_requeued() {
+    let tree = TestTree::new("thumbnail-cache-failure-retry");
+    let (mut application, collection_id) = thumbnail_application(&tree);
+    let root_id = application
+        .library_roots()
+        .expect("library roots")
+        .into_iter()
+        .next()
+        .expect("thumbnail root")
+        .id;
+    application
+        .request_thumbnail(collection_id)
+        .expect("request thumbnail");
+    application
+        .start_thumbnail_generation(collection_id)
+        .expect("start thumbnail");
+    application
+        .finish_thumbnail_generation(
+            collection_id,
+            Err(ThumbnailError {
+                kind: ThumbnailErrorKind::InvalidArchive,
+                message: "broken archive".to_owned(),
+            }),
+        )
+        .expect("fail thumbnail");
+    let shared = share_application(application);
+    let server = RunningServer::start_shared(Arc::clone(&shared)).await;
+
+    let started = server
+        .request_json(
+            "POST",
+            "/api/thumbnail-cache-jobs",
+            &serde_json::json!({ "root_ids": [root_id] }),
+        )
+        .await;
+    assert_eq!(200, started.status);
+    assert_eq!("completed_with_errors", started.json["status"]);
+    assert_eq!(1, started.json["failed"]);
+    assert_eq!(
+        serde_json::json!([collection_id]),
+        started.json["failed_collection_ids"]
+    );
+
+    let failures = server
+        .request("GET", "/api/thumbnail-cache-jobs/current/failures", &[])
+        .await;
+    assert_eq!(200, failures.status);
+    assert_eq!(started.json["id"], failures.json["job_id"]);
+    assert_eq!(collection_id, failures.json["items"][0]["id"]);
+    assert_eq!(
+        Value::Array(Vec::new()),
+        failures.json["missing_collection_ids"]
+    );
+
+    let retried = server
+        .request(
+            "POST",
+            "/api/thumbnail-cache-jobs/current/retry-failures",
+            &[],
+        )
+        .await;
+    assert_eq!(200, retried.status);
+    assert_eq!("running", retried.json["status"]);
+    assert_eq!(1, retried.json["pending"]);
+    assert_eq!(0, retried.json["failed"]);
+    assert!(retried.json["id"].as_u64() > started.json["id"].as_u64());
+    assert_eq!(
+        ThumbnailStatus::Pending,
+        shared
+            .lock()
+            .expect("application")
+            .repository()
+            .thumbnail_state(collection_id)
+            .expect("retried thumbnail state")
+            .status
     );
     server.stop().await;
 }
@@ -2303,6 +2427,10 @@ async fn health_and_scan_endpoints_work_over_a_real_loopback_socket() {
     assert_eq!("succeeded", persisted.json["status"]);
     assert_eq!(1, persisted.json["summary"]["added"]);
     assert_eq!(Value::Array(Vec::new()), persisted.json["issues"]);
+    let latest = server.request("GET", "/api/scans/latest", &[]).await;
+    assert_eq!(200, latest.status);
+    assert_eq!(scan_run_id, latest.json["scan"]["id"]);
+    assert_eq!("succeeded", latest.json["scan"]["status"]);
     server.stop().await;
 }
 
@@ -2330,6 +2458,9 @@ async fn missing_configured_root_returns_a_persisted_partial_scan() {
         .await;
     assert_eq!("partial", persisted.json["status"]);
     assert_eq!("missing_root", persisted.json["issues"][0]["kind"]);
+    let latest = server.request("GET", "/api/scans/latest", &[]).await;
+    assert_eq!(scan_run_id, latest.json["scan"]["id"]);
+    assert_eq!("missing_root", latest.json["scan"]["issues"][0]["kind"]);
     server.stop().await;
 }
 

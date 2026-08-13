@@ -208,14 +208,29 @@ impl CatalogRepository {
             )
             .optional()?
             .ok_or(StorageError::ScanRunNotFound(scan_run_id))?;
-        Ok(ScanRunSnapshot {
-            id: row.0,
-            status: ScanRunStatus::parse(&row.1)?,
-            started_at: row.2,
-            completed_at: row.3,
-            summary_json: row.4,
-            error_message: row.5,
-        })
+        scan_run_snapshot(row)
+    }
+
+    pub fn latest_scan_run(&self) -> StorageResult<Option<ScanRunSnapshot>> {
+        self.connection
+            .query_row(
+                "SELECT id, status, started_at, completed_at, summary_json, error_message
+                 FROM scan_runs ORDER BY id DESC LIMIT 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                    ))
+                },
+            )
+            .optional()?
+            .map(scan_run_snapshot)
+            .transpose()
     }
 
     pub fn scan_issues(&self, scan_run_id: i64) -> StorageResult<Vec<ScanIssueSnapshot>> {
@@ -241,6 +256,26 @@ impl CatalogRepository {
             .connection
             .query_row("SELECT count(*) FROM scan_runs", [], |row| row.get(0))?)
     }
+}
+
+type ScanRunRow = (
+    i64,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+fn scan_run_snapshot(row: ScanRunRow) -> StorageResult<ScanRunSnapshot> {
+    Ok(ScanRunSnapshot {
+        id: row.0,
+        status: ScanRunStatus::parse(&row.1)?,
+        started_at: row.2,
+        completed_at: row.3,
+        summary_json: row.4,
+        error_message: row.5,
+    })
 }
 
 fn validate_completion(completion: &ScanCompletion) -> StorageResult<()> {

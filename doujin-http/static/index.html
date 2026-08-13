@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>私藏編目室</title>
-  <link rel="stylesheet" href="/assets/app.css?v=39">
-  <script src="/assets/app.js?v=42" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=40">
+  <script src="/assets/app.js?v=43" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -452,6 +452,10 @@
                 </div>
                 <progress id="thumbnail-cache-progress-bar" max="100" value="0" aria-label="快取縮圖建立進度">0%</progress>
                 <p id="thumbnail-cache-detail">正在計算工作範圍…</p>
+                <div class="thumbnail-cache-actions" id="thumbnail-cache-actions" hidden>
+                  <button class="text-button" id="thumbnail-cache-view-failures" type="button">查看失敗收藏</button>
+                  <button class="secondary-button" id="thumbnail-cache-retry-failures" type="button">重試失敗項目</button>
+                </div>
               </div>
             </section>
           </section>
@@ -497,6 +501,32 @@
     <footer><button class="text-button" id="refresh-activity" type="button">重新整理狀態</button></footer>
   </aside>
   <p class="visually-hidden" id="activity-announcer" role="status" aria-live="polite" aria-atomic="true"></p>
+
+  <dialog id="scan-results-dialog" aria-labelledby="scan-results-heading">
+    <div class="dialog-shell scan-results-shell">
+      <header><div><p class="eyebrow">SCAN RESULT / 掃描結果</p><h2 id="scan-results-heading">掃描需要處理的項目</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉掃描結果">×</button></header>
+      <p class="dialog-intro" id="scan-results-summary">正在讀取掃描結果…</p>
+      <ol class="scan-issue-list" id="scan-issue-list"></ol>
+      <div class="scan-results-empty" id="scan-results-empty" hidden>這次掃描沒有逐筆問題。</div>
+      <div class="dialog-footer split-footer">
+        <button class="secondary-button" id="scan-results-retry" type="button">重新掃描</button>
+        <button class="text-button" data-close-dialog type="button">關閉</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="thumbnail-cache-preflight-dialog" aria-labelledby="thumbnail-cache-preflight-heading">
+    <form class="dialog-shell thumbnail-cache-preflight-shell" id="thumbnail-cache-confirm-form">
+      <header><div><p class="eyebrow">PREFLIGHT / 執行前確認</p><h2 id="thumbnail-cache-preflight-heading">確認快取縮圖範圍</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉快取縮圖確認">×</button></header>
+      <p class="dialog-intro" id="thumbnail-cache-preflight-summary">正在計算工作範圍…</p>
+      <ul class="thumbnail-cache-preflight-roots" id="thumbnail-cache-preflight-roots"></ul>
+      <p class="long-task-warning"><strong>開始後無法中止本批工作。</strong>你可以離開設定頁，背景工作仍會繼續；已完成項目會保留，不需回滾。</p>
+      <div class="dialog-footer split-footer">
+        <button class="text-button" data-close-dialog type="button">取消</button>
+        <button class="primary-button" id="thumbnail-cache-confirm" type="submit">開始建立</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog class="mobile-detail-dialog" id="mobile-detail-dialog" aria-labelledby="detail-title">
     <div class="mobile-detail-sheet">
