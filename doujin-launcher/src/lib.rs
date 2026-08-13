@@ -13,10 +13,13 @@ use std::time::{Duration, Instant};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-const CONFIG_FILE: &str = "launcher.json";
-const INSTANCE_FILE: &str = "instance.json";
+/// state 目錄內記錄目前選取 catalog 的檔名。
+pub const CONFIG_FILE: &str = "launcher.json";
+/// state 目錄內由服務發布的 instance metadata 檔名。
+pub const INSTANCE_FILE: &str = "instance.json";
 const LAUNCH_LOCK_FILE: &str = "launcher.lock";
-const SERVICE_LOCK_FILE: &str = "service.lock";
+/// state 目錄內用來確保同一個 catalog 只有一個服務的 lock 檔名。
+pub const SERVICE_LOCK_FILE: &str = "service.lock";
 const START_TIMEOUT: Duration = Duration::from_secs(20);
 static INSTANCE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -29,9 +32,10 @@ pub enum LauncherCommand {
     Help,
 }
 
+/// [`CONFIG_FILE`] 的內容：目前選取的 catalog 絕對路徑。
 #[derive(Debug, Serialize, Deserialize)]
-struct LauncherConfig {
-    catalog: PathBuf,
+pub struct LauncherConfig {
+    pub catalog: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -419,7 +423,8 @@ fn browser_url(instance: &InstanceMetadata) -> String {
     }
 }
 
-fn onboarding_required(port: u16) -> io::Result<bool> {
+/// 首次開啟時是否要直接跳到設定頁：downloads 或 archive 來源任一未設定就回傳 `true`。
+pub fn onboarding_required(port: u16) -> io::Result<bool> {
     let roots = loopback_json(port, "/api/library-roots")?;
     let roots = roots["roots"]
         .as_array()
@@ -453,7 +458,8 @@ fn loopback_json(port: u16, path: &str) -> io::Result<serde_json::Value> {
     serde_json::from_str(body).map_err(io::Error::other)
 }
 
-fn new_instance_id() -> String {
+/// 產生一次啟動專用的 instance identity；同一 process 內連號、跨 process 以 PID 與時間戳區隔。
+pub fn new_instance_id() -> String {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -490,7 +496,8 @@ fn read_instance(path: &Path) -> Result<Option<InstanceMetadata>, Box<dyn std::e
     }
 }
 
-fn validate_catalog_destination(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+/// 檢查 catalog 目的地：必須是絕對路徑、不能是資料夾、父資料夾必須已存在。
+pub fn validate_catalog_destination(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if !path.is_absolute() {
         return Err("catalog path 必須是絕對路徑".into());
     }
@@ -504,7 +511,8 @@ fn validate_catalog_destination(path: &Path) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-fn write_json_atomic(path: &Path, value: &impl Serialize) -> io::Result<()> {
+/// 先寫 `.json.tmp` 再改名，避免中途失敗留下半寫入的狀態檔。
+pub fn write_json_atomic(path: &Path, value: &impl Serialize) -> io::Result<()> {
     let temporary = path.with_extension("json.tmp");
     fs::write(
         &temporary,
@@ -524,7 +532,9 @@ fn absolute_path(path: PathBuf) -> io::Result<PathBuf> {
     }
 }
 
-fn state_directory() -> io::Result<PathBuf> {
+/// 解析 launcher 與桌面版共用的 state 目錄：`DOUJIN_LAUNCHER_STATE_DIR` 優先，
+/// Windows 上其次是 `%LOCALAPPDATA%\Doujin Tagger`。
+pub fn state_directory() -> io::Result<PathBuf> {
     if let Some(path) = std::env::var_os("DOUJIN_LAUNCHER_STATE_DIR") {
         return absolute_path(PathBuf::from(path));
     }
