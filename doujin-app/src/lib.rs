@@ -1,6 +1,7 @@
 //! Application use cases over the scanner, repository, and file-operation service.
 
 pub mod duplicates;
+pub mod export;
 pub mod external_search;
 pub mod rename;
 
@@ -60,6 +61,7 @@ pub enum ApplicationError {
     Thumbnail(ThumbnailError),
     ThumbnailNotConfigured,
     ThumbnailCacheIo(std::io::Error),
+    ExportIo(std::io::Error),
     InvalidSettings(String),
 }
 
@@ -71,6 +73,7 @@ impl fmt::Display for ApplicationError {
             Self::Thumbnail(error) => write!(formatter, "thumbnail 錯誤：{error}"),
             Self::ThumbnailNotConfigured => formatter.write_str("thumbnail 服務尚未設定"),
             Self::ThumbnailCacheIo(error) => write!(formatter, "thumbnail cache I/O 錯誤：{error}"),
+            Self::ExportIo(error) => write!(formatter, "export I/O 錯誤：{error}"),
             Self::InvalidSettings(reason) => {
                 write!(formatter, "application settings 無效：{reason}")
             }
@@ -86,6 +89,7 @@ impl Error for ApplicationError {
             Self::Thumbnail(error) => Some(error),
             Self::ThumbnailNotConfigured => None,
             Self::ThumbnailCacheIo(error) => Some(error),
+            Self::ExportIo(error) => Some(error),
             Self::InvalidSettings(_) => None,
         }
     }

@@ -284,6 +284,212 @@ impl RunningServer {
 }
 
 #[tokio::test]
+async fn export_api_enforces_registered_roots_preflight_boundaries_and_completes_package() {
+    let tree = TestTree::new("export-api");
+    tree.zip("[Circle A] Book A.zip");
+    tree.zip("[Circle B] Book B.zip");
+    let export_directory = tree.root("exports");
+    fs::create_dir_all(&export_directory).expect("export directory");
+    let repository = CatalogRepository::open_in_memory().expect("catalog");
+    let launcher = RecordingLauncher::new(false);
+    let mut application =
+        ApplicationService::with_launcher(repository, NoopRecycleBin, launcher.clone(), None);
+    application
+        .run_scan(&[ScanRoot {
+            path: tree.library(),
+            source: SourceKind::Downloads,
+            label: "下載區".to_owned(),
+        }])
+        .expect("scan");
+    let server = RunningServer::start(application).await;
+
+    let empty = server.request("GET", "/api/export-roots", &[]).await;
+    assert_eq!(200, empty.status);
+    assert_eq!(0, empty.json["roots"].as_array().expect("roots").len());
+    let registered = server
+        .request_json(
+            "POST",
+            "/api/export-roots",
+            &serde_json::json!({
+                "path": export_directory.to_string_lossy(),
+                "label": "外接硬碟"
+            }),
+        )
+        .await;
+    assert_eq!(200, registered.status);
+    let root_id = registered.json["id"].as_i64().expect("root ID");
+    assert_eq!("外接硬碟", registered.json["label"]);
+
+    let relative = server
+        .request_json(
+            "POST",
+            "/api/export-roots",
+            &serde_json::json!({"path": "relative", "label": "unsafe"}),
+        )
+        .await;
+    assert_eq!(400, relative.status);
+    let unknown_root_field = server
+        .request_json(
+            "POST",
+            "/api/export-roots",
+            &serde_json::json!({
+                "path": export_directory.to_string_lossy(),
+                "label": "unsafe",
+                "source": "archive"
+            }),
+        )
+        .await;
+    assert_eq!(400, unknown_root_field.status);
+
+    let request = serde_json::json!({
+        "collection_ids": [1, 2],
+        "export_root_id": root_id,
+        "package_filename": "C106:精選.zip"
+    });
+    let preflight = server
+        .request_json("POST", "/api/export-jobs/preflight", &request)
+        .await;
+    assert_eq!(200, preflight.status);
+    assert_eq!(2, preflight.json["selected"]);
+    assert_eq!(2, preflight.json["exportable"]);
+    assert_eq!("C106_精選.zip", preflight.json["package_filename"]);
+    assert_eq!(true, preflight.json["can_start"]);
+    assert_eq!(false, preflight.json["cancellation_supported"]);
+
+    let raw_path_attempt = server
+        .request_json(
+            "POST",
+            "/api/export-jobs",
+            &serde_json::json!({
+                "collection_ids": [1],
+                "export_root_id": root_id,
+                "package_filename": "safe.zip",
+                "destination_path": export_directory.join("escape.zip").to_string_lossy()
+            }),
+        )
+        .await;
+    assert_eq!(400, raw_path_attempt.status);
+
+    let collision_path = export_directory.join("C106_精選.zip");
+    fs::write(&collision_path, b"existing").expect("collision");
+    let collision = server
+        .request_json("POST", "/api/export-jobs/preflight", &request)
+        .await;
+    assert_eq!(true, collision.json["package_collision"]);
+    assert_eq!(false, collision.json["can_start"]);
+    fs::remove_file(&collision_path).expect("remove collision");
+
+    let missing_source = tree.library().join("[Circle B] Book B.zip");
+    let saved_source = fs::read(&missing_source).expect("source bytes");
+    fs::remove_file(&missing_source).expect("remove source");
+    let missing = server
+        .request_json("POST", "/api/export-jobs/preflight", &request)
+        .await;
+    assert_eq!(1, missing.json["missing"]);
+    assert_eq!(false, missing.json["can_start"]);
+    fs::write(&missing_source, saved_source).expect("restore source");
+
+    let created = server
+        .request_json("POST", "/api/export-jobs", &request)
+        .await;
+    assert_eq!(200, created.status);
+    let job_id = created.json["id"].as_i64().expect("job ID");
+    let completed = poll_export_job(&server, job_id).await;
+    assert_eq!("succeeded", completed["status"]);
+    assert_eq!(2, completed["processed_items"]);
+    assert_eq!(2, completed["succeeded_items"]);
+    assert!(completed["processed_bytes"].as_u64().expect("bytes") > 0);
+    let output = export_directory.join("C106_精選.zip");
+    assert!(output.is_file());
+    assert!(!export_directory.join("C106_精選.zip.partial").exists());
+    let archive = zip::ZipArchive::new(fs::File::open(output).expect("output")).expect("outer ZIP");
+    assert_eq!(3, archive.len());
+
+    let opened = server
+        .request(
+            "POST",
+            &format!("/api/export-jobs/{job_id}/open-location"),
+            &[],
+        )
+        .await;
+    assert_eq!(200, opened.status);
+    assert_eq!(
+        fs::canonicalize(&export_directory).expect("canonical export directory"),
+        launcher.calls()[0].path
+    );
+    let unknown = server.request("GET", "/api/export-jobs/999999", &[]).await;
+    assert_eq!(404, unknown.status);
+    let invalid_id = server.request("GET", "/api/export-jobs/0", &[]).await;
+    assert_eq!(400, invalid_id.status);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn failed_export_job_cannot_open_and_retry_reuses_registered_job_safely() {
+    let tree = TestTree::new("export-retry-api");
+    tree.zip("Book.zip");
+    let export_directory = tree.root("exports");
+    fs::create_dir_all(&export_directory).expect("exports");
+    let repository = CatalogRepository::open_in_memory().expect("catalog");
+    let launcher = RecordingLauncher::new(false);
+    let mut application =
+        ApplicationService::with_launcher(repository, NoopRecycleBin, launcher.clone(), None);
+    application
+        .run_scan(&[ScanRoot {
+            path: tree.library(),
+            source: SourceKind::Downloads,
+            label: "下載區".to_owned(),
+        }])
+        .expect("scan");
+    let root = application
+        .register_export_root(&export_directory, "匯出")
+        .expect("root");
+    let job = application
+        .enqueue_export(&[1], root.id, "retry.zip")
+        .expect("enqueue");
+    application
+        .fail_export(job.id, None, "模擬中斷")
+        .expect("failed job");
+    let server = RunningServer::start(application).await;
+
+    let unopened = server
+        .request(
+            "POST",
+            &format!("/api/export-jobs/{}/open-location", job.id),
+            &[],
+        )
+        .await;
+    assert_eq!(400, unopened.status);
+    assert!(launcher.calls().is_empty());
+    let retried = server
+        .request("POST", &format!("/api/export-jobs/{}/retry", job.id), &[])
+        .await;
+    assert_eq!(200, retried.status);
+    let completed = poll_export_job(&server, job.id).await;
+    assert_eq!("succeeded", completed["status"]);
+    assert_eq!(1, completed["attempts"]);
+    assert!(export_directory.join("retry.zip").is_file());
+    server.stop().await;
+}
+
+async fn poll_export_job(server: &RunningServer, job_id: i64) -> Value {
+    for _ in 0..200 {
+        let response = server
+            .request("GET", &format!("/api/export-jobs/{job_id}"), &[])
+            .await;
+        assert_eq!(200, response.status);
+        if matches!(
+            response.json["status"].as_str(),
+            Some("succeeded" | "failed")
+        ) {
+            return response.json;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("export job did not finish")
+}
+
+#[tokio::test]
 async fn duplicate_api_has_persistent_jobs_candidates_filters_and_fingerprint_bound_decisions() {
     let tree = TestTree::new("duplicate-api");
     tree.image_zip(

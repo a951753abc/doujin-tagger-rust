@@ -4801,6 +4801,90 @@ img[data-thumbnail-status="failed"] {
   gap: 12px;
   align-items: end;
 }
+
+.export-roots-settings {
+  border-top: 1px solid var(--line);
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+}
+
+.export-root-fields {
+  grid-template-columns: minmax(9rem, .7fr) minmax(16rem, 1.6fr) auto;
+}
+
+.root-purpose.export {
+  background: var(--accent-pale);
+  color: var(--accent-dark);
+}
+
+.export-dialog-shell {
+  width: min(52rem, calc(100vw - 2rem));
+}
+
+.export-fields {
+  display: grid;
+  grid-template-columns: minmax(12rem, .8fr) minmax(16rem, 1.2fr);
+  gap: .85rem;
+}
+
+.export-preflight {
+  border-block: 1px solid var(--line);
+  margin-block: 1.1rem .75rem;
+  padding-block: 1rem;
+}
+
+.export-preflight-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.export-preflight-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .75rem 1rem;
+  margin: 1rem 0 0;
+}
+
+.export-preflight-facts div {
+  border-left: 1px solid var(--line-strong);
+  padding-left: .75rem;
+}
+
+.export-preflight-facts dt {
+  color: var(--muted);
+  font-size: .76rem;
+}
+
+.export-preflight-facts dd {
+  font-family: var(--serif);
+  font-size: 1.05rem;
+  margin: .15rem 0 0;
+}
+
+.export-preflight-warnings {
+  color: var(--danger);
+  margin: .85rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.export-preflight-warnings:empty {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  .export-root-fields,
+  .export-fields,
+  .export-preflight-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .export-preflight-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
 .root-form-fields .primary-button {
   min-width: 78px;
   white-space: nowrap;

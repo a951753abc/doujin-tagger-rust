@@ -385,6 +385,7 @@ dependencies = [
  "doujin-scanner",
  "doujin-storage",
  "doujin-thumbnails",
+ "fs2",
  "image",
  "rusqlite",
  "serde",

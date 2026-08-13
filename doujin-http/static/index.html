@@ -480,8 +480,9 @@
               </section>
 
               <div class="file-operation-strip">
-                <div><p class="section-index">FILES / 檔案</p><h3>改名、搬移或刪除</h3><p>每筆操作都會由後端重新驗證來源、路徑與檔案狀態，批次允許部分成功。</p></div>
+                <div><p class="section-index">FILES / 檔案</p><h3>匯出、改名、搬移或刪除</h3><p>匯出只複製原始 ZIP；其他操作會由後端重新驗證來源、路徑與檔案狀態。</p></div>
                 <div>
+                  <button class="secondary-button" id="prepare-export" type="button">匯出 ZIP 套件</button>
                   <button class="secondary-button" id="prepare-move" type="button">搬移至典藏庫</button>
                   <button class="danger-button" id="prepare-delete" type="button">刪除已選收藏</button>
                 </div>
@@ -804,6 +805,22 @@
                 <button class="primary-button" type="submit">登記</button>
               </div>
             </form>
+
+            <section class="export-roots-settings" aria-labelledby="export-roots-heading">
+              <div class="section-heading roots-heading">
+                <h3 id="export-roots-heading">匯出目的地</h3>
+                <p>瀏覽器只能寫入這裡預先登記的資料夾。</p>
+              </div>
+              <ul class="root-list" id="export-root-list"></ul>
+              <form class="root-form" id="export-root-form">
+                <h3>新增匯出目的地</h3>
+                <div class="root-form-fields export-root-fields">
+                  <label>顯示名稱<input name="label" type="text" required autocomplete="off"></label>
+                  <label>完整路徑<input name="path" type="text" required autocomplete="off" placeholder="例如 D:\Exports"></label>
+                  <button class="primary-button" type="submit">登記</button>
+                </div>
+              </form>
+            </section>
           </section>
         </div>
       </section>
@@ -1004,6 +1021,28 @@
       <p class="field-note">後端會依每筆收藏的場次建立安全子資料夾；不會覆寫既有同名 ZIP。</p>
       <ol class="confirm-item-list" id="move-item-list"></ol>
       <div class="dialog-footer"><button class="text-button" data-close-dialog type="button">保留原位</button><button class="primary-button" type="submit">搬移已選收藏</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="export-dialog" aria-labelledby="export-dialog-heading">
+    <form class="dialog-shell export-dialog-shell" id="export-form">
+      <header><div><p class="eyebrow">EXPORT / 匯出</p><h2 id="export-dialog-heading">建立 ZIP 套件</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉">×</button></header>
+      <p class="dialog-intro">保留每本原始 ZIP，不解壓、不重新壓縮，也不修改 catalog、metadata 或標籤。</p>
+      <div class="export-fields">
+        <label>匯出目的地
+          <select name="export_root_id" id="export-root-select" required></select>
+        </label>
+        <label>Package 檔名
+          <input name="package_filename" id="export-package-name" type="text" value="doujin-export.zip" autocomplete="off" required>
+        </label>
+      </div>
+      <section class="export-preflight" aria-live="polite">
+        <div class="export-preflight-heading"><p class="section-index">PREFLIGHT / 匯出前檢查</p><strong id="export-preflight-summary">選擇目的地後重新檢查</strong></div>
+        <dl class="export-preflight-facts" id="export-preflight-facts"></dl>
+        <ul class="export-preflight-warnings" id="export-preflight-warnings"></ul>
+      </section>
+      <p class="field-note">第一版採整包成功規則：任何來源失敗都不會產生正式 ZIP，並會清理 <code>.partial</code>。開始後目前不能取消。</p>
+      <div class="dialog-footer"><button class="text-button" data-close-dialog type="button">返回工作台</button><button class="secondary-button" id="refresh-export-preflight" type="button">重新檢查</button><button class="primary-button" id="start-export" type="submit" disabled>開始匯出</button></div>
     </form>
   </dialog>
 
