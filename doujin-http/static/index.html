@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>私藏編目室</title>
-  <link rel="stylesheet" href="/assets/app.css?v=47">
-  <script src="/assets/app.js?v=50" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=48">
+  <script src="/assets/app.js?v=51" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -473,6 +473,32 @@
             <div class="workbench-empty" id="candidate-empty" hidden>
               <span aria-hidden="true">清</span>
               <div><h3>沒有待處理的同名候選</h3><p>重新掃描若發現已消失收藏的同名新位置，會在這裡等待人工裁決。</p></div>
+            </div>
+          </section>
+
+          <section class="operations-section vocabulary-desk" aria-labelledby="vocabulary-heading">
+            <div class="section-heading ruled-heading vocabulary-heading">
+              <div><p class="section-index">03 / 名稱治理</p><h2 id="vocabulary-heading">Metadata 正式名稱</h2></div>
+              <div class="vocabulary-heading-actions">
+                <label>欄位
+                  <select id="vocabulary-field">
+                    <option value="">全部</option>
+                    <option value="event">場次</option>
+                    <option value="circle">社團</option>
+                    <option value="author">作者</option>
+                    <option value="parody">原作</option>
+                  </select>
+                </label>
+                <button class="text-button" id="refresh-vocabulary" type="button">重新偵測</button>
+              </div>
+            </div>
+            <p class="section-intro">只列出經安全正規化後相同的名稱；候選不會自動合併。選定正式名稱後，先檢查影響收藏、人工值與 Saved Views，再執行治理。</p>
+            <div class="identity-result" id="vocabulary-result" aria-live="polite" hidden></div>
+            <div class="review-loading" id="vocabulary-loading" hidden><span class="loader" aria-hidden="true"></span> 正在比對 active metadata 名稱…</div>
+            <div class="vocabulary-groups" id="vocabulary-groups"></div>
+            <div class="workbench-empty" id="vocabulary-empty" hidden>
+              <span aria-hidden="true">正</span>
+              <div><h3>目前沒有名稱變體候選</h3><p>已拒絕的組合不會再次出現；已合併的 alias 會沿用既有 metadata 優先序。</p></div>
             </div>
           </section>
         </div>

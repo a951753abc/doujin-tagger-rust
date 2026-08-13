@@ -127,6 +127,8 @@
     reviewRequestNumber: 0,
     reviewReturnId: null,
     candidates: [],
+    vocabularyGroups: [],
+    vocabularyLoaded: false,
     preflight: null,
     preflightPair: null,
     metadataHistoryCollectionId: null,
@@ -405,6 +407,11 @@
       candidateGroups: byId("candidate-groups"),
       candidateEmpty: byId("candidate-empty"),
       identityResult: byId("identity-result"),
+      vocabularyField: byId("vocabulary-field"),
+      vocabularyLoading: byId("vocabulary-loading"),
+      vocabularyGroups: byId("vocabulary-groups"),
+      vocabularyEmpty: byId("vocabulary-empty"),
+      vocabularyResult: byId("vocabulary-result"),
       consolidationDialog: byId("consolidation-dialog"),
       consolidationForm: byId("consolidation-form"),
       preflightBlockers: byId("preflight-blockers"),
@@ -550,6 +557,8 @@
     ui.deleteForm.addEventListener("input", syncDeleteMode);
     ui.deleteForm.addEventListener("submit", executeDelete);
     byId("refresh-candidates").addEventListener("click", loadTombstoneCandidates);
+    byId("refresh-vocabulary").addEventListener("click", loadVocabularyCandidates);
+    ui.vocabularyField.addEventListener("change", loadVocabularyCandidates);
     byId("refresh-review").addEventListener("click", () => loadReviewQueue({ preferredId: currentReviewItem()?.collection.id }));
     byId("retry-review").addEventListener("click", () => loadReviewQueue({ preferredId: currentReviewItem()?.collection.id }));
     ui.reviewKind.addEventListener("change", () => {
@@ -3517,10 +3526,11 @@
 
   function updateWorkbenchBadge() {
     const pending = state.candidates.filter((candidate) => candidate.decision === "pending").length;
-    const count = state.selectedIds.size + pending;
+    const vocabulary = state.vocabularyGroups.length;
+    const count = state.selectedIds.size + pending + vocabulary;
     ui.workbenchCount.textContent = String(count);
     ui.workbenchCount.hidden = count === 0;
-    ui.workbenchCount.title = `${state.selectedIds.size} 筆批次選取，${pending} 筆候選待裁決`;
+    ui.workbenchCount.title = `${state.selectedIds.size} 筆批次選取，${pending} 筆身分候選，${vocabulary} 組名稱候選`;
   }
 
   async function loadReviewQueue({ preferredId = null } = {}) {
@@ -3770,6 +3780,7 @@
   function loadWorkbench() {
     renderWorkbenchSelection();
     if (!state.workbenchLoaded) loadTombstoneCandidates();
+    if (!state.vocabularyLoaded) loadVocabularyCandidates();
   }
 
   function renderWorkbenchSelection() {
@@ -4311,6 +4322,212 @@
     } finally {
       ui.candidateLoading.hidden = true;
     }
+  }
+
+  async function loadVocabularyCandidates() {
+    ui.vocabularyLoading.hidden = false;
+    ui.vocabularyEmpty.hidden = true;
+    ui.vocabularyGroups.hidden = true;
+    const field = ui.vocabularyField.value;
+    try {
+      const data = await api(`/api/vocabulary/candidates${field ? `?field=${encodeURIComponent(field)}` : ""}`);
+      state.vocabularyGroups = data.groups || [];
+      state.vocabularyLoaded = true;
+      renderVocabularyCandidates();
+      updateWorkbenchBadge();
+    } catch (error) {
+      toast(`無法讀取名稱候選：${error.message}`, true);
+    } finally {
+      ui.vocabularyLoading.hidden = true;
+    }
+  }
+
+  function renderVocabularyCandidates() {
+    ui.vocabularyGroups.replaceChildren();
+    ui.vocabularyGroups.hidden = state.vocabularyGroups.length === 0;
+    ui.vocabularyEmpty.hidden = state.vocabularyGroups.length !== 0;
+    state.vocabularyGroups.forEach((group, groupIndex) => {
+      const section = el("section", "vocabulary-group");
+      const header = el("header", "vocabulary-group-header");
+      const heading = document.createElement("div");
+      heading.append(
+        el("span", "identity-id", `${vocabularyFieldLabel(group.field)} · ${group.variants.length} 種寫法`),
+        el("h3", "", group.suggested_canonical),
+        el("p", "", group.suggestion_reason),
+      );
+      header.append(heading, el("span", "decision-badge pending", `${formatNumber(group.variants.reduce((sum, item) => sum + item.active_count, 0))} 本使用中`));
+
+      const form = el("div", "vocabulary-choice-list");
+      const canonicalOptions = group.variants.map((variant) => variant.value);
+      if (!canonicalOptions.includes(group.suggested_canonical)) canonicalOptions.unshift(group.suggested_canonical);
+      canonicalOptions.forEach((value) => {
+        const variant = group.variants.find((item) => item.value === value);
+        const row = el("div", "vocabulary-choice");
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.id = `vocabulary-canonical-${groupIndex}-${form.children.length}`;
+        radio.name = `vocabulary-canonical-${groupIndex}`;
+        radio.value = value;
+        radio.checked = value === group.suggested_canonical;
+        radio.setAttribute("aria-label", `選「${value}」為正式名稱`);
+        const copy = document.createElement("label");
+        copy.htmlFor = radio.id;
+        copy.append(
+          el("strong", "", value),
+          el("small", "", variant
+            ? `${formatNumber(variant.active_count)} 本 · ${variant.source_counts.map((source) => `${metadataSourceLabel(source.source)} ${formatNumber(source.count)}`).join("、")}`
+            : "既有正式名稱"),
+        );
+        row.append(radio, copy);
+        if (variant) {
+          const remove = el("button", "text-button", "移出候選");
+          remove.type = "button";
+          remove.addEventListener("click", (event) => {
+            event.preventDefault();
+            removeVocabularyVariant(group, variant.value);
+          });
+          row.append(remove);
+        }
+        form.append(row);
+      });
+
+      const representatives = el("div", "vocabulary-representatives");
+      const uniqueRepresentatives = new Map();
+      group.variants.flatMap((variant) => variant.representatives || []).forEach((item) => uniqueRepresentatives.set(item.collection_id, item));
+      representatives.append(el("span", "vocabulary-subheading", "代表收藏"));
+      Array.from(uniqueRepresentatives.values()).slice(0, 5).forEach((item) => {
+        const button = el("button", "text-button", item.title || item.filename);
+        button.type = "button";
+        button.title = item.filename;
+        button.addEventListener("click", () => openActivityCollection(item.collection_id));
+        representatives.append(button);
+      });
+
+      const actions = el("div", "vocabulary-actions");
+      const preflight = el("button", "primary-button", "檢查合併影響");
+      preflight.type = "button";
+      preflight.addEventListener("click", () => openVocabularyPreflight(group, section));
+      const reject = el("button", "text-button danger-text", "這些不是同一名稱");
+      reject.type = "button";
+      reject.addEventListener("click", () => rejectVocabularyGroup(group));
+      actions.append(preflight, reject);
+      section.append(header, form, representatives, actions);
+      ui.vocabularyGroups.append(section);
+    });
+  }
+
+  async function openVocabularyPreflight(group, section) {
+    const canonical = section.querySelector('input[type="radio"]:checked')?.value;
+    if (!canonical) return;
+    const button = section.querySelector(".vocabulary-actions .primary-button");
+    button.disabled = true;
+    button.textContent = "正在預檢…";
+    try {
+      const data = await api("/api/vocabulary/preflight", {
+        method: "POST",
+        body: { field: group.field, canonical, variants: group.variants.map((variant) => variant.value) },
+      });
+      section.querySelector(".vocabulary-preflight")?.remove();
+      const panel = el("section", "vocabulary-preflight");
+      panel.append(
+        el("span", "vocabulary-subheading", "MERGE PREFLIGHT / 合併預檢"),
+        el("strong", "", `將 ${formatNumber(data.affected_collections)} 本收藏統一為「${canonical}」`),
+      );
+      const facts = el("ul", "vocabulary-preflight-facts");
+      facts.append(
+        el("li", "", `來源：${data.source_counts.length ? data.source_counts.map((source) => `${metadataSourceLabel(source.source)} ${formatNumber(source.count)}`).join("、") : "沒有 active selection"}`),
+        el("li", data.manual_assertions ? "risk" : "", `人工 assertions：${formatNumber(data.manual_assertions)}`),
+        el("li", data.manual_selected_conflicts ? "risk" : "", `人工 selected values 將顯示 canonical：${formatNumber(data.manual_selected_conflicts)}`),
+        el("li", "", `Saved Views 安全更新：${formatNumber(data.saved_views.length)}`),
+      );
+      panel.append(facts);
+      if (data.saved_views.length) {
+        const saved = el("p", "vocabulary-saved-impact", `會更新：${data.saved_views.map((view) => `${view.name}（${view.previous_value}）`).join("、")}`);
+        panel.append(saved);
+      }
+      const confirm = el("button", "primary-button accent-button", `合併為「${canonical}」`);
+      confirm.type = "button";
+      confirm.addEventListener("click", () => executeVocabularyMerge(group, canonical, confirm));
+      panel.append(confirm);
+      section.append(panel);
+      panel.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    } catch (error) {
+      toast(`名稱合併預檢失敗：${error.message}`, true);
+    } finally {
+      button.disabled = false;
+      button.textContent = "檢查合併影響";
+    }
+  }
+
+  async function executeVocabularyMerge(group, canonical, button) {
+    button.disabled = true;
+    button.textContent = "正在更新 vocabulary…";
+    try {
+      const result = await api("/api/vocabulary/merge", {
+        method: "POST",
+        body: { field: group.field, canonical, variants: group.variants.map((variant) => variant.value) },
+      });
+      ui.vocabularyResult.hidden = false;
+      ui.vocabularyResult.replaceChildren(
+        el("strong", "", `名稱治理完成 · ${result.canonical}`),
+        el("span", "", `已更新 ${formatNumber(result.affected_collections)} 本收藏與 ${formatNumber(result.saved_views_updated)} 個 Saved Views；raw assertions 與人工優先序保持不變。`),
+      );
+      state.vocabularyLoaded = false;
+      state.savedViewsLoaded = false;
+      state.items = [];
+      invalidateDerivedData({ library: true });
+      toast("正式名稱已套用");
+      await loadVocabularyCandidates();
+    } catch (error) {
+      toast(`名稱合併失敗：${error.message}`, true);
+      button.disabled = false;
+      button.textContent = `合併為「${canonical}」`;
+    }
+  }
+
+  async function rejectVocabularyGroup(group) {
+    try {
+      await api("/api/vocabulary/reject", {
+        method: "POST",
+        body: {
+          field: group.field,
+          values: group.variants.map((variant) => variant.value),
+          reason: "使用者確認候選群組不是同一名稱",
+          removed: false,
+        },
+      });
+      toast("已記錄拒絕規則；這組名稱不會再次建議");
+      await loadVocabularyCandidates();
+    } catch (error) {
+      toast(`無法拒絕名稱候選：${error.message}`, true);
+    }
+  }
+
+  async function removeVocabularyVariant(group, removedValue) {
+    const others = group.variants.map((variant) => variant.value).filter((value) => value !== removedValue);
+    try {
+      await Promise.all(others.map((other) => api("/api/vocabulary/reject", {
+        method: "POST",
+        body: {
+          field: group.field,
+          values: [removedValue, other],
+          reason: `使用者將「${removedValue}」移出候選群組`,
+          removed: true,
+        },
+      })));
+      toast(`已將「${removedValue}」移出候選`);
+      await loadVocabularyCandidates();
+    } catch (error) {
+      toast(`無法移出名稱候選：${error.message}`, true);
+    }
+  }
+
+  function vocabularyFieldLabel(field) {
+    return { event: "場次", circle: "社團", author: "作者", parody: "原作" }[field] || field;
+  }
+
+  function metadataSourceLabel(source) {
+    return { manual: "人工", legacy: "舊資料", external: "外部", filename: "檔名", inference: "推斷" }[source] || source;
   }
 
   function renderTombstoneCandidates() {

@@ -15,6 +15,7 @@ pub mod scan;
 pub mod settings;
 pub mod statistics;
 pub mod thumbnails;
+pub mod vocabulary;
 
 use std::collections::HashSet;
 use std::error::Error;
@@ -37,7 +38,7 @@ use crate::metadata::{
     MetadataAssertionDecision, MetadataField, MetadataSource, MetadataValue, SelectionSnapshot,
 };
 
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const SCAN_RUN_GUARD_MIGRATION: &str = include_str!("../migrations/0002_scan_run_guard.sql");
 const EXTERNAL_SEARCH_JOBS_MIGRATION: &str =
@@ -55,6 +56,8 @@ const REVERT_IS_DL_EVENT_FALLBACK_MIGRATION: &str =
 const SAVED_VIEWS_MIGRATION: &str = include_str!("../migrations/0010_saved_views.sql");
 const EXTERNAL_SEARCH_BATCHES_MIGRATION: &str =
     include_str!("../migrations/0011_external_search_batches.sql");
+const VOCABULARY_GOVERNANCE_MIGRATION: &str =
+    include_str!("../migrations/0012_vocabulary_governance.sql");
 
 struct Migration {
     version: i64,
@@ -117,6 +120,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 11,
         name: "0011_external_search_batches",
         sql: EXTERNAL_SEARCH_BATCHES_MIGRATION,
+    },
+    Migration {
+        version: 12,
+        name: "0012_vocabulary_governance",
+        sql: VOCABULARY_GOVERNANCE_MIGRATION,
     },
 ];
 
@@ -2497,17 +2505,43 @@ fn canonical_name_for_assertion(
     transaction: &Transaction<'_>,
     assertion_id: i64,
     value_index: usize,
+    field: MetadataField,
+    raw_name: &str,
 ) -> StorageResult<Option<String>> {
     let value_index = i64::try_from(value_index).map_err(|_| {
         StorageError::InvalidCanonicalMapping("value index 超出支援範圍".to_owned())
     })?;
-    Ok(transaction
+    let explicit = transaction
         .query_row(
             "SELECT entity.canonical_name
              FROM assertion_entities AS mapping
              JOIN canonical_entities AS entity ON entity.id = mapping.entity_id
              WHERE mapping.assertion_id = ?1 AND mapping.value_index = ?2",
             params![assertion_id, value_index],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if explicit.is_some() {
+        return Ok(explicit);
+    }
+    let vocabulary_field = match field {
+        MetadataField::Event => "event",
+        MetadataField::Circle => "circle",
+        MetadataField::Authors => "author",
+        MetadataField::Parody => "parody",
+        MetadataField::Title | MetadataField::Classification | MetadataField::IsDl => {
+            return Ok(None);
+        }
+    };
+    Ok(transaction
+        .query_row(
+            "SELECT entity.canonical_name
+             FROM vocabulary_aliases AS alias
+             JOIN canonical_entities AS entity ON entity.id = alias.entity_id
+             JOIN metadata_assertions AS assertion ON assertion.id = ?1
+             WHERE alias.field_name = ?2 AND alias.alias = ?3
+               AND assertion.source_kind <> 'manual' AND entity.status = 'active'",
+            params![assertion_id, vocabulary_field, raw_name],
             |row| row.get(0),
         )
         .optional()?)
@@ -2722,31 +2756,54 @@ fn rebuild_projection(transaction: &Transaction<'_>, collection_id: i64) -> Stor
                 title = Some(serde_json::from_str(&value_json).map_err(decode_error)?)
             }
             MetadataField::Event => {
-                let raw = serde_json::from_str(&value_json).map_err(decode_error)?;
+                let raw: String = serde_json::from_str(&value_json).map_err(decode_error)?;
                 event = Some(
-                    canonical_name_for_assertion(transaction, assertion_id, 0)?.unwrap_or(raw),
+                    canonical_name_for_assertion(
+                        transaction,
+                        assertion_id,
+                        0,
+                        MetadataField::Event,
+                        &raw,
+                    )?
+                    .unwrap_or(raw),
                 );
             }
             MetadataField::Circle => {
-                let raw = serde_json::from_str(&value_json).map_err(decode_error)?;
+                let raw: String = serde_json::from_str(&value_json).map_err(decode_error)?;
                 circle = Some(
-                    canonical_name_for_assertion(transaction, assertion_id, 0)?.unwrap_or(raw),
+                    canonical_name_for_assertion(
+                        transaction,
+                        assertion_id,
+                        0,
+                        MetadataField::Circle,
+                        &raw,
+                    )?
+                    .unwrap_or(raw),
                 );
             }
             MetadataField::Authors => {
                 authors = serde_json::from_str(&value_json).map_err(decode_error)?;
                 for (index, author) in authors.values.iter_mut().enumerate() {
-                    if let Some(canonical) =
-                        canonical_name_for_assertion(transaction, assertion_id, index)?
-                    {
+                    if let Some(canonical) = canonical_name_for_assertion(
+                        transaction,
+                        assertion_id,
+                        index,
+                        MetadataField::Authors,
+                        author,
+                    )? {
                         *author = canonical;
                     }
                 }
             }
             MetadataField::Parody => {
                 let mut value: Parody = serde_json::from_str(&value_json).map_err(decode_error)?;
-                if let Some(canonical) = canonical_name_for_assertion(transaction, assertion_id, 0)?
-                {
+                if let Some(canonical) = canonical_name_for_assertion(
+                    transaction,
+                    assertion_id,
+                    0,
+                    MetadataField::Parody,
+                    &value.canonical,
+                )? {
                     value.canonical = canonical;
                 }
                 parody = Some(value);

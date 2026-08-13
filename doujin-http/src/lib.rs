@@ -58,6 +58,9 @@ use doujin_storage::statistics::{CollectionFacet, CollectionStatistics, NamedCou
 use doujin_storage::thumbnails::{
     DEFAULT_THUMBNAIL_PRIORITY, MAX_THUMBNAIL_PRIORITY, ThumbnailStateSnapshot, ThumbnailStatus,
 };
+use doujin_storage::vocabulary::{
+    VocabularyCandidateGroup, VocabularyField, VocabularyMergePreflight, VocabularyMergeResult,
+};
 use doujin_thumbnails::transparent_placeholder_webp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -164,6 +167,16 @@ where
         )
         .route("/api/stats", get(get_statistics::<R>))
         .route("/api/facets", get(get_facets::<R>))
+        .route(
+            "/api/vocabulary/candidates",
+            get(list_vocabulary_candidates::<R>),
+        )
+        .route(
+            "/api/vocabulary/preflight",
+            post(preflight_vocabulary_merge::<R>),
+        )
+        .route("/api/vocabulary/merge", post(merge_vocabulary::<R>))
+        .route("/api/vocabulary/reject", post(reject_vocabulary::<R>))
         .route(
             "/api/saved-views",
             get(list_saved_views::<R>).post(create_saved_view::<R>),
@@ -674,6 +687,121 @@ where
     .map_err(|_| ApiError::internal())??;
     Ok(Json(FacetResponse {
         items: items.into_iter().map(Into::into).collect(),
+    }))
+}
+
+#[derive(Debug, Serialize)]
+struct VocabularyCandidatesResponse {
+    groups: Vec<VocabularyCandidateGroup>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VocabularyMergeRequest {
+    field: String,
+    canonical: String,
+    variants: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VocabularyRejectRequest {
+    field: String,
+    values: Vec<String>,
+    reason: String,
+    #[serde(default)]
+    removed: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct VocabularyRejectResponse {
+    exclusions_recorded: usize,
+}
+
+async fn list_vocabulary_candidates<R>(
+    State(state): State<HttpState<R>>,
+    RawQuery(raw_query): RawQuery,
+) -> Result<Json<VocabularyCandidatesResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let field = parse_vocabulary_query(raw_query.as_deref())?;
+    let groups = tokio::task::spawn_blocking(move || {
+        let application = lock_interactive_application(&state.application)?;
+        application
+            .vocabulary_candidates(field)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(VocabularyCandidatesResponse { groups }))
+}
+
+async fn preflight_vocabulary_merge<R>(
+    State(state): State<HttpState<R>>,
+    payload: Result<Json<VocabularyMergeRequest>, JsonRejection>,
+) -> Result<Json<VocabularyMergePreflight>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let request = payload
+        .map_err(|_| ApiError::bad_request("invalid_vocabulary_request", "名稱治理 JSON 無效"))?
+        .0;
+    let field = parse_vocabulary_field(&request.field)?;
+    let preflight = tokio::task::spawn_blocking(move || {
+        let application = lock_interactive_application(&state.application)?;
+        application
+            .vocabulary_merge_preflight(field, &request.canonical, &request.variants)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(preflight))
+}
+
+async fn merge_vocabulary<R>(
+    State(state): State<HttpState<R>>,
+    payload: Result<Json<VocabularyMergeRequest>, JsonRejection>,
+) -> Result<Json<VocabularyMergeResult>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let request = payload
+        .map_err(|_| ApiError::bad_request("invalid_vocabulary_request", "名稱治理 JSON 無效"))?
+        .0;
+    let field = parse_vocabulary_field(&request.field)?;
+    let result = tokio::task::spawn_blocking(move || {
+        let mut application = lock_interactive_application(&state.application)?;
+        application
+            .merge_vocabulary(field, &request.canonical, &request.variants)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(result))
+}
+
+async fn reject_vocabulary<R>(
+    State(state): State<HttpState<R>>,
+    payload: Result<Json<VocabularyRejectRequest>, JsonRejection>,
+) -> Result<Json<VocabularyRejectResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let request = payload
+        .map_err(|_| ApiError::bad_request("invalid_vocabulary_request", "名稱治理 JSON 無效"))?
+        .0;
+    let field = parse_vocabulary_field(&request.field)?;
+    let exclusions_recorded = tokio::task::spawn_blocking(move || {
+        let mut application = lock_interactive_application(&state.application)?;
+        application
+            .reject_vocabulary_group(field, &request.values, &request.reason, request.removed)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(VocabularyRejectResponse {
+        exclusions_recorded,
     }))
 }
 
@@ -3265,6 +3393,27 @@ fn parse_facet_query(raw_query: Option<&str>) -> Result<(CollectionFacet, String
     Ok((field, search, limit))
 }
 
+fn parse_vocabulary_query(raw_query: Option<&str>) -> Result<Option<VocabularyField>, ApiError> {
+    let mut field = None;
+    let mut scalar_keys = HashSet::new();
+    for (key, value) in form_urlencoded::parse(raw_query.unwrap_or_default().as_bytes()) {
+        if key == "field" {
+            ensure_single_parameter(&mut scalar_keys, "field")?;
+            field = Some(parse_vocabulary_field(&value)?);
+        }
+    }
+    Ok(field)
+}
+
+fn parse_vocabulary_field(value: &str) -> Result<VocabularyField, ApiError> {
+    VocabularyField::parse(value).map_err(|_| {
+        ApiError::bad_request(
+            "invalid_vocabulary_field",
+            "field 必須是 event、circle、author 或 parody",
+        )
+    })
+}
+
 fn parse_collection_query(raw_query: Option<&str>) -> Result<CollectionQuery, ApiError> {
     let mut query = CollectionQuery::default();
     let mut scalar_keys = HashSet::new();
@@ -4330,6 +4479,9 @@ impl ApiError {
             }
             StorageError::InvalidSavedView(reason) => {
                 Self::bad_request("invalid_saved_view", &reason)
+            }
+            StorageError::InvalidCanonicalMapping(reason) => {
+                Self::bad_request("invalid_vocabulary_action", &reason)
             }
             StorageError::ScanAlreadyRunning => {
                 Self::conflict("scan_already_running", "重新掃描正在執行")

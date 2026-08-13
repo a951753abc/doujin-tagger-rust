@@ -284,8 +284,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("href=\"/assets/app.css?v=47\""));
-    assert!(document.contains("src=\"/assets/app.js?v=50\" defer"));
+    assert!(document.contains("href=\"/assets/app.css?v=48\""));
+    assert!(document.contains("src=\"/assets/app.js?v=51\" defer"));
     assert!(document.contains("id=\"review-view\""));
     assert!(document.contains("data-route=\"review\""));
     assert!(document.contains("id=\"review-desk\""));
@@ -331,6 +331,9 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("data-route=\"shelf\""));
     assert!(document.contains("id=\"workbench-view\""));
     assert!(document.contains("id=\"return-to-library-context\""));
+    assert!(document.contains("id=\"vocabulary-heading\""));
+    assert!(document.contains("03 / 名稱治理"));
+    assert!(document.contains("id=\"vocabulary-field\""));
     assert!(document.contains("返回原本的藏書位置調整選取"));
     assert!(document.contains("id=\"focus-filter-dialog\""));
     assert!(document.contains("清除篩選並定位"));
@@ -390,6 +393,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(stylesheet.contains(".missing-metadata-actions"));
     assert!(stylesheet.contains(".tag-suggestion-combobox"));
     assert!(stylesheet.contains(".review-desk"));
+    assert!(stylesheet.contains(".vocabulary-group"));
+    assert!(stylesheet.contains(".vocabulary-preflight-facts"));
     assert!(!stylesheet.contains("font-size: 0.6875rem;"));
     assert!(!stylesheet.contains("font-size: 0.625rem;"));
     assert!(!stylesheet.contains("font-size: 0.5625rem;"));
@@ -437,6 +442,11 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("/api/file-actions/delete"));
     assert!(script.contains("/api/tombstone-candidates"));
     assert!(script.contains("executeConsolidation"));
+    assert!(script.contains("/api/vocabulary/candidates"));
+    assert!(script.contains("/api/vocabulary/preflight"));
+    assert!(script.contains("/api/vocabulary/merge"));
+    assert!(script.contains("/api/vocabulary/reject"));
+    assert!(script.contains("function removeVocabularyVariant"));
     assert!(script.contains("loadMetadataEvidence"));
     assert!(script.contains("renderDataQualitySummary"));
     assert!(script.contains("refreshActivityCenter"));
@@ -3395,6 +3405,193 @@ async fn consolidation_preflight_resolves_manual_conflict_and_redirects_merged_i
         )
         .await;
     assert_eq!(409, immutable_decision.status);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn vocabulary_api_preflights_merges_rejects_and_stays_separate_from_identity() {
+    let tree = TestTree::new("vocabulary-api");
+    for filename in [
+        "[event-wide] event-wide.zip",
+        "[event-ascii] event-ascii.zip",
+        "[circle-dot] circle-dot.zip",
+        "[circle-space] circle-space.zip",
+    ] {
+        tree.zip(filename);
+    }
+    let root = ScanRoot {
+        path: tree.library(),
+        source: SourceKind::Archive,
+        label: "歸檔區".to_owned(),
+    };
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application
+        .run_scan(std::slice::from_ref(&root))
+        .expect("scan vocabulary fixtures");
+    let collection_id = |filename: &str| {
+        application
+            .repository()
+            .collection_id_for_current_path(&tree.library().join(filename))
+            .expect("collection lookup")
+            .expect("collection ID")
+    };
+    let event_wide_id = collection_id("[event-wide] event-wide.zip");
+    let event_ascii_id = collection_id("[event-ascii] event-ascii.zip");
+    let circle_dot_id = collection_id("[circle-dot] circle-dot.zip");
+    let circle_space_id = collection_id("[circle-space] circle-space.zip");
+    for (collection_id, field, value) in [
+        (event_wide_id, MetadataField::Event, "Ｃ１００"),
+        (event_ascii_id, MetadataField::Event, "C100"),
+        (circle_dot_id, MetadataField::Circle, "Circle・Name"),
+        (circle_space_id, MetadataField::Circle, "circle name"),
+    ] {
+        application
+            .set_manual_metadata(collection_id, field, MetadataValue::Text(value.to_owned()))
+            .expect("seed vocabulary value");
+    }
+    let server = RunningServer::start(application).await;
+
+    let saved = server
+        .request_json(
+            "POST",
+            "/api/saved-views",
+            &serde_json::json!({
+                "name": "舊場次名稱",
+                "pinned": true,
+                "query": {
+                    "event": "Ｃ１００",
+                    "tag": [],
+                    "missing": [],
+                    "untagged": false,
+                    "sort": "created",
+                    "direction": "desc",
+                    "layout": "grid"
+                }
+            }),
+        )
+        .await;
+    assert_eq!(201, saved.status);
+    let saved_view_id = saved.json["id"].as_i64().expect("saved view ID");
+
+    let candidates = server
+        .request("GET", "/api/vocabulary/candidates", &[])
+        .await;
+    assert_eq!(200, candidates.status);
+    let groups = candidates.json["groups"]
+        .as_array()
+        .expect("candidate groups");
+    assert_eq!(2, groups.len());
+    let event = groups
+        .iter()
+        .find(|group| group["field"] == "event")
+        .expect("event group");
+    assert_eq!(2, event["variants"].as_array().expect("variants").len());
+    assert!(
+        event["variants"]
+            .as_array()
+            .expect("variants")
+            .iter()
+            .all(|variant| variant["active_count"] == 1)
+    );
+
+    let invalid_field = server
+        .request("GET", "/api/vocabulary/candidates?field=tag", &[])
+        .await;
+    assert_eq!(400, invalid_field.status);
+    assert_eq!(
+        "invalid_vocabulary_field",
+        invalid_field.json["error"]["code"]
+    );
+    let unknown_body = server
+        .request_json(
+            "POST",
+            "/api/vocabulary/preflight",
+            &serde_json::json!({
+                "field": "event",
+                "canonical": "C100",
+                "variants": ["Ｃ１００", "C100"],
+                "tombstone_collection_id": event_wide_id
+            }),
+        )
+        .await;
+    assert_eq!(400, unknown_body.status);
+    assert_eq!(
+        "invalid_vocabulary_request",
+        unknown_body.json["error"]["code"]
+    );
+
+    let request = serde_json::json!({
+        "field": "event",
+        "canonical": "C100",
+        "variants": ["Ｃ１００", "C100"]
+    });
+    let preflight = server
+        .request_json("POST", "/api/vocabulary/preflight", &request)
+        .await;
+    assert_eq!(200, preflight.status);
+    assert_eq!(2, preflight.json["affected_collections"]);
+    assert_eq!(2, preflight.json["manual_assertions"]);
+    assert_eq!(1, preflight.json["manual_selected_conflicts"]);
+    assert_eq!(saved_view_id, preflight.json["saved_views"][0]["id"]);
+
+    let merged = server
+        .request_json("POST", "/api/vocabulary/merge", &request)
+        .await;
+    assert_eq!(200, merged.status);
+    assert_eq!("C100", merged.json["canonical"]);
+    assert_eq!(2, merged.json["affected_collections"]);
+    assert_eq!(1, merged.json["saved_views_updated"]);
+    for collection_id in [event_wide_id, event_ascii_id] {
+        let collection = server
+            .request("GET", &format!("/api/collections/{collection_id}"), &[])
+            .await;
+        assert_eq!(200, collection.status);
+        assert_eq!("C100", collection.json["event"]);
+    }
+    let saved_after_merge = server
+        .request("GET", &format!("/api/saved-views/{saved_view_id}"), &[])
+        .await;
+    assert_eq!(200, saved_after_merge.status);
+    assert_eq!("C100", saved_after_merge.json["query"]["event"]);
+    assert_eq!(2, saved_after_merge.json["result_count"]);
+
+    let rejected = server
+        .request_json(
+            "POST",
+            "/api/vocabulary/reject",
+            &serde_json::json!({
+                "field": "circle",
+                "values": ["Circle・Name", "circle name"],
+                "reason": "HTTP test confirms distinct circles"
+            }),
+        )
+        .await;
+    assert_eq!(200, rejected.status);
+    assert_eq!(1, rejected.json["exclusions_recorded"]);
+    let after_reject = server
+        .request("GET", "/api/vocabulary/candidates?field=circle", &[])
+        .await;
+    assert_eq!(200, after_reject.status);
+    assert_eq!(
+        0,
+        after_reject.json["groups"]
+            .as_array()
+            .expect("groups")
+            .len()
+    );
+
+    let identity = server
+        .request("GET", "/api/tombstone-candidates", &[])
+        .await;
+    assert_eq!(200, identity.status);
+    assert_eq!(
+        0,
+        identity.json["items"]
+            .as_array()
+            .expect("identity items")
+            .len()
+    );
     server.stop().await;
 }
 
