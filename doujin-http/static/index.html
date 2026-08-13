@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>私藏編目室</title>
-  <link rel="stylesheet" href="/assets/app.css?v=34">
-  <script src="/assets/app.js?v=34" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=35">
+  <script src="/assets/app.js?v=35" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -214,9 +214,9 @@
           </div>
           <div class="library-toolbar-actions">
             <p id="result-summary" aria-live="polite">正在讀取收藏…</p>
-            <div class="page-selection" aria-label="目前頁面選取">
-              <button class="text-button" id="select-page" type="button">全選本頁</button>
-              <button class="text-button" id="invert-page" type="button">反選本頁</button>
+            <div class="page-selection" aria-label="已載入收藏選取">
+              <button class="text-button" id="select-loaded" type="button">全選已載入</button>
+              <button class="text-button" id="invert-loaded" type="button">反選已載入</button>
             </div>
             <div class="view-switcher" aria-label="結果排列方式">
               <button type="button" data-layout="grid" aria-pressed="true">書牆</button>
@@ -237,11 +237,12 @@
               <p>試著縮短關鍵字，或清除一項篩選條件。</p>
               <button class="secondary-button" id="empty-reset" type="button">清除搜尋與篩選</button>
             </div>
-            <nav class="pagination" id="pagination" aria-label="收藏分頁" hidden>
-              <button class="secondary-button" id="previous-page" type="button">上一頁</button>
-              <span id="page-label">第 1 頁</span>
-              <button class="secondary-button" id="next-page" type="button">下一頁</button>
-            </nav>
+            <div class="infinite-scroll-status" id="library-load-more" role="status" aria-live="polite" hidden>
+              <span class="loader" id="library-load-more-spinner" aria-hidden="true"></span>
+              <span id="library-load-more-label">正在載入更多收藏…</span>
+              <button class="text-button" id="retry-library-load" type="button" hidden>重試載入</button>
+            </div>
+            <div class="library-scroll-sentinel" id="library-scroll-sentinel" aria-hidden="true"></div>
           </section>
 
           <aside class="detail-pane" id="detail-pane" aria-label="收藏詳細資料">

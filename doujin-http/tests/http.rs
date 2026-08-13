@@ -284,7 +284,12 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("src=\"/assets/app.js?v=34\" defer"));
+    assert!(document.contains("src=\"/assets/app.js?v=35\" defer"));
+    assert!(document.contains("id=\"library-scroll-sentinel\""));
+    assert!(document.contains("id=\"library-load-more\""));
+    assert!(document.contains("全選已載入"));
+    assert!(!document.contains("id=\"previous-page\""));
+    assert!(!document.contains("id=\"next-page\""));
     assert!(document.contains("id=\"close-filter-panel\""));
     assert!(document.contains("id=\"shelf-view\""));
     assert!(document.contains("data-route=\"shelf\""));
@@ -339,6 +344,9 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     let script = String::from_utf8(javascript.body).expect("UTF-8 script");
     assert!(script.contains("doujin-library.recent.v1"));
     assert!(script.contains("const RECENT_LIMIT = 20"));
+    assert!(script.contains("const PER_PAGE = 48"));
+    assert!(script.contains("loadMoreCollections"));
+    assert!(script.contains("rootMargin: \"1200px 0px\""));
     assert!(script.contains("/api/collections"));
     assert!(script.contains("rememberLaunch(state.selected, kind)"));
     assert!(script.contains("applyFilter(filterName, row.name)"));

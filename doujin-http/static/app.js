@@ -5,7 +5,7 @@
   const LAYOUT_KEY = "doujin-library.layout.v1";
   const EXTERNAL_JOB_KEY = "doujin-library.external-jobs.v1";
   const RECENT_LIMIT = 20;
-  const PER_PAGE = 96;
+  const PER_PAGE = 48;
   const SHELF_LIMIT = 8;
   const THUMBNAIL_REQUEST_CONCURRENCY = 4;
   const THUMBNAIL_POLL_DELAYS = [1000, 2000, 3000, 5000];
@@ -91,6 +91,7 @@
     shelfData: null,
     libraryLoaded: false,
     libraryLoading: false,
+    libraryLoadError: false,
     workbenchLoaded: false,
     candidates: [],
     preflight: null,
@@ -127,6 +128,7 @@
   let mobileDetailReturnId = null;
   let mobileDetailScrollPosition = 0;
   let mobileDetailRestoreFocus = true;
+  let libraryScrollObserver = null;
   const thumbnailObserver = typeof window.IntersectionObserver === "function"
     ? new IntersectionObserver((entries) => {
         entries.forEach((entry) => {
@@ -168,10 +170,11 @@
       loading: byId("library-loading"),
       empty: byId("library-empty"),
       resultSummary: byId("result-summary"),
-      pagination: byId("pagination"),
-      previousPage: byId("previous-page"),
-      nextPage: byId("next-page"),
-      pageLabel: byId("page-label"),
+      loadMore: byId("library-load-more"),
+      loadMoreSpinner: byId("library-load-more-spinner"),
+      loadMoreLabel: byId("library-load-more-label"),
+      retryLibraryLoad: byId("retry-library-load"),
+      libraryScrollSentinel: byId("library-scroll-sentinel"),
       detailPane: byId("detail-pane"),
       detailPlaceholder: byId("detail-placeholder"),
       collectionDetail: byId("collection-detail"),
@@ -248,6 +251,7 @@
     });
 
     bindEvents();
+    initializeLibraryInfiniteScroll();
     renderRecent();
     setLayout(state.layout);
     routeFromHash();
@@ -280,7 +284,6 @@
     });
     ui.searchForm.addEventListener("submit", (event) => {
       event.preventDefault();
-      state.page = 1;
       state.libraryFocusId = null;
       readFilters();
       setFilterPanelOpen(false);
@@ -296,8 +299,7 @@
     });
     byId("clear-filters").addEventListener("click", () => resetSearch(false));
     byId("empty-reset").addEventListener("click", () => resetSearch(true));
-    ui.previousPage.addEventListener("click", () => changePage(state.page - 1));
-    ui.nextPage.addEventListener("click", () => changePage(state.page + 1));
+    ui.retryLibraryLoad.addEventListener("click", loadMoreCollections);
     document.querySelectorAll("[data-layout]").forEach((button) => {
       button.addEventListener("click", () => setLayout(button.dataset.layout));
     });
@@ -334,8 +336,8 @@
     ui.settingsForm.addEventListener("submit", saveSettings);
     ui.rootForm.addEventListener("submit", registerRoot);
     ui.scanButton.addEventListener("click", startScan);
-    byId("select-page").addEventListener("click", selectCurrentPage);
-    byId("invert-page").addEventListener("click", invertCurrentPageSelection);
+    byId("select-loaded").addEventListener("click", selectLoadedCollections);
+    byId("invert-loaded").addEventListener("click", invertLoadedSelection);
     byId("clear-selection").addEventListener("click", clearSelection);
     ui.batchTagForm.addEventListener("submit", batchAddTag);
     ui.batchMetadataForm.elements.field.addEventListener("change", syncBatchMetadataField);
@@ -424,6 +426,7 @@
     else if (state.route === "library") {
       if (!applyLibraryFocus()) clearDetail();
       if (state.restoreLibraryContext) restoreLibraryWorkContext();
+      scheduleLibraryLoadCheck();
     }
     if (state.route === "workbench") loadWorkbench();
     if (state.route === "stats") loadStats();
@@ -452,10 +455,9 @@
     });
     const tags = params.getAll("tag").map((tag) => tag.trim()).filter(Boolean);
     if (tags.length) values.tag = tags;
-    const page = Math.max(1, Number.parseInt(params.get("page") || "1", 10) || 1);
     const focusId = Number.parseInt(params.get("focus") || "", 10);
-    const dataParams = libraryParams(values, page, null);
-    return { values, tags, page, focusId: Number.isSafeInteger(focusId) && focusId > 0 ? focusId : null, dataKey: dataParams.toString() };
+    const dataParams = libraryParams(values, null);
+    return { values, tags, focusId: Number.isSafeInteger(focusId) && focusId > 0 ? focusId : null, dataKey: dataParams.toString() };
   }
 
   function applyDecodedLibraryState(decoded) {
@@ -467,14 +469,13 @@
     });
     state.filterTags = [...decoded.tags];
     state.filters = { ...decoded.values, ...(decoded.tags.length ? { tag: [...decoded.tags] } : {}) };
-    state.page = decoded.page;
     state.libraryFocusId = decoded.focusId;
     state.libraryDataKey = decoded.dataKey;
     renderFilterTagChips();
     updateFilterCount();
   }
 
-  function libraryParams(filters = state.filters, page = state.page, focusId = state.libraryFocusId) {
+  function libraryParams(filters = state.filters, focusId = state.libraryFocusId) {
     const params = new URLSearchParams();
     if (filters.q) params.set("q", filters.q);
     FILTER_NAMES.forEach((name) => {
@@ -482,13 +483,12 @@
       if (Array.isArray(value)) value.forEach((entry) => params.append(name, entry));
       else if (value) params.set(name, value);
     });
-    if (page > 1) params.set("page", String(page));
     if (focusId) params.set("focus", String(focusId));
     return params;
   }
 
   function libraryHash(focusId = state.libraryFocusId) {
-    const query = libraryParams(state.filters, state.page, focusId).toString();
+    const query = libraryParams(state.filters, focusId).toString();
     return `#library${query ? `?${query}` : ""}`;
   }
 
@@ -843,7 +843,6 @@
     readFilters();
     state.selected = collection;
     state.libraryFocusId = collection.id;
-    state.page = 1;
     navigateLibrary();
   }
 
@@ -852,7 +851,6 @@
     if (name && value && ui.searchForm.elements[name]) ui.searchForm.elements[name].value = value;
     readFilters();
     state.libraryFocusId = null;
-    state.page = 1;
     navigateLibrary();
   }
 
@@ -911,7 +909,6 @@
     if (control) control.value = "";
     readFilters();
     state.libraryFocusId = null;
-    state.page = 1;
     navigateLibrary();
   }
 
@@ -921,7 +918,6 @@
     renderFilterTagChips();
     state.filters = {};
     state.libraryFocusId = null;
-    state.page = 1;
     updateFilterCount();
     if (load) navigateLibrary();
   }
@@ -1041,7 +1037,6 @@
       controller.input.value = option.name;
       readFilters();
       state.libraryFocusId = null;
-      state.page = 1;
       navigateLibrary();
     }
     closeFacetOptions(controller);
@@ -1067,7 +1062,6 @@
     renderFilterTagChips();
     readFilters();
     state.libraryFocusId = null;
-    state.page = 1;
     if (load) navigateLibrary();
   }
 
@@ -1076,7 +1070,6 @@
     renderFilterTagChips();
     readFilters();
     state.libraryFocusId = null;
-    state.page = 1;
     if (load) navigateLibrary();
   }
 
@@ -1093,19 +1086,30 @@
     });
   }
 
+  function collectionPageParams(page) {
+    const params = new URLSearchParams({ page: String(page), per_page: String(PER_PAGE) });
+    Object.entries(state.filters).forEach(([name, value]) => {
+      if (Array.isArray(value)) value.forEach((entry) => params.append(name, entry));
+      else params.set(name, value);
+    });
+    return params;
+  }
+
   async function loadCollections() {
     clearSelection();
+    state.page = 1;
+    state.totalPages = 0;
+    state.total = 0;
+    state.items = [];
+    state.libraryLoaded = false;
+    state.libraryLoadError = false;
     state.libraryLoading = true;
     const requestNumber = ++state.requestNumber;
     ui.loading.hidden = false;
     ui.empty.hidden = true;
     ui.results.hidden = true;
-    ui.pagination.hidden = true;
-    const params = new URLSearchParams({ page: String(state.page), per_page: String(PER_PAGE) });
-    Object.entries(state.filters).forEach(([name, value]) => {
-      if (Array.isArray(value)) value.forEach((entry) => params.append(name, entry));
-      else params.set(name, value);
-    });
+    renderLibraryLoadState();
+    const params = collectionPageParams(state.page);
     try {
       const data = await api(`/api/collections?${params}`);
       if (requestNumber !== state.requestNumber) return;
@@ -1115,7 +1119,6 @@
       state.libraryLoaded = true;
       ui.loading.hidden = true;
       renderCollections();
-      renderPagination();
       if (state.route === "library" && state.restoreLibraryContext) restoreLibraryWorkContext();
       setServiceState("online", "本機服務正常");
       return true;
@@ -1125,11 +1128,74 @@
       ui.results.hidden = false;
       ui.results.replaceChildren();
       ui.resultSummary.textContent = "無法讀取收藏";
+      renderLibraryLoadState();
       setServiceState("offline", "要求失敗");
       toast(error.message, true);
       return false;
     } finally {
-      if (requestNumber === state.requestNumber) state.libraryLoading = false;
+      if (requestNumber === state.requestNumber) {
+        state.libraryLoading = false;
+        renderLibraryLoadState();
+        scheduleLibraryLoadCheck();
+      }
+    }
+  }
+
+  function initializeLibraryInfiniteScroll() {
+    if (typeof window.IntersectionObserver !== "function") {
+      window.addEventListener("scroll", scheduleLibraryLoadCheck, { passive: true });
+      window.addEventListener("resize", scheduleLibraryLoadCheck, { passive: true });
+      return;
+    }
+    libraryScrollObserver = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) loadMoreCollections();
+    }, { rootMargin: "1200px 0px" });
+    libraryScrollObserver.observe(ui.libraryScrollSentinel);
+  }
+
+  function scheduleLibraryLoadCheck() {
+    window.requestAnimationFrame(() => {
+      if (state.route !== "library" || !state.libraryLoaded || state.libraryLoading || state.libraryLoadError) return;
+      const bounds = ui.libraryScrollSentinel.getBoundingClientRect();
+      if (bounds.top <= window.innerHeight + 1200) loadMoreCollections();
+    });
+  }
+
+  async function loadMoreCollections() {
+    if (state.route !== "library" || !state.libraryLoaded || state.libraryLoading || state.page >= state.totalPages) return false;
+    const nextPage = state.page + 1;
+    const requestNumber = ++state.requestNumber;
+    state.libraryLoading = true;
+    state.libraryLoadError = false;
+    renderLibraryLoadState();
+    const params = collectionPageParams(nextPage);
+    try {
+      const data = await api(`/api/collections?${params}`);
+      if (requestNumber !== state.requestNumber) return false;
+      const existingIds = new Set(state.items.map((item) => item.id));
+      const additions = data.items.filter((item) => !existingIds.has(item.id));
+      const startIndex = state.items.length;
+      state.items.push(...additions);
+      state.page = data.pagination.page;
+      state.total = data.pagination.total;
+      state.totalPages = data.pagination.total_pages;
+      appendCollectionItems(additions, startIndex);
+      updateLibrarySummary();
+      updateSelectionUI();
+      setServiceState("online", "本機服務正常");
+      return true;
+    } catch (error) {
+      if (requestNumber !== state.requestNumber) return false;
+      state.libraryLoadError = true;
+      setServiceState("offline", "要求失敗");
+      toast(`無法載入更多收藏：${error.message}`, true);
+      return false;
+    } finally {
+      if (requestNumber === state.requestNumber) {
+        state.libraryLoading = false;
+        renderLibraryLoadState();
+        scheduleLibraryLoadCheck();
+      }
     }
   }
 
@@ -1140,8 +1206,21 @@
     ui.empty.hidden = state.items.length !== 0;
     updateLibrarySummary();
 
+    appendCollectionItems(state.items, 0);
+
+    if (!applyLibraryFocus()) {
+      if (state.items[0] && !window.matchMedia("(max-width: 899px)").matches) selectCollection(state.items[0]);
+      else {
+        state.libraryFocusId = null;
+        clearDetail();
+      }
+    }
+    updateSelectionUI();
+  }
+
+  function appendCollectionItems(collections, startIndex) {
     const thumbnailRequestEpoch = nextThumbnailRequestEpoch();
-    state.items.forEach((collection, offset) => {
+    collections.forEach((collection, offset) => {
       const item = el("li", "collection-item");
       const selection = document.createElement("input");
       selection.type = "checkbox";
@@ -1186,35 +1265,37 @@
         flags.append(el("span", "mini-flag", value));
       });
       copy.append(kicker, title, meta, flags);
-      const index = el("span", "item-index", String((state.page - 1) * PER_PAGE + offset + 1).padStart(4, "0"));
+      const index = el("span", "item-index", String(startIndex + offset + 1).padStart(4, "0"));
       button.append(cover, copy, index);
       item.append(selectionControl, button);
       ui.results.append(item);
     });
 
-    if (!applyLibraryFocus()) {
-      if (state.items[0] && !window.matchMedia("(max-width: 899px)").matches) selectCollection(state.items[0]);
-      else {
-        state.libraryFocusId = null;
-        clearDetail();
-      }
+  }
+
+  function renderLibraryLoadState() {
+    if (!state.libraryLoaded || state.total === 0) {
+      ui.loadMore.hidden = true;
+      return;
     }
-    updateSelectionUI();
-  }
-
-  function renderPagination() {
-    ui.pagination.hidden = state.totalPages <= 1;
-    ui.previousPage.disabled = state.page <= 1;
-    ui.nextPage.disabled = state.page >= state.totalPages;
-    ui.pageLabel.textContent = `第 ${state.page} / ${state.totalPages || 1} 頁`;
-  }
-
-  function changePage(page) {
-    if (page < 1 || page > state.totalPages || page === state.page) return;
-    state.page = page;
-    state.libraryFocusId = null;
-    state.libraryScrollY = 0;
-    navigateLibrary();
+    if (state.libraryLoading) {
+      ui.loadMore.hidden = false;
+      ui.loadMoreSpinner.hidden = false;
+      ui.retryLibraryLoad.hidden = true;
+      ui.loadMoreLabel.textContent = `正在載入更多收藏…已顯示 ${formatNumber(state.items.length)} 筆`;
+      return;
+    }
+    ui.loadMoreSpinner.hidden = true;
+    if (state.libraryLoadError) {
+      ui.loadMore.hidden = false;
+      ui.retryLibraryLoad.hidden = false;
+      ui.loadMoreLabel.textContent = "更多收藏載入失敗";
+      return;
+    }
+    ui.retryLibraryLoad.hidden = true;
+    const allLoaded = state.page >= state.totalPages;
+    ui.loadMore.hidden = !allLoaded;
+    if (allLoaded) ui.loadMoreLabel.textContent = `已顯示全部 ${formatNumber(state.total)} 筆收藏`;
   }
 
   function setLayout(layout) {
@@ -1405,7 +1486,6 @@
     closeMobileDetail({ restoreFocus: false });
     readFilters();
     state.libraryFocusId = null;
-    state.page = 1;
     navigateLibrary();
     toast(`已加入篩選：${value}`);
   }
@@ -1414,7 +1494,7 @@
     if (!ui.resultSummary) return;
     ui.resultSummary.textContent = state.total === 0
       ? "沒有結果"
-      : `共 ${formatNumber(state.total)} 筆 · 已選 ${formatNumber(state.selectedIds.size)} 筆`;
+      : `共 ${formatNumber(state.total)} 筆 · 已顯示 ${formatNumber(state.items.length)} 筆 · 已選 ${formatNumber(state.selectedIds.size)} 筆`;
   }
 
   function renderTags(collection) {
@@ -2062,7 +2142,7 @@
     updateSelectionUI();
   }
 
-  function selectCurrentPage() {
+  function selectLoadedCollections() {
     state.items.forEach((collection) => {
       state.selectedIds.add(collection.id);
       state.selectedRecords.set(collection.id, collection);
@@ -2071,7 +2151,7 @@
     updateSelectionUI();
   }
 
-  function invertCurrentPageSelection() {
+  function invertLoadedSelection() {
     state.items.forEach((collection) => {
       if (state.selectedIds.has(collection.id)) {
         state.selectedIds.delete(collection.id);
@@ -2837,7 +2917,6 @@
       };
       toast(`${prefix}：新增 ${formatNumber(summary.added)}、略過 ${formatNumber(summary.skipped)}、問題 ${formatNumber(report.issues.length)}`, report.status === "partial");
       invalidateDerivedData({ library: true });
-      state.page = 1;
       state.libraryFocusId = null;
       state.libraryDataKey = null;
     } catch (error) {
