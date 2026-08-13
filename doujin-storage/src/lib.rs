@@ -16,6 +16,7 @@ pub mod settings;
 pub mod statistics;
 pub mod thumbnails;
 pub mod vocabulary;
+pub mod work_baskets;
 
 use std::collections::HashSet;
 use std::error::Error;
@@ -38,7 +39,7 @@ use crate::metadata::{
     MetadataAssertionDecision, MetadataField, MetadataSource, MetadataValue, SelectionSnapshot,
 };
 
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const SCAN_RUN_GUARD_MIGRATION: &str = include_str!("../migrations/0002_scan_run_guard.sql");
 const EXTERNAL_SEARCH_JOBS_MIGRATION: &str =
@@ -58,6 +59,7 @@ const EXTERNAL_SEARCH_BATCHES_MIGRATION: &str =
     include_str!("../migrations/0011_external_search_batches.sql");
 const VOCABULARY_GOVERNANCE_MIGRATION: &str =
     include_str!("../migrations/0012_vocabulary_governance.sql");
+const WORK_BASKETS_MIGRATION: &str = include_str!("../migrations/0013_work_baskets.sql");
 
 struct Migration {
     version: i64,
@@ -126,6 +128,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0012_vocabulary_governance",
         sql: VOCABULARY_GOVERNANCE_MIGRATION,
     },
+    Migration {
+        version: 13,
+        name: "0013_work_baskets",
+        sql: WORK_BASKETS_MIGRATION,
+    },
 ];
 
 #[derive(Debug)]
@@ -170,6 +177,7 @@ pub enum StorageError {
     SavedViewNotFound(i64),
     SavedViewNameConflict(String),
     InvalidSavedView(String),
+    WorkBasketNotFound(i64),
     Ingest {
         path: PathBuf,
         source: Box<StorageError>,
@@ -278,6 +286,9 @@ impl fmt::Display for StorageError {
                 write!(formatter, "Saved View 名稱已存在：{name}")
             }
             Self::InvalidSavedView(reason) => write!(formatter, "Saved View 無效：{reason}"),
+            Self::WorkBasketNotFound(basket_id) => {
+                write!(formatter, "找不到工作籃 ID：{basket_id}")
+            }
             Self::Ingest { path, source } => {
                 write!(formatter, "收藏入庫失敗：{}：{source}", path.display())
             }
@@ -323,6 +334,7 @@ impl Error for StorageError {
             | Self::SavedViewNotFound(_)
             | Self::SavedViewNameConflict(_)
             | Self::InvalidSavedView(_) => None,
+            Self::WorkBasketNotFound(_) => None,
         }
     }
 }

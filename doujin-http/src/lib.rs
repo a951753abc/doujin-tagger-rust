@@ -61,6 +61,7 @@ use doujin_storage::thumbnails::{
 use doujin_storage::vocabulary::{
     VocabularyCandidateGroup, VocabularyField, VocabularyMergePreflight, VocabularyMergeResult,
 };
+use doujin_storage::work_baskets::{WorkBasketItemSnapshot, WorkBasketSnapshot, WorkBasketSummary};
 use doujin_thumbnails::transparent_placeholder_webp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -186,6 +187,16 @@ where
             get(get_saved_view::<R>)
                 .put(update_saved_view::<R>)
                 .delete(delete_saved_view::<R>),
+        )
+        .route("/api/work-baskets", get(list_work_baskets::<R>))
+        .route("/api/work-baskets/{basket_id}", get(get_work_basket::<R>))
+        .route(
+            "/api/work-baskets/{basket_id}/collections",
+            post(add_work_basket_collections::<R>).delete(clear_work_basket::<R>),
+        )
+        .route(
+            "/api/work-baskets/{basket_id}/collections/{collection_id}",
+            axum::routing::delete(remove_work_basket_collection::<R>),
         )
         .route("/api/collections", get(list_collections::<R>))
         .route("/api/review-queue", get(list_review_queue::<R>))
@@ -1496,6 +1507,63 @@ impl From<CollectionQueryLocation> for CollectionQueryLocationResponse {
     }
 }
 
+#[derive(Debug, Serialize)]
+struct WorkBasketsResponse {
+    baskets: Vec<WorkBasketSummaryResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct WorkBasketSummaryResponse {
+    id: i64,
+    name: String,
+    count: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct WorkBasketResponse {
+    id: i64,
+    name: String,
+    count: usize,
+    items: Vec<WorkBasketItemResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct WorkBasketItemResponse {
+    collection: CollectionResponse,
+    added_at: String,
+}
+
+impl From<WorkBasketSummary> for WorkBasketSummaryResponse {
+    fn from(basket: WorkBasketSummary) -> Self {
+        Self {
+            id: basket.id,
+            name: basket.name,
+            count: basket.count,
+        }
+    }
+}
+
+impl From<WorkBasketItemSnapshot> for WorkBasketItemResponse {
+    fn from(item: WorkBasketItemSnapshot) -> Self {
+        Self {
+            collection: item.collection.into(),
+            added_at: item.added_at,
+        }
+    }
+}
+
+impl From<WorkBasketSnapshot> for WorkBasketResponse {
+    fn from(basket: WorkBasketSnapshot) -> Self {
+        let count = basket.items.len();
+        Self {
+            id: basket.id,
+            name: basket.name,
+            count,
+            items: basket.items.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
 impl From<CollectionPage> for CollectionPageResponse {
     fn from(page: CollectionPage) -> Self {
         let total_pages = if page.total == 0 {
@@ -1796,6 +1864,111 @@ fn saved_view_query_response(query: SavedViewQuery) -> SavedViewQueryResponse {
 
 fn default_true() -> bool {
     true
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkBasketCollectionsRequest {
+    collection_ids: Vec<i64>,
+}
+
+async fn list_work_baskets<R>(
+    State(state): State<HttpState<R>>,
+) -> Result<Json<WorkBasketsResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let baskets = tokio::task::spawn_blocking(move || {
+        let application = lock_interactive_application(&state.application)?;
+        application
+            .work_baskets()
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(WorkBasketsResponse {
+        baskets: baskets.into_iter().map(Into::into).collect(),
+    }))
+}
+
+async fn get_work_basket<R>(
+    State(state): State<HttpState<R>>,
+    Path(basket_id): Path<String>,
+) -> Result<Json<WorkBasketResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let basket_id = parse_work_basket_id(&basket_id)?;
+    let basket = tokio::task::spawn_blocking(move || {
+        let application = lock_interactive_application(&state.application)?;
+        application
+            .work_basket(basket_id)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(basket.into()))
+}
+
+async fn add_work_basket_collections<R>(
+    State(state): State<HttpState<R>>,
+    Path(basket_id): Path<String>,
+    payload: Result<Json<WorkBasketCollectionsRequest>, JsonRejection>,
+) -> Result<Json<WorkBasketResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let basket_id = parse_work_basket_id(&basket_id)?;
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let collection_ids = validate_batch_collection_ids(payload.collection_ids)?;
+    let basket = tokio::task::spawn_blocking(move || {
+        let mut application = lock_interactive_application(&state.application)?;
+        application
+            .add_to_work_basket(basket_id, &collection_ids)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(basket.into()))
+}
+
+async fn remove_work_basket_collection<R>(
+    State(state): State<HttpState<R>>,
+    Path((basket_id, collection_id)): Path<(String, String)>,
+) -> Result<Json<WorkBasketResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let basket_id = parse_work_basket_id(&basket_id)?;
+    let collection_id = parse_collection_id(&collection_id)?;
+    let basket = tokio::task::spawn_blocking(move || {
+        let mut application = lock_interactive_application(&state.application)?;
+        application
+            .remove_from_work_basket(basket_id, collection_id)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(basket.into()))
+}
+
+async fn clear_work_basket<R>(
+    State(state): State<HttpState<R>>,
+    Path(basket_id): Path<String>,
+) -> Result<Json<WorkBasketResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let basket_id = parse_work_basket_id(&basket_id)?;
+    let basket = tokio::task::spawn_blocking(move || {
+        let mut application = lock_interactive_application(&state.application)?;
+        application
+            .clear_work_basket(basket_id)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(basket.into()))
 }
 
 async fn list_collections<R>(
@@ -3134,6 +3307,14 @@ fn parse_collection_id(value: &str) -> Result<i64, ApiError> {
         .ok()
         .filter(|id| *id > 0)
         .ok_or_else(|| ApiError::bad_request("invalid_collection_id", "collection ID 必須是正整數"))
+}
+
+fn parse_work_basket_id(value: &str) -> Result<i64, ApiError> {
+    value
+        .parse::<i64>()
+        .ok()
+        .filter(|id| *id > 0)
+        .ok_or_else(|| ApiError::bad_request("invalid_work_basket_id", "工作籃 ID 必須是正整數"))
 }
 
 fn parse_saved_view_id(value: &str) -> Result<i64, ApiError> {
@@ -4480,6 +4661,11 @@ impl ApiError {
             StorageError::InvalidSavedView(reason) => {
                 Self::bad_request("invalid_saved_view", &reason)
             }
+            StorageError::WorkBasketNotFound(_) => Self::new(
+                StatusCode::NOT_FOUND,
+                "work_basket_not_found",
+                "找不到指定的工作籃",
+            ),
             StorageError::InvalidCanonicalMapping(reason) => {
                 Self::bad_request("invalid_vocabulary_action", &reason)
             }
