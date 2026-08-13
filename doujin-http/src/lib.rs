@@ -185,8 +185,20 @@ where
             post(start_thumbnail_cache_job::<R>),
         )
         .route(
+            "/api/thumbnail-cache-jobs/preflight",
+            post(preflight_thumbnail_cache_job::<R>),
+        )
+        .route(
             "/api/thumbnail-cache-jobs/current",
             get(get_current_thumbnail_cache_job::<R>),
+        )
+        .route(
+            "/api/thumbnail-cache-jobs/current/failures",
+            get(get_thumbnail_cache_failures::<R>),
+        )
+        .route(
+            "/api/thumbnail-cache-jobs/current/retry-failures",
+            post(retry_thumbnail_cache_failures::<R>),
         )
         .route(
             "/api/collections/{collection_id}/metadata",
@@ -244,6 +256,7 @@ where
         .route("/api/file-actions/move", post(move_collections::<R>))
         .route("/api/file-actions/delete", post(delete_collections::<R>))
         .route("/api/scans", post(start_scan::<R>))
+        .route("/api/scans/latest", get(get_latest_scan::<R>))
         .route("/api/scans/{scan_run_id}", get(get_scan::<R>))
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
@@ -832,6 +845,17 @@ struct ThumbnailCacheJobRequest {
 }
 
 #[derive(Debug, Serialize)]
+struct ThumbnailCachePreflightResponse {
+    root_ids: Vec<i64>,
+    root_count: usize,
+    collection_count: usize,
+    ready: usize,
+    requires_build: usize,
+    known_failures: usize,
+    cancellation_supported: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct ThumbnailCacheJobEnvelope {
     job: Option<ThumbnailCacheJobResponse>,
 }
@@ -846,6 +870,7 @@ struct ThumbnailCacheJobResponse {
     running: usize,
     ready: usize,
     failed: usize,
+    failed_collection_ids: Vec<i64>,
     progress_percent: f64,
     elapsed_seconds: u64,
     estimated_seconds_remaining: Option<u64>,
@@ -855,6 +880,46 @@ impl ThumbnailCacheJobResponse {
     fn is_running(&self) -> bool {
         self.status == "running"
     }
+}
+
+#[derive(Debug, Serialize)]
+struct ThumbnailCacheFailuresResponse {
+    job_id: Option<u64>,
+    items: Vec<CollectionResponse>,
+    missing_collection_ids: Vec<i64>,
+}
+
+async fn preflight_thumbnail_cache_job<R>(
+    State(state): State<HttpState<R>>,
+    payload: Result<Json<ThumbnailCacheJobRequest>, JsonRejection>,
+) -> Result<Json<ThumbnailCachePreflightResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let response = tokio::task::spawn_blocking(move || {
+        let application = lock_interactive_application(&state.application)?;
+        let preflight = application
+            .thumbnail_cache_preflight(&payload.root_ids)
+            .map_err(ApiError::from_application)?;
+        let collection_count = preflight.collection_ids.len();
+        Ok::<_, ApiError>(ThumbnailCachePreflightResponse {
+            root_count: preflight.root_ids.len(),
+            root_ids: preflight.root_ids,
+            collection_count,
+            ready: preflight.ready,
+            requires_build: collection_count.saturating_sub(preflight.ready),
+            known_failures: application
+                .thumbnail_failed_collection_ids(&preflight.collection_ids)
+                .map_err(ApiError::from_application)?
+                .len(),
+            cancellation_supported: false,
+        })
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(response))
 }
 
 async fn start_thumbnail_cache_job<R>(
@@ -936,6 +1001,123 @@ where
     Ok(Json(ThumbnailCacheJobEnvelope { job }))
 }
 
+async fn get_thumbnail_cache_failures<R>(
+    State(state): State<HttpState<R>>,
+) -> Result<Json<ThumbnailCacheFailuresResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let response = tokio::task::spawn_blocking(move || {
+        let jobs = state
+            .thumbnail_cache_jobs
+            .lock()
+            .map_err(|_| ApiError::internal())?;
+        let Some(job) = jobs.current.as_ref() else {
+            return Ok(ThumbnailCacheFailuresResponse {
+                job_id: None,
+                items: Vec::new(),
+                missing_collection_ids: Vec::new(),
+            });
+        };
+        let application = lock_interactive_application(&state.application)?;
+        let failed_collection_ids = thumbnail_cache_failed_ids(&application, job)?;
+        let mut items = Vec::with_capacity(failed_collection_ids.len());
+        let mut missing_collection_ids = Vec::new();
+        for collection_id in failed_collection_ids {
+            match application.collection(collection_id) {
+                Ok(collection) => items.push(collection.into()),
+                Err(ApplicationError::Storage(StorageError::CollectionNotFound(_))) => {
+                    missing_collection_ids.push(collection_id);
+                }
+                Err(error) => return Err(ApiError::from_application(error)),
+            }
+        }
+        Ok(ThumbnailCacheFailuresResponse {
+            job_id: Some(job.id),
+            items,
+            missing_collection_ids,
+        })
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(response))
+}
+
+async fn retry_thumbnail_cache_failures<R>(
+    State(state): State<HttpState<R>>,
+) -> Result<Json<ThumbnailCacheJobResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let response = tokio::task::spawn_blocking(move || {
+        let mut jobs = state
+            .thumbnail_cache_jobs
+            .lock()
+            .map_err(|_| ApiError::internal())?;
+        let mut application = lock_interactive_application(&state.application)?;
+        let current = jobs.current.as_ref().ok_or_else(|| {
+            ApiError::conflict(
+                "thumbnail_cache_job_not_found",
+                "目前沒有可重試的快取縮圖工作",
+            )
+        })?;
+        let current_response = thumbnail_cache_job_response(&application, current)?;
+        if current_response.is_running() {
+            return Err(ApiError::conflict(
+                "thumbnail_cache_job_running",
+                "快取縮圖工作仍在進行，完成後才能重試失敗項目",
+            ));
+        }
+        let failure_ids = current_response.failed_collection_ids;
+        if failure_ids.is_empty() {
+            return Err(ApiError::conflict(
+                "thumbnail_cache_no_failures",
+                "目前的快取縮圖工作沒有失敗項目",
+            ));
+        }
+        let root_ids = current.root_ids.clone();
+        let prepared = application
+            .retry_thumbnails(&failure_ids)
+            .map_err(ApiError::from_application)?;
+        let counts = application
+            .thumbnail_status_counts(&prepared.collection_ids)
+            .map_err(ApiError::from_application)?;
+        let initial_completed = counts
+            .ready
+            .saturating_add(counts.failed)
+            .saturating_add(counts.missing)
+            .saturating_add(prepared.failed_collection_ids.len());
+        jobs.next_id = jobs.next_id.saturating_add(1);
+        let job = ThumbnailCacheJob {
+            id: jobs.next_id,
+            root_ids,
+            collection_ids: prepared.collection_ids,
+            failed_collection_ids: prepared.failed_collection_ids,
+            initial_completed,
+            started_at: Instant::now(),
+        };
+        let response = thumbnail_cache_job_response(&application, &job)?;
+        jobs.current = Some(job);
+        Ok(response)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(response))
+}
+
+fn thumbnail_cache_failed_ids<R: RecycleBin>(
+    application: &ApplicationService<R>,
+    job: &ThumbnailCacheJob,
+) -> Result<Vec<i64>, ApiError> {
+    let mut failed_collection_ids = application
+        .thumbnail_failed_collection_ids(&job.collection_ids)
+        .map_err(ApiError::from_application)?;
+    failed_collection_ids.extend(job.failed_collection_ids.iter().copied());
+    failed_collection_ids.sort_unstable();
+    failed_collection_ids.dedup();
+    Ok(failed_collection_ids)
+}
+
 fn thumbnail_cache_job_response<R: RecycleBin>(
     application: &ApplicationService<R>,
     job: &ThumbnailCacheJob,
@@ -943,10 +1125,8 @@ fn thumbnail_cache_job_response<R: RecycleBin>(
     let counts = application
         .thumbnail_status_counts(&job.collection_ids)
         .map_err(ApiError::from_application)?;
-    let failed = counts
-        .failed
-        .saturating_add(counts.missing)
-        .saturating_add(job.failed_collection_ids.len());
+    let failed_collection_ids = thumbnail_cache_failed_ids(application, job)?;
+    let failed = failed_collection_ids.len();
     let total = job
         .collection_ids
         .len()
@@ -983,6 +1163,7 @@ fn thumbnail_cache_job_response<R: RecycleBin>(
         running: counts.running,
         ready: counts.ready,
         failed,
+        failed_collection_ids,
         progress_percent,
         elapsed_seconds: elapsed.as_secs(),
         estimated_seconds_remaining,
@@ -2868,6 +3049,37 @@ where
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(result))
+}
+
+#[derive(Debug, Serialize)]
+struct LatestScanEnvelope {
+    scan: Option<ScanRunResponse>,
+}
+
+async fn get_latest_scan<R>(
+    State(state): State<HttpState<R>>,
+) -> Result<Json<LatestScanEnvelope>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let scan = tokio::task::spawn_blocking(move || {
+        let application = lock_interactive_application(&state.application)?;
+        let Some(run) = application
+            .repository()
+            .latest_scan_run()
+            .map_err(ApiError::from_storage)?
+        else {
+            return Ok(None);
+        };
+        let issues = application
+            .repository()
+            .scan_issues(run.id)
+            .map_err(ApiError::from_storage)?;
+        ScanRunResponse::from_snapshots(run, issues).map(Some)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(LatestScanEnvelope { scan }))
 }
 
 async fn get_scan<R>(

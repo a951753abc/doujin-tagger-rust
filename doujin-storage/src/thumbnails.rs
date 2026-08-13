@@ -292,6 +292,30 @@ impl CatalogRepository {
         })
     }
 
+    pub fn thumbnail_failed_or_missing_collection_ids(
+        &self,
+        collection_ids: &[i64],
+    ) -> StorageResult<Vec<i64>> {
+        if collection_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let collection_ids_json = serde_json::to_string(collection_ids)?;
+        let mut statement = self.connection.prepare(
+            "WITH targets AS (
+                 SELECT CAST(value AS INTEGER) AS collection_id FROM json_each(?1)
+             )
+             SELECT targets.collection_id
+             FROM targets
+             LEFT JOIN thumbnail_states AS state
+               ON state.collection_id = targets.collection_id
+             WHERE state.collection_id IS NULL OR state.status = 'failed'
+             ORDER BY targets.collection_id",
+        )?;
+        Ok(statement
+            .query_map([collection_ids_json], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
     pub fn due_thumbnails(&self, limit: u32) -> StorageResult<Vec<ThumbnailStateSnapshot>> {
         self.due_thumbnails_with_min_priority(limit, BACKGROUND_THUMBNAIL_PRIORITY)
     }
