@@ -1320,7 +1320,7 @@
       ui.loadMore.hidden = false;
       ui.loadMoreSpinner.hidden = false;
       ui.retryLibraryLoad.hidden = true;
-      ui.loadMoreLabel.textContent = `正在載入更多收藏…已顯示 ${formatNumber(state.items.length)} 筆`;
+      ui.loadMoreLabel.textContent = `正在載入更多收藏…已載入 ${formatNumber(state.items.length)} 筆`;
       return;
     }
     ui.loadMoreSpinner.hidden = true;
@@ -1333,7 +1333,7 @@
     ui.retryLibraryLoad.hidden = true;
     const allLoaded = state.page >= state.totalPages;
     ui.loadMore.hidden = !allLoaded;
-    if (allLoaded) ui.loadMoreLabel.textContent = `已顯示全部 ${formatNumber(state.total)} 筆收藏`;
+    if (allLoaded) ui.loadMoreLabel.textContent = `已載入全部 ${formatNumber(state.total)} 筆收藏`;
   }
 
   function setLayout(layout) {
@@ -1530,9 +1530,7 @@
 
   function updateLibrarySummary() {
     if (!ui.resultSummary) return;
-    ui.resultSummary.textContent = state.total === 0
-      ? "沒有結果"
-      : `共 ${formatNumber(state.total)} 筆 · 已顯示 ${formatNumber(state.items.length)} 筆 · 已選 ${formatNumber(state.selectedIds.size)} 筆`;
+    ui.resultSummary.textContent = `已選 ${formatNumber(state.selectedIds.size)} / 已載入 ${formatNumber(state.items.length)} / 符合 ${formatNumber(state.total)}`;
   }
 
   function renderTags(collection) {
@@ -2258,7 +2256,7 @@
     ui.selectionEmpty.hidden = collections.length !== 0;
     ui.batchTools.hidden = collections.length === 0;
     ui.workbenchSelectionSummary.textContent = collections.length
-      ? `本次操作清單包含 ${collections.length} 筆目前頁面的收藏。`
+      ? `本次操作清單包含 ${formatNumber(collections.length)} 筆已選收藏；目前查詢已載入 ${formatNumber(state.items.length)} 筆，共符合 ${formatNumber(state.total)} 筆。`
       : "目前沒有批次操作清單。";
     collections.forEach((collection, index) => {
       const item = el("li", "selected-collection-item");
@@ -2395,7 +2393,7 @@
         option.textContent = `${root.label} — ${root.path}`;
         ui.archiveRootSelect.append(option);
       });
-      byId("move-summary").textContent = `準備搬移 ${collections.length} 筆收藏。只有新收藏來源可以搬移；其他項目會逐筆回報失敗。`;
+      byId("move-summary").textContent = `${selectionImpactSummary("搬移", collections.length)}只有新收藏來源可以搬移；其他項目會逐筆回報失敗。`;
       renderConfirmItems(byId("move-item-list"), collections);
       ui.moveDialog.showModal();
     } catch (error) {
@@ -2430,7 +2428,6 @@
     if (!collections.length) return;
     ui.deleteForm.reset();
     ui.deleteForm.elements.mode.value = "soft";
-    byId("delete-summary").textContent = `準備刪除 ${collections.length} 筆收藏。請先選擇是否需要經過資源回收桶。`;
     renderConfirmItems(byId("delete-item-list"), collections);
     syncDeleteMode();
     ui.deleteDialog.showModal();
@@ -2439,12 +2436,22 @@
   function syncDeleteMode() {
     const permanent = ui.deleteForm.elements.mode.value === "permanent";
     const phrase = `永久刪除 ${state.selectedIds.size} 筆`;
+    byId("delete-summary").textContent = selectionImpactSummary(permanent ? "永久刪除" : "移到資源回收桶");
     ui.permanentConfirmPhrase.textContent = phrase;
     ui.permanentConfirmGroup.hidden = !permanent;
     byId("permanent-confirm-note").hidden = !permanent;
     const submit = byId("confirm-delete");
     submit.textContent = permanent ? `永久刪除 ${state.selectedIds.size} 筆` : "移到資源回收桶";
     submit.disabled = permanent && ui.deleteForm.elements.confirmation.value !== phrase;
+  }
+
+  function selectionImpactSummary(action, selectedCount = state.selectedIds.size) {
+    const queryTotal = Math.max(Number(state.total) || 0, selectedCount);
+    const unaffectedCount = Math.max(0, queryTotal - selectedCount);
+    const impact = action === "移到資源回收桶"
+      ? `將把已選的 ${formatNumber(selectedCount)} 筆移到資源回收桶`
+      : `將${action}已選的 ${formatNumber(selectedCount)} 筆`;
+    return `${impact}。此查詢共 ${formatNumber(queryTotal)} 筆，其餘 ${formatNumber(unaffectedCount)} 筆不受影響。`;
   }
 
   async function executeDelete(event) {

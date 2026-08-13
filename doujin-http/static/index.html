@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>私藏編目室</title>
-  <link rel="stylesheet" href="/assets/app.css?v=35">
-  <script src="/assets/app.js?v=35" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=36">
+  <script src="/assets/app.js?v=36" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -317,7 +317,7 @@
 
         <aside class="selection-rail" id="selection-rail" aria-label="批次選取" hidden>
           <p><strong id="selection-count">0</strong> 筆已選</p>
-          <span>選取只保留在目前頁面</span>
+          <span>批次操作只影響已選收藏；新載入結果不會自動加入</span>
           <div>
             <button class="text-button" id="clear-selection" type="button">清除選取</button>
               <a class="secondary-button button-link" href="#workbench">加標籤</a>
@@ -333,14 +333,14 @@
         <div class="operations-dashboard">
           <section class="operations-section batch-desk" aria-labelledby="batch-desk-heading">
             <div class="section-heading ruled-heading">
-              <div><p class="section-index">01 / 批次操作</p><h2 id="batch-desk-heading">目前頁面選取</h2></div>
+              <div><p class="section-index">01 / 批次操作</p><h2 id="batch-desk-heading">已選收藏</h2></div>
               <a class="text-link" href="#library">返回全部藏書調整選取 <span aria-hidden="true">→</span></a>
             </div>
             <div class="selection-summary" id="workbench-selection-summary" aria-live="polite"></div>
             <ol class="selected-collection-list" id="selected-collection-list"></ol>
             <div class="workbench-empty" id="selection-empty">
               <span aria-hidden="true">選</span>
-              <div><h3>尚未選取收藏</h3><p>回到藏書，以核取方塊、全選本頁或反選本頁建立這次操作清單。</p></div>
+              <div><h3>尚未選取收藏</h3><p>回到藏書，以核取方塊、全選已載入或反選已載入建立這次操作清單。</p></div>
             </div>
 
             <div class="batch-tools" id="batch-tools" hidden>
