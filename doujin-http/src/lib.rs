@@ -77,6 +77,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::net::TcpListener;
 
+mod instance;
+mod service;
+
+pub use instance::ServiceInstanceConfig;
+pub use service::{ServiceOptions, run_service};
+
 #[derive(Debug)]
 pub enum ServerError {
     Io(std::io::Error),

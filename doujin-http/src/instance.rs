@@ -21,6 +21,35 @@ struct InstanceMetadata<'a> {
     started_at_unix: u64,
 }
 
+/// instance metadata 與 service lock 的顯式設定；env 解析版本見
+/// [`ServiceInstanceConfig::from_environment`]。
+pub struct ServiceInstanceConfig {
+    pub metadata_path: PathBuf,
+    pub lock_path: PathBuf,
+    pub instance_id: String,
+}
+
+impl ServiceInstanceConfig {
+    /// 從 `DOUJIN_INSTANCE_METADATA`／`DOUJIN_INSTANCE_LOCK`／`DOUJIN_INSTANCE_ID` 讀取；
+    /// 三者全缺為 `None`，只給部分則是錯誤。
+    pub fn from_environment() -> Result<Option<Self>, Box<dyn std::error::Error + Send + Sync>> {
+        let metadata_path = std::env::var_os(METADATA_ENV).map(PathBuf::from);
+        let lock_path = std::env::var_os(LOCK_ENV).map(PathBuf::from);
+        let instance_id = std::env::var(ID_ENV).ok().filter(|value| !value.is_empty());
+        match (metadata_path, lock_path, instance_id) {
+            (None, None, None) => Ok(None),
+            (Some(metadata_path), Some(lock_path), Some(instance_id)) => Ok(Some(Self {
+                metadata_path,
+                lock_path,
+                instance_id,
+            })),
+            _ => {
+                Err("launcher instance 設定不完整；請同時提供 metadata、lock 與 instance ID".into())
+            }
+        }
+    }
+}
+
 pub(crate) struct ServiceInstanceGuard {
     _lock: File,
     metadata_path: PathBuf,
@@ -28,26 +57,17 @@ pub(crate) struct ServiceInstanceGuard {
 }
 
 impl ServiceInstanceGuard {
-    pub(crate) fn from_environment() -> Result<Option<Self>, Box<dyn std::error::Error>> {
-        let metadata_path = std::env::var_os(METADATA_ENV).map(PathBuf::from);
-        let lock_path = std::env::var_os(LOCK_ENV).map(PathBuf::from);
-        let instance_id = std::env::var(ID_ENV).ok().filter(|value| !value.is_empty());
-        match (metadata_path, lock_path, instance_id) {
-            (None, None, None) => Ok(None),
-            (Some(metadata_path), Some(lock_path), Some(instance_id)) => {
-                Self::acquire(metadata_path, lock_path, instance_id).map(Some)
-            }
-            _ => {
-                Err("launcher instance 設定不完整；請同時提供 metadata、lock 與 instance ID".into())
-            }
-        }
+    pub(crate) fn from_config(
+        config: ServiceInstanceConfig,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::acquire(config.metadata_path, config.lock_path, config.instance_id)
     }
 
     fn acquire(
         metadata_path: PathBuf,
         lock_path: PathBuf,
         instance_id: String,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         if let Some(parent) = metadata_path.parent() {
             fs::create_dir_all(parent)?;
         }
