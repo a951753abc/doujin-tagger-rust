@@ -1788,6 +1788,56 @@ async fn statistics_api_reports_categories_tags_and_common_metadata() {
 }
 
 #[tokio::test]
+async fn facets_merge_case_variants_and_match_collection_filter_totals() {
+    let tree = TestTree::new("facet-case-variants");
+    tree.zip("first.zip");
+    tree.zip("second.zip");
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application
+        .run_scan(&[ScanRoot {
+            path: tree.library(),
+            source: SourceKind::Archive,
+            label: "歸檔區".to_owned(),
+        }])
+        .expect("scan collections");
+    let collection_ids = application
+        .repository()
+        .collections(&doujin_storage::collections::CollectionQuery::default())
+        .expect("collections")
+        .items
+        .into_iter()
+        .map(|collection| collection.id)
+        .collect::<Vec<_>>();
+    assert_eq!(2, collection_ids.len());
+
+    for (collection_id, event) in collection_ids.iter().zip(["Comiket", "comiket"]) {
+        application
+            .set_manual_metadata(
+                *collection_id,
+                MetadataField::Event,
+                MetadataValue::Text(event.to_owned()),
+            )
+            .expect("set event");
+    }
+
+    let server = RunningServer::start(application).await;
+    let facets = server.request("GET", "/api/facets?field=event", &[]).await;
+    assert_eq!(200, facets.status);
+    let items = facets.json["items"].as_array().expect("facet items");
+    assert_eq!(1, items.len());
+    assert_eq!("Comiket", items[0]["name"]);
+    assert_eq!(2, items[0]["count"]);
+
+    let collections = server
+        .request("GET", "/api/collections?event=Comiket", &[])
+        .await;
+    assert_eq!(200, collections.status);
+    assert_eq!(2, collections.json["pagination"]["total"]);
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn bind_configuration_accepts_only_ipv4_or_ipv6_loopback() {
     assert!(
         validate_loopback_address(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 5000)).is_ok()
