@@ -134,6 +134,7 @@
   let mobileDetailScrollPosition = 0;
   let mobileDetailRestoreFocus = true;
   let libraryScrollObserver = null;
+  let restoreFilterToggleFocus = false;
   const thumbnailObserver = typeof window.IntersectionObserver === "function"
     ? new IntersectionObserver((entries) => {
         entries.forEach((entry) => {
@@ -166,8 +167,11 @@
       eventShelfBooks: byId("event-shelf-books"),
       searchForm: byId("search-form"),
       searchInput: byId("search-input"),
+      headerSearchScope: byId("header-search-scope"),
       filterPanel: byId("filter-panel"),
       filterToggle: byId("filter-toggle"),
+      filterDraftStatus: byId("filter-draft-status"),
+      applyFilters: byId("apply-filters"),
       activeFilterCount: byId("active-filter-count"),
       activeFilterChips: byId("active-filter-chips"),
       filterTagChips: byId("filter-tag-chips"),
@@ -210,6 +214,7 @@
       recentCount: byId("recent-count"),
       focusFilterDialog: byId("focus-filter-dialog"),
       focusFilterMessage: byId("focus-filter-message"),
+      discardFilterDialog: byId("discard-filter-dialog"),
       metadataDialog: byId("metadata-dialog"),
       metadataForm: byId("metadata-form"),
       metadataField: byId("metadata-field"),
@@ -304,21 +309,24 @@
     });
     ui.searchForm.addEventListener("submit", (event) => {
       event.preventDefault();
-      state.libraryFocusId = null;
-      readFilters();
-      setFilterPanelOpen(false);
-      navigateLibrary();
+      const filterSubmission = event.submitter === ui.applyFilters || ui.filterPanel.contains(document.activeElement);
+      if (filterSubmission) applyFilterDraft();
+      else applyHeaderSearch();
     });
+    ui.filterPanel.addEventListener("input", updateFilterDraftState);
+    ui.filterPanel.addEventListener("change", updateFilterDraftState);
     ui.filterToggle.addEventListener("click", () => {
-      setFilterPanelOpen(ui.filterPanel.hidden);
+      if (ui.filterPanel.hidden) setFilterPanelOpen(true);
+      else requestFilterPanelClose({ restoreFocus: true });
     });
-    byId("close-filter-panel").addEventListener("click", () => setFilterPanelOpen(false, { restoreFocus: true }));
+    byId("close-filter-panel").addEventListener("click", () => requestFilterPanelClose({ restoreFocus: true }));
     document.addEventListener("pointerdown", (event) => {
       if (ui.filterPanel.hidden || ui.filterPanel.contains(event.target) || ui.filterToggle.contains(event.target)) return;
-      setFilterPanelOpen(false);
+      requestFilterPanelClose();
     });
-    byId("clear-filters").addEventListener("click", () => resetSearch(false));
-    byId("empty-reset").addEventListener("click", () => resetSearch(true));
+    byId("clear-filters").addEventListener("click", clearAppliedFilters);
+    byId("empty-reset").addEventListener("click", clearAppliedFilters);
+    byId("discard-filter-changes").addEventListener("click", discardFilterChanges);
     ui.retryLibraryLoad.addEventListener("click", loadMoreCollections);
     document.querySelectorAll("[data-layout]").forEach((button) => {
       button.addEventListener("click", () => setLayout(button.dataset.layout));
@@ -391,6 +399,7 @@
   }
 
   function setFilterPanelOpen(open, { restoreFocus = false } = {}) {
+    if (open) syncFilterDraftFromApplied();
     ui.filterPanel.hidden = !open;
     ui.filterToggle.setAttribute("aria-expanded", String(open));
     if (open) ui.filterPanel.querySelector("select, input")?.focus();
@@ -398,6 +407,23 @@
       closeAllFacetOptions();
       if (restoreFocus) ui.filterToggle.focus();
     }
+  }
+
+  function requestFilterPanelClose({ restoreFocus = false } = {}) {
+    if (filterDraftChanged()) {
+      restoreFilterToggleFocus = restoreFocus;
+      if (!ui.discardFilterDialog.open) ui.discardFilterDialog.showModal();
+      return false;
+    }
+    setFilterPanelOpen(false, { restoreFocus });
+    return true;
+  }
+
+  function discardFilterChanges() {
+    ui.discardFilterDialog.close();
+    syncFilterDraftFromApplied();
+    setFilterPanelOpen(false, { restoreFocus: restoreFilterToggleFocus });
+    restoreFilterToggleFocus = false;
   }
 
   function routeFromHash() {
@@ -440,7 +466,14 @@
     state.route = nextRoute;
     if (state.route !== "settings") stopThumbnailCachePolling();
     if (state.route !== "library") closeMobileDetail({ restoreFocus: false });
-    if (state.route !== "library" && !ui.filterPanel.hidden) setFilterPanelOpen(false);
+    if (state.route !== "library" && !ui.filterPanel.hidden) {
+      const discardedDraft = filterDraftChanged();
+      syncFilterDraftFromApplied();
+      setFilterPanelOpen(false);
+      if (discardedDraft) toast("已放棄尚未套用的篩選變更");
+    }
+    ui.headerSearchScope.disabled = state.route !== "library";
+    if (ui.headerSearchScope.disabled) ui.headerSearchScope.value = "all";
     document.documentElement.dataset.route = state.route;
     document.querySelectorAll("[data-view]").forEach((view) => {
       const active = view.dataset.view === state.route;
@@ -499,17 +532,10 @@
   }
 
   function applyDecodedLibraryState(decoded) {
-    ui.searchForm.reset();
-    Object.entries(decoded.values).forEach(([name, value]) => {
-      if (name === "tag") return;
-      const control = ui.searchForm.elements[name];
-      if (control) control.value = value;
-    });
-    state.filterTags = [...decoded.tags];
     state.filters = { ...decoded.values, ...(decoded.tags.length ? { tag: [...decoded.tags] } : {}) };
     state.libraryFocusId = decoded.focusId;
     state.libraryDataKey = decoded.dataKey;
-    renderFilterTagChips();
+    syncFilterDraftFromApplied();
     updateFilterCount();
   }
 
@@ -915,32 +941,81 @@
   }
 
   async function openShelfBook(collection, filterName, filterValue) {
-    resetSearch(false);
-    if (filterName && filterValue) ui.searchForm.elements[filterName].value = filterValue;
-    readFilters();
+    setAppliedFilters(filterName && filterValue ? { [filterName]: filterValue } : {});
     await navigateToCollection(collection);
   }
 
   function showShelfFilter(name, value) {
-    resetSearch(false);
-    if (name && value && ui.searchForm.elements[name]) ui.searchForm.elements[name].value = value;
-    readFilters();
-    state.libraryFocusId = null;
+    setAppliedFilters(name && value ? { [name]: value } : {});
     navigateLibrary();
   }
 
-  function readFilters() {
+  function collectFilterDraft() {
     const data = new FormData(ui.searchForm);
-    state.filters = {};
+    const filters = {};
     const query = String(data.get("q") || "").trim();
-    if (query) state.filters.q = query;
+    if (query) filters.q = query;
     FILTER_NAMES.forEach((name) => {
       if (name === "tag") return;
       const value = String(data.get(name) || "").trim();
-      if (value) state.filters[name] = value;
+      if (value) filters[name] = value;
     });
-    if (state.filterTags.length) state.filters.tag = [...state.filterTags];
+    if (state.filterTags.length) filters.tag = [...state.filterTags];
+    return filters;
+  }
+
+  function cloneFilters(filters) {
+    return Object.fromEntries(Object.entries(filters).map(([name, value]) => [name, Array.isArray(value) ? [...value] : value]));
+  }
+
+  function syncFilterDraftFromApplied() {
+    ui.searchForm.reset();
+    Object.entries(state.filters).forEach(([name, value]) => {
+      if (name === "tag") return;
+      const control = ui.searchForm.elements[name];
+      if (control) control.value = value;
+    });
+    state.filterTags = Array.isArray(state.filters.tag) ? [...state.filters.tag] : [];
+    renderFilterTagChips();
+    updateFilterDraftState();
+  }
+
+  function filterDraftChanged() {
+    return libraryParams(collectFilterDraft(), null).toString() !== libraryParams(state.filters, null).toString();
+  }
+
+  function updateFilterDraftState() {
+    const changed = filterDraftChanged();
+    ui.filterDraftStatus.hidden = !changed;
+    ui.applyFilters.disabled = !changed;
+    ui.filterToggle.classList.toggle("has-draft", changed);
+  }
+
+  function setAppliedFilters(filters) {
+    state.filters = cloneFilters(filters);
+    state.libraryFocusId = null;
+    syncFilterDraftFromApplied();
     updateFilterCount();
+  }
+
+  function applyFilterDraft() {
+    state.filters = collectFilterDraft();
+    state.libraryFocusId = null;
+    updateFilterCount();
+    updateFilterDraftState();
+    setFilterPanelOpen(false);
+    navigateLibrary();
+  }
+
+  function applyHeaderSearch() {
+    const keepCurrent = state.route === "library" && ui.headerSearchScope.value === "current";
+    const filters = keepCurrent ? cloneFilters(state.filters) : {};
+    const query = ui.searchInput.value.trim();
+    if (query) filters.q = query;
+    else delete filters.q;
+    setAppliedFilters(filters);
+    if (!ui.filterPanel.hidden) setFilterPanelOpen(false);
+    navigateLibrary();
   }
 
   function updateFilterCount() {
@@ -949,6 +1024,7 @@
       0,
     );
     ui.activeFilterCount.textContent = String(count);
+    ui.filterToggle.setAttribute("aria-label", count ? `更多篩選，目前套用 ${count} 項條件` : "更多篩選，目前沒有套用條件");
     renderActiveFilterChips();
   }
 
@@ -976,25 +1052,21 @@
   }
 
   function removeFilter(name, value = null) {
+    const filters = cloneFilters(state.filters);
     if (name === "tag") {
-      removeFilterTag(value);
-      return;
+      filters.tag = (filters.tag || []).filter((tag) => tag !== value);
+      if (!filters.tag.length) delete filters.tag;
+    } else {
+      delete filters[name];
     }
-    const control = ui.searchForm.elements[name];
-    if (control) control.value = "";
-    readFilters();
-    state.libraryFocusId = null;
+    setAppliedFilters(filters);
     navigateLibrary();
   }
 
-  function resetSearch(load) {
-    ui.searchForm.reset();
-    state.filterTags = [];
-    renderFilterTagChips();
-    state.filters = {};
-    state.libraryFocusId = null;
-    updateFilterCount();
-    if (load) navigateLibrary();
+  function clearAppliedFilters() {
+    setAppliedFilters({});
+    setFilterPanelOpen(false);
+    navigateLibrary();
   }
 
   function initializeFacetComboboxes() {
@@ -1006,7 +1078,7 @@
       facetControllers.set(field, controller);
       input.addEventListener("focus", () => queueFacetSearch(controller, 0));
       input.addEventListener("input", () => queueFacetSearch(controller, 140));
-      input.addEventListener("blur", () => setTimeout(() => closeFacetOptions(controller), 0));
+      input.addEventListener("blur", () => setTimeout(() => closeFacetOptions(controller), 160));
       input.addEventListener("keydown", (event) => handleFacetKeydown(event, controller));
     });
     renderFilterTagChips();
@@ -1047,11 +1119,10 @@
         item.setAttribute("aria-selected", "false");
         item.setAttribute("aria-label", option.name);
         item.append(el("span", "", option.name), el("small", "", formatNumber(option.count)));
-        item.addEventListener("pointerdown", (event) => {
-          event.preventDefault();
-          selectFacetOption(controller, index);
+        item.addEventListener("click", () => selectFacetOption(controller, index));
+        item.addEventListener("pointermove", (event) => {
+          if (event.pointerType === "mouse") setFacetActive(controller, index);
         });
-        item.addEventListener("pointermove", () => setFacetActive(controller, index));
         controller.listbox.append(item);
       });
     }
@@ -1083,7 +1154,7 @@
       selectFacetOption(controller, controller.activeIndex);
     } else if (controller.field === "tag" && controller.input.value.trim()) {
       event.preventDefault();
-      addFilterTag(controller.input.value, true);
+      addFilterTag(controller.input.value);
       controller.input.value = "";
       closeFacetOptions(controller);
     }
@@ -1106,13 +1177,11 @@
     const option = controller.options[index];
     if (!option) return;
     if (controller.field === "tag") {
-      addFilterTag(option.name, true);
+      addFilterTag(option.name);
       controller.input.value = "";
     } else {
       controller.input.value = option.name;
-      readFilters();
-      state.libraryFocusId = null;
-      navigateLibrary();
+      updateFilterDraftState();
     }
     closeFacetOptions(controller);
     controller.input.focus({ preventScroll: true });
@@ -1130,22 +1199,18 @@
     facetControllers.forEach(closeFacetOptions);
   }
 
-  function addFilterTag(value, load = true) {
+  function addFilterTag(value) {
     const tag = String(value || "").trim();
     if (!tag || state.filterTags.some((existing) => existing.toLocaleLowerCase() === tag.toLocaleLowerCase())) return;
     state.filterTags.push(tag);
     renderFilterTagChips();
-    readFilters();
-    state.libraryFocusId = null;
-    if (load) navigateLibrary();
+    updateFilterDraftState();
   }
 
-  function removeFilterTag(value, load = true) {
+  function removeFilterTag(value) {
     state.filterTags = state.filterTags.filter((tag) => tag !== value);
     renderFilterTagChips();
-    readFilters();
-    state.libraryFocusId = null;
-    if (load) navigateLibrary();
+    updateFilterDraftState();
   }
 
   function renderFilterTagChips() {
@@ -1257,7 +1322,7 @@
     if (!collection) return;
     ui.focusFilterDialog.close();
     state.outOfQueryCollection = null;
-    resetSearch(false);
+    setAppliedFilters({});
     await navigateToCollection(collection);
   }
 
@@ -1637,13 +1702,14 @@
   }
 
   function applyFilter(name, value) {
-    const control = ui.searchForm.elements[name];
-    if (name === "tag") addFilterTag(value, false);
-    else if (control) control.value = value;
-    else return;
+    if (name !== "tag" && !FILTER_NAMES.includes(name)) return;
+    const filters = cloneFilters(state.filters);
+    if (name === "tag") {
+      const tags = Array.isArray(filters.tag) ? filters.tag : [];
+      if (!tags.some((tag) => tag.toLocaleLowerCase() === value.toLocaleLowerCase())) filters.tag = [...tags, value];
+    } else filters[name] = value;
     closeMobileDetail({ restoreFocus: false });
-    readFilters();
-    state.libraryFocusId = null;
+    setAppliedFilters(filters);
     navigateLibrary();
     toast(`已加入篩選：${value}`);
   }
@@ -3262,7 +3328,7 @@
     }
     if (event.key === "Escape" && !ui.filterPanel.hidden && !isDialogOpen()) {
       event.preventDefault();
-      setFilterPanelOpen(false, { restoreFocus: true });
+      requestFilterPanelClose({ restoreFocus: true });
       return;
     }
     if (event.key === "/" && !isTyping && !isDialogOpen()) {
