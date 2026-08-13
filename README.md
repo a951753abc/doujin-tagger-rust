@@ -87,7 +87,7 @@ cargo run --quiet -p doujin-http -- `
   .\doujin-v2.db 5000
 ```
 
-啟動後以瀏覽器開啟 `http://127.0.0.1:5000/`。首頁、CSS 與 JavaScript 都編譯進 Rust 執行檔，不需要 Python template server、Node.js、CDN 或額外 frontend build。介面包含 Library 搜尋／組合篩選、列表／對比模式、分頁、收藏詳細資料、開啟／閱讀、tag、手動 metadata、外部資料搜尋、縮圖重建、統計、設定、來源管理與重新掃描。收藏詳情可漸進展開七個 metadata 欄位的 selection、assertions、confidence 與外部搜尋紀錄，並直接採用或拒絕可裁決 assertion。人工裁決工作台只保留目前頁面的選取，可批次加入 tag、覆寫原作／種類、搬移或刪除收藏，並提供同名候選裁決、合併預檢與逐欄衝突選擇。
+啟動後以瀏覽器開啟 `http://127.0.0.1:5000/`。首頁、CSS 與 JavaScript 都編譯進 Rust 執行檔，不需要 Python template server、Node.js、CDN 或額外 frontend build。介面包含 Library 搜尋／組合篩選、列表／對比模式、分頁、收藏詳細資料、開啟／閱讀、tag、手動 metadata、外部資料搜尋、縮圖重建、依資料夾來源批次建立縮圖快取、統計、設定、來源管理與重新掃描。收藏詳情可漸進展開七個 metadata 欄位的 selection、assertions、confidence 與外部搜尋紀錄，並直接採用或拒絕可裁決 assertion。人工裁決工作台只保留目前頁面的選取，可批次加入 tag、覆寫原作／種類、搬移或刪除收藏，並提供同名候選裁決、合併預檢與逐欄衝突選擇。
 
 列表／對比模式及最近開啟清單使用瀏覽器 `localStorage`。最近開啟只在 server 成功交給外部程式後更新，同一收藏移到最前方且最多保留 20 筆；不會寫入 SQLite，也不會在不同瀏覽器間同步。
 
@@ -111,6 +111,8 @@ cargo run --quiet -p doujin-http -- `
 | `GET` | `/api/collections/{id}/thumbnail` | 回傳 WebP cache；尚未完成時排程工作並回傳不可快取的透明 placeholder，以及前端自動追蹤所需的 status／error／next-retry headers |
 | `POST` | `/api/collections/{id}/thumbnail/rebuild` | 使單筆縮圖失效並重新排程，不修改收藏來源 |
 | `POST` | `/api/thumbnails/rebuild` | 使全部 active 收藏縮圖失效、重新排程並回報數量 |
+| `POST` | `/api/thumbnail-cache-jobs` | 依 `root_ids` 快照 active 收藏範圍，保留有效快取並優先補齊缺少或過期縮圖 |
+| `GET` | `/api/thumbnail-cache-jobs/current` | 回傳最近一批快取工作的百分比、各狀態數量與預估剩餘秒數 |
 | `GET` | `/api/collections/{id}/metadata` | 回傳各欄位 selection、assertions 與 external search results |
 | `PUT` | `/api/collections/{id}/metadata/{field}` | 建立手動 metadata assertion 並回傳更新後收藏 |
 | `DELETE` | `/api/collections/{id}/metadata/{field}` | 清除手動候選並重新套用來源優先序 |
@@ -174,6 +176,10 @@ Application core 透過 `ExternalMetadataProvider` trait 接收 provider respons
 HTTP server 啟動後每秒檢查一筆到期工作，再透過條件更新逐筆領取。取件與寫回共用單一 SQLite writer；DLsite 的限速等待及 blocking HTTP request 在 application mutex 外執行，不會長時間阻塞 API。Provider 對同一 host 保持單一 in-flight request 與至少 10 秒間隔。HTTP server 啟動時會將前一個程序留下的 running 工作回復為立即可執行的 pending，保留 attempts 並記錄 `worker_interrupted`。
 
 Thumbnail worker 也只在領取與寫回時持有 application mutex；ZIP 解壓、圖片解碼、縮放與 WebP 編碼都在鎖外執行。首次要求會以 source／settings fingerprint 建立 persistent state；相同 pending／running 工作不會重複排程。來源 I/O、cache I/O 與 worker interruption 採最長一小時的指數退避，損壞 archive、無支援圖片、解碼錯誤與資源限制則等待來源變更或手動重建。Schema v5 只保存狀態、cache 路徑與 retry metadata，WebP 內容仍留在檔案系統。
+
+Server 啟動後不會自動遍歷全庫預熱縮圖；worker 只處理畫面可見縮圖要求、手動批次、手動重建或其他已明確排入的工作。
+
+設定頁的批次快取工具只接受已啟用的 library root ID。啟動時會固定這一批的 collection ID 範圍，把缺少或過期的工作提升為批次優先序（高於一般排程、低於畫面可見縮圖），並保留已有效的 WebP；同時間只允許一批。進度將 ready 與永久失敗都視為已處理，ETA 則只使用本批開始後新完成的數量估算，避免既有快取扭曲速度。
 
 Library 對目前畫面使用的 collection ID 共用縮圖 tracker。收到 `pending`／`running` 會自動追蹤到 `ready` 並在不重新整理頁面的情況下替換封面；暫時性失敗依 `X-Thumbnail-Next-Retry-At` 恢復，永久性失敗停止自動要求。換頁或詳細資料改綁時會取消不再使用的 tracker，避免過時結果覆寫新收藏。
 

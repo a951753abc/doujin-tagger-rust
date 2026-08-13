@@ -141,7 +141,10 @@ fn build_router<R>(application: SharedApplication<R>) -> Router
 where
     R: RecycleBin + Send + 'static,
 {
-    let state = HttpState { application };
+    let state = HttpState {
+        application,
+        thumbnail_cache_jobs: Arc::new(Mutex::new(ThumbnailCacheJobs::default())),
+    };
     Router::new()
         .route("/", get(frontend_index))
         .route("/assets/app.css", get(frontend_css))
@@ -172,6 +175,14 @@ where
             post(rebuild_thumbnail::<R>),
         )
         .route("/api/thumbnails/rebuild", post(rebuild_all_thumbnails::<R>))
+        .route(
+            "/api/thumbnail-cache-jobs",
+            post(start_thumbnail_cache_job::<R>),
+        )
+        .route(
+            "/api/thumbnail-cache-jobs/current",
+            get(get_current_thumbnail_cache_job::<R>),
+        )
         .route(
             "/api/collections/{collection_id}/metadata",
             get(get_metadata_history::<R>),
@@ -232,14 +243,31 @@ where
 
 struct HttpState<R> {
     application: Arc<Mutex<ApplicationService<R>>>,
+    thumbnail_cache_jobs: Arc<Mutex<ThumbnailCacheJobs>>,
 }
 
 impl<R> Clone for HttpState<R> {
     fn clone(&self) -> Self {
         Self {
             application: Arc::clone(&self.application),
+            thumbnail_cache_jobs: Arc::clone(&self.thumbnail_cache_jobs),
         }
     }
+}
+
+#[derive(Default)]
+struct ThumbnailCacheJobs {
+    next_id: u64,
+    current: Option<ThumbnailCacheJob>,
+}
+
+struct ThumbnailCacheJob {
+    id: u64,
+    root_ids: Vec<i64>,
+    collection_ids: Vec<i64>,
+    failed_collection_ids: Vec<i64>,
+    initial_completed: usize,
+    started_at: Instant,
 }
 
 const INTERACTIVE_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
@@ -785,6 +813,170 @@ where
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(ThumbnailRebuildAllResponse { rebuilt }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ThumbnailCacheJobRequest {
+    root_ids: Vec<i64>,
+}
+
+#[derive(Debug, Serialize)]
+struct ThumbnailCacheJobEnvelope {
+    job: Option<ThumbnailCacheJobResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct ThumbnailCacheJobResponse {
+    id: u64,
+    root_ids: Vec<i64>,
+    status: &'static str,
+    total: usize,
+    pending: usize,
+    running: usize,
+    ready: usize,
+    failed: usize,
+    progress_percent: f64,
+    elapsed_seconds: u64,
+    estimated_seconds_remaining: Option<u64>,
+}
+
+impl ThumbnailCacheJobResponse {
+    fn is_running(&self) -> bool {
+        self.status == "running"
+    }
+}
+
+async fn start_thumbnail_cache_job<R>(
+    State(state): State<HttpState<R>>,
+    payload: Result<Json<ThumbnailCacheJobRequest>, JsonRejection>,
+) -> Result<Json<ThumbnailCacheJobResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let response = tokio::task::spawn_blocking(move || {
+        let mut jobs = state
+            .thumbnail_cache_jobs
+            .lock()
+            .map_err(|_| ApiError::internal())?;
+        let mut application = lock_interactive_application(&state.application)?;
+        if let Some(current) = jobs.current.as_ref() {
+            let response = thumbnail_cache_job_response(&application, current)?;
+            if response.is_running() {
+                return Err(ApiError::conflict(
+                    "thumbnail_cache_job_running",
+                    "已有快取縮圖工作正在進行",
+                ));
+            }
+        }
+
+        let mut root_ids = payload.root_ids;
+        root_ids.sort_unstable();
+        root_ids.dedup();
+        let prepared = application
+            .prepare_thumbnail_cache(&root_ids)
+            .map_err(ApiError::from_application)?;
+        let counts = application
+            .thumbnail_status_counts(&prepared.collection_ids)
+            .map_err(ApiError::from_application)?;
+        let initial_completed = counts
+            .ready
+            .saturating_add(counts.failed)
+            .saturating_add(counts.missing)
+            .saturating_add(prepared.failed_collection_ids.len());
+        jobs.next_id = jobs.next_id.saturating_add(1);
+        let job = ThumbnailCacheJob {
+            id: jobs.next_id,
+            root_ids,
+            collection_ids: prepared.collection_ids,
+            failed_collection_ids: prepared.failed_collection_ids,
+            initial_completed,
+            started_at: Instant::now(),
+        };
+        let response = thumbnail_cache_job_response(&application, &job)?;
+        jobs.current = Some(job);
+        Ok(response)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(response))
+}
+
+async fn get_current_thumbnail_cache_job<R>(
+    State(state): State<HttpState<R>>,
+) -> Result<Json<ThumbnailCacheJobEnvelope>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let job = tokio::task::spawn_blocking(move || {
+        let jobs = state
+            .thumbnail_cache_jobs
+            .lock()
+            .map_err(|_| ApiError::internal())?;
+        let Some(current) = jobs.current.as_ref() else {
+            return Ok(None);
+        };
+        let application = lock_interactive_application(&state.application)?;
+        thumbnail_cache_job_response(&application, current).map(Some)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(ThumbnailCacheJobEnvelope { job }))
+}
+
+fn thumbnail_cache_job_response<R: RecycleBin>(
+    application: &ApplicationService<R>,
+    job: &ThumbnailCacheJob,
+) -> Result<ThumbnailCacheJobResponse, ApiError> {
+    let counts = application
+        .thumbnail_status_counts(&job.collection_ids)
+        .map_err(ApiError::from_application)?;
+    let failed = counts
+        .failed
+        .saturating_add(counts.missing)
+        .saturating_add(job.failed_collection_ids.len());
+    let total = job
+        .collection_ids
+        .len()
+        .saturating_add(job.failed_collection_ids.len());
+    let completed = counts.ready.saturating_add(failed).min(total);
+    let status = if completed < total {
+        "running"
+    } else if failed > 0 {
+        "completed_with_errors"
+    } else {
+        "completed"
+    };
+    let progress_percent = if total == 0 {
+        100.0
+    } else {
+        ((completed as f64 / total as f64) * 1_000.0).round() / 10.0
+    };
+    let elapsed = job.started_at.elapsed();
+    let newly_completed = completed.saturating_sub(job.initial_completed);
+    let estimated_seconds_remaining = if completed >= total {
+        Some(0)
+    } else if newly_completed == 0 {
+        None
+    } else {
+        let seconds_per_item = elapsed.as_secs_f64() / newly_completed as f64;
+        Some((seconds_per_item * total.saturating_sub(completed) as f64).ceil() as u64)
+    };
+    Ok(ThumbnailCacheJobResponse {
+        id: job.id,
+        root_ids: job.root_ids.clone(),
+        status,
+        total,
+        pending: counts.pending,
+        running: counts.running,
+        ready: counts.ready,
+        failed,
+        progress_percent,
+        elapsed_seconds: elapsed.as_secs(),
+        estimated_seconds_remaining,
+    })
 }
 
 async fn launch_collection<R>(

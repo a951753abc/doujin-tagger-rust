@@ -107,6 +107,9 @@
     activityExternalJobs: new Map(),
     activityScan: null,
     activityThumbnailFailures: new Set(),
+    thumbnailCacheJob: null,
+    thumbnailCacheTimer: null,
+    settingsRoots: [],
     lastBatchActivity: null,
     activityTimer: null,
     activitySignature: null,
@@ -214,6 +217,14 @@
       statColumns: byId("stat-columns"),
       settingsForm: byId("settings-form"),
       environmentOverrides: byId("environment-overrides"),
+      thumbnailCacheForm: byId("thumbnail-cache-form"),
+      thumbnailCacheRoots: byId("thumbnail-cache-roots"),
+      thumbnailCacheStart: byId("thumbnail-cache-start"),
+      thumbnailCacheProgress: byId("thumbnail-cache-progress"),
+      thumbnailCacheStatus: byId("thumbnail-cache-status"),
+      thumbnailCachePercent: byId("thumbnail-cache-percent"),
+      thumbnailCacheProgressBar: byId("thumbnail-cache-progress-bar"),
+      thumbnailCacheDetail: byId("thumbnail-cache-detail"),
       rootList: byId("root-list"),
       rootForm: byId("root-form"),
       scanButton: byId("scan-button"),
@@ -334,6 +345,7 @@
     ui.metadataForm.addEventListener("submit", saveMetadata);
     byId("clear-manual-button").addEventListener("click", clearManualMetadata);
     ui.settingsForm.addEventListener("submit", saveSettings);
+    ui.thumbnailCacheForm.addEventListener("submit", startThumbnailCacheJob);
     ui.rootForm.addEventListener("submit", registerRoot);
     ui.scanButton.addEventListener("click", startScan);
     byId("select-loaded").addEventListener("click", selectLoadedCollections);
@@ -407,6 +419,7 @@
       state.restoreLibraryContext = previousRoute !== "library" || libraryNeedsLoad;
     }
     state.route = nextRoute;
+    if (state.route !== "settings") stopThumbnailCachePolling();
     if (state.route !== "library") closeMobileDetail({ restoreFocus: false });
     if (state.route !== "library" && !ui.filterPanel.hidden) setFilterPanelOpen(false);
     document.documentElement.dataset.route = state.route;
@@ -578,10 +591,18 @@
         }));
         jobs.filter(Boolean).forEach((job) => state.activityExternalJobs.set(job.id, job));
       }
+      try {
+        const cacheJobs = await api("/api/thumbnail-cache-jobs/current");
+        updateThumbnailCacheJob(cacheJobs.job, { announce: false });
+      } catch (_) {
+        // Health already reports connectivity; keep the last known job snapshot.
+      }
     }
 
     renderActivityCenter();
+    const thumbnailCacheRunning = state.thumbnailCacheJob?.status === "running";
     const active = state.activityScan?.status === "running"
+      || thumbnailCacheRunning
       || [...state.activityExternalJobs.values()].some((job) => ["pending", "running"].includes(job.status));
     state.activityTimer = window.setTimeout(() => refreshActivityCenter(), active ? 4000 : 15000);
   }
@@ -608,9 +629,13 @@
     const failedJobs = jobs.filter((job) => ["partial", "failed"].includes(job.status));
     const scanNeedsAttention = ["partial", "failed"].includes(state.activityScan?.status);
     const scanRunning = state.activityScan?.status === "running";
+    const thumbnailCacheRunning = state.thumbnailCacheJob?.status === "running";
+    const thumbnailCacheFailures = state.thumbnailCacheJob?.status === "completed_with_errors"
+      ? state.thumbnailCacheJob.failed
+      : 0;
     const batchFailures = state.lastBatchActivity?.failed || 0;
-    const attentionCount = failedJobs.length + state.activityThumbnailFailures.size + Number(scanNeedsAttention) + batchFailures;
-    const runningCount = activeJobs.length + Number(scanRunning);
+    const attentionCount = failedJobs.length + state.activityThumbnailFailures.size + Number(scanNeedsAttention) + batchFailures + thumbnailCacheFailures;
+    const runningCount = activeJobs.length + Number(scanRunning) + Number(thumbnailCacheRunning);
 
     let summary = "本機服務正常";
     let mode = "is-online";
@@ -625,6 +650,9 @@
       mode = "has-attention";
     } else if (scanRunning) {
       summary = "掃描中";
+      mode = "is-running";
+    } else if (thumbnailCacheRunning) {
+      summary = `縮圖快取 ${formatProgressPercent(state.thumbnailCacheJob.progress_percent)}`;
       mode = "is-running";
     } else if (activeJobs.length) {
       summary = `外部搜尋 ${formatNumber(activeJobs.length)}`;
@@ -661,6 +689,16 @@
         location.hash = state.libraryRouteHash;
       }));
     }
+    if (state.thumbnailCacheJob) {
+      const job = state.thumbnailCacheJob;
+      const running = job.status === "running";
+      const hasErrors = job.status === "completed_with_errors";
+      const eta = running ? formatThumbnailEta(job.estimated_seconds_remaining) : hasErrors ? `${formatNumber(job.failed)} 張失敗` : "全部完成";
+      ui.activityList.append(activityItem(`thumbnail-cache ${running ? "running" : hasErrors ? "failed" : "succeeded"}`, running ? "正在建立快取縮圖" : "最近一次快取縮圖", `${formatNumber(job.ready + job.failed)} / ${formatNumber(job.total)} · ${formatProgressPercent(job.progress_percent)} · ${eta}`, running ? "進行中" : hasErrors ? "部分完成" : "完成", "查看設定", () => {
+        setActivityPanelOpen(false);
+        location.hash = "settings";
+      }));
+    }
     if (state.lastBatchActivity) {
       const batch = state.lastBatchActivity;
       ui.activityList.append(activityItem(`batch ${batch.failed ? "failed" : "succeeded"}`, batch.title, `${batch.summary} · ${formatMetadataTime(batch.updatedAt)}`, batch.failed ? "部分完成" : "完成", "查看工作台", () => {
@@ -670,7 +708,7 @@
     }
     ui.activityEmpty.hidden = ui.activityList.children.length > 0;
 
-    const signature = [state.serviceOnline, runningCount, attentionCount, state.activityScan?.status || "", ...activeJobs.map((job) => `${job.id}:${job.status}`), ...failedJobs.map((job) => `${job.id}:${job.status}`)].join("|");
+    const signature = [state.serviceOnline, runningCount, attentionCount, state.activityScan?.status || "", state.thumbnailCacheJob ? `${state.thumbnailCacheJob.id}:${state.thumbnailCacheJob.status}:${state.thumbnailCacheJob.progress_percent}` : "", ...activeJobs.map((job) => `${job.id}:${job.status}`), ...failedJobs.map((job) => `${job.id}:${job.status}`)].join("|");
     if (state.activitySignature != null && signature !== state.activitySignature) {
       ui.activityAnnouncer.textContent = summary;
     }
@@ -2797,19 +2835,174 @@
   }
 
   async function loadSettingsPage() {
+    stopThumbnailCachePolling();
     try {
-      const settings = await api("/api/settings");
-      const roots = await api("/api/library-roots");
+      const [settings, roots, cacheJobs] = await Promise.all([
+        api("/api/settings"),
+        api("/api/library-roots"),
+        api("/api/thumbnail-cache-jobs/current"),
+      ]);
       ui.settingsForm.elements.viewer_path.value = settings.viewer_path;
       ui.settingsForm.elements.thumb_size.value = settings.thumb_size;
       ui.settingsForm.elements.thumb_quality.value = settings.thumb_quality;
       ui.environmentOverrides.textContent = settings.environment_overrides.length
         ? `目前由環境變數覆寫：${settings.environment_overrides.join("、")}；環境變數具有最高優先權。`
         : "目前沒有環境變數覆寫這些設定；環境變數具有最高優先權。";
+      state.settingsRoots = roots.roots;
+      updateThumbnailCacheJob(cacheJobs.job, { announce: false });
       renderRoots(roots.roots);
+      renderThumbnailCacheRoots();
+      renderThumbnailCacheProgress();
+      scheduleThumbnailCachePolling();
     } catch (error) {
       toast(error.message, true);
     }
+  }
+
+  function renderThumbnailCacheRoots() {
+    ui.thumbnailCacheRoots.replaceChildren();
+    const activeRoots = state.settingsRoots.filter((root) => root.active);
+    if (!activeRoots.length) {
+      ui.thumbnailCacheRoots.append(el("p", "field-note", "目前沒有已啟用的資料夾來源。"));
+      ui.thumbnailCacheStart.disabled = true;
+      return;
+    }
+    const running = state.thumbnailCacheJob?.status === "running";
+    const selectedIds = state.thumbnailCacheJob
+      ? new Set(state.thumbnailCacheJob.root_ids)
+      : new Set(activeRoots.map((root) => root.id));
+    activeRoots.forEach((root) => {
+      const label = el("label", "thumbnail-cache-root");
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.name = "root_id";
+      checkbox.value = String(root.id);
+      checkbox.checked = selectedIds.has(root.id);
+      checkbox.disabled = running;
+      const copy = el("span", "", root.label);
+      copy.append(el("small", "", root.path));
+      label.append(checkbox, copy);
+      ui.thumbnailCacheRoots.append(label);
+    });
+    ui.thumbnailCacheStart.disabled = running;
+    ui.thumbnailCacheStart.textContent = running ? "建立中…" : "開始建立";
+  }
+
+  function renderThumbnailCacheProgress() {
+    const job = state.thumbnailCacheJob;
+    ui.thumbnailCacheProgress.hidden = !job;
+    if (!job) return;
+    const running = job.status === "running";
+    const hasErrors = job.status === "completed_with_errors";
+    const percent = formatProgressPercent(job.progress_percent);
+    ui.thumbnailCacheProgress.className = `thumbnail-cache-progress${hasErrors ? " has-errors" : running ? "" : " is-completed"}`;
+    ui.thumbnailCachePercent.textContent = percent;
+    ui.thumbnailCacheProgressBar.value = job.progress_percent;
+    ui.thumbnailCacheProgressBar.textContent = percent;
+    if (running) {
+      ui.thumbnailCacheStatus.textContent = "正在建立快取縮圖";
+      if (Number(job.progress_percent) === 0 && job.running > 0) {
+        ui.thumbnailCacheDetail.textContent = `已有 ${formatNumber(job.running)} 張處理中、${formatNumber(job.pending)} 張等待，已經過 ${formatDuration(job.elapsed_seconds)} · ${formatThumbnailEta(job.estimated_seconds_remaining)}`;
+      } else {
+        ui.thumbnailCacheDetail.textContent = `完成 ${formatNumber(job.ready)}、建立中 ${formatNumber(job.running)}、等待 ${formatNumber(job.pending)} · ${formatThumbnailEta(job.estimated_seconds_remaining)}`;
+      }
+    } else if (hasErrors) {
+      ui.thumbnailCacheStatus.textContent = "快取縮圖已部分完成";
+      ui.thumbnailCacheDetail.textContent = `完成 ${formatNumber(job.ready)} 張，${formatNumber(job.failed)} 張失敗；可從收藏詳細資料個別重建。`;
+    } else if (job.total === 0) {
+      ui.thumbnailCacheStatus.textContent = "所選範圍沒有收藏";
+      ui.thumbnailCacheDetail.textContent = "不需要建立快取縮圖。";
+    } else {
+      ui.thumbnailCacheStatus.textContent = "快取縮圖建立完成";
+      ui.thumbnailCacheDetail.textContent = `所選範圍的 ${formatNumber(job.total)} 張縮圖皆已備妥。`;
+    }
+  }
+
+  async function startThumbnailCacheJob(event) {
+    event.preventDefault();
+    const rootIds = [...ui.thumbnailCacheForm.querySelectorAll('input[name="root_id"]:checked')]
+      .map((input) => Number(input.value))
+      .filter((value) => Number.isSafeInteger(value) && value > 0);
+    if (!rootIds.length) {
+      toast("請至少選擇一個建立區域", true);
+      return;
+    }
+    ui.thumbnailCacheStart.disabled = true;
+    ui.thumbnailCacheStart.textContent = "準備中…";
+    try {
+      const job = await api("/api/thumbnail-cache-jobs", {
+        method: "POST",
+        body: { root_ids: rootIds },
+      });
+      updateThumbnailCacheJob(job, { announce: false });
+      renderThumbnailCacheRoots();
+      scheduleThumbnailCachePolling();
+      if (job.status === "running") toast(`已開始檢查並建立 ${formatNumber(job.total)} 張快取縮圖`);
+      else if (job.status === "completed_with_errors") toast(`快取縮圖已部分完成：${formatNumber(job.failed)} 張失敗`, true);
+      else toast(job.total ? "所選範圍的快取縮圖皆已備妥" : "所選範圍沒有需要建立的收藏");
+    } catch (error) {
+      toast(error.message, true);
+      renderThumbnailCacheRoots();
+    }
+  }
+
+  function updateThumbnailCacheJob(job, { announce = true } = {}) {
+    const previous = state.thumbnailCacheJob;
+    state.thumbnailCacheJob = job;
+    renderThumbnailCacheProgress();
+    if (state.route === "settings" && previous && job && (previous.id !== job.id || previous.status !== job.status)) {
+      renderThumbnailCacheRoots();
+    }
+    if (announce && previous?.id === job?.id && previous.status === "running" && job.status !== "running") {
+      toast(job.status === "completed_with_errors"
+        ? `快取縮圖已部分完成：${formatNumber(job.failed)} 張失敗`
+        : "快取縮圖建立完成", job.status === "completed_with_errors");
+    }
+    renderActivityCenter();
+  }
+
+  function scheduleThumbnailCachePolling() {
+    stopThumbnailCachePolling();
+    if (state.route !== "settings" || state.thumbnailCacheJob?.status !== "running") return;
+    state.thumbnailCacheTimer = window.setTimeout(async () => {
+      state.thumbnailCacheTimer = null;
+      try {
+        const cacheJobs = await api("/api/thumbnail-cache-jobs/current");
+        updateThumbnailCacheJob(cacheJobs.job);
+      } catch (_) {
+        // The global activity monitor reports service availability.
+      }
+      scheduleThumbnailCachePolling();
+    }, 1000);
+  }
+
+  function stopThumbnailCachePolling() {
+    if (state.thumbnailCacheTimer != null) window.clearTimeout(state.thumbnailCacheTimer);
+    state.thumbnailCacheTimer = null;
+  }
+
+  function formatProgressPercent(value) {
+    const numeric = Number(value) || 0;
+    return `${Number.isInteger(numeric) ? numeric.toFixed(0) : numeric.toFixed(1)}%`;
+  }
+
+  function formatThumbnailEta(seconds) {
+    if (seconds == null) return "正在估算剩餘時間";
+    if (seconds <= 0) return "即將完成";
+    if (seconds < 60) return `約 ${Math.max(1, Math.ceil(seconds))} 秒`;
+    if (seconds < 3600) return `約 ${Math.ceil(seconds / 60)} 分鐘`;
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.ceil((seconds % 3600) / 60);
+    return `約 ${hours} 小時${minutes ? ` ${minutes} 分鐘` : ""}`;
+  }
+
+  function formatDuration(seconds) {
+    const total = Math.max(0, Math.floor(Number(seconds) || 0));
+    if (total < 60) return `${total} 秒`;
+    if (total < 3600) return `${Math.floor(total / 60)} 分 ${total % 60} 秒`;
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    return `${hours} 小時${minutes ? ` ${minutes} 分` : ""}`;
   }
 
   async function saveSettings(event) {

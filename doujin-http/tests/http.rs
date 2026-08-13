@@ -1653,6 +1653,222 @@ async fn ready_thumbnail_is_cacheable_and_manual_rebuild_invalidates_only_the_ca
 }
 
 #[tokio::test]
+async fn thumbnail_cache_job_uses_selected_roots_and_reports_progress() {
+    let tree = TestTree::new("thumbnail-cache-job");
+    tree.zip_in("selected", "[circle] ready.zip");
+    tree.zip_in("selected", "[circle] pending.zip");
+    tree.zip_in("selected", "[circle] remaining.zip");
+    tree.zip_in("excluded", "[circle] excluded.zip");
+    let selected_root = tree.root("selected");
+    let excluded_root = tree.root("excluded");
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let config = ThumbnailConfig::new(tree.path.join("thumbnail-cache"), 300, 400, 80)
+        .expect("thumbnail config");
+    let mut application = ApplicationService::with_thumbnails(repository, NoopRecycleBin, config);
+    application
+        .run_scan(&[
+            ScanRoot {
+                path: selected_root.clone(),
+                source: SourceKind::Archive,
+                label: "選取區".to_owned(),
+            },
+            ScanRoot {
+                path: excluded_root.clone(),
+                source: SourceKind::Archive,
+                label: "排除區".to_owned(),
+            },
+        ])
+        .expect("scan cache job roots");
+    let selected_root_id = application
+        .library_roots()
+        .expect("library roots")
+        .into_iter()
+        .find(|root| root.label == "選取區")
+        .expect("selected root")
+        .id;
+    let excluded_root_id = application
+        .library_roots()
+        .expect("library roots")
+        .into_iter()
+        .find(|root| root.label == "排除區")
+        .expect("excluded root")
+        .id;
+    let ready_id = application
+        .repository()
+        .collection_id_for_current_path(&selected_root.join("[circle] ready.zip"))
+        .expect("ready lookup")
+        .expect("ready collection");
+    let pending_id = application
+        .repository()
+        .collection_id_for_current_path(&selected_root.join("[circle] pending.zip"))
+        .expect("pending lookup")
+        .expect("pending collection");
+    let remaining_id = application
+        .repository()
+        .collection_id_for_current_path(&selected_root.join("[circle] remaining.zip"))
+        .expect("remaining lookup")
+        .expect("remaining collection");
+    let excluded_id = application
+        .repository()
+        .collection_id_for_current_path(&excluded_root.join("[circle] excluded.zip"))
+        .expect("excluded lookup")
+        .expect("excluded collection");
+
+    let ready_state = application
+        .request_thumbnail(ready_id)
+        .expect("request ready thumbnail")
+        .state;
+    application
+        .start_thumbnail_generation(ready_id)
+        .expect("start ready thumbnail");
+    fs::create_dir_all(ready_state.cache_path.parent().expect("cache parent"))
+        .expect("create cache directory");
+    fs::write(&ready_state.cache_path, transparent_placeholder_webp()).expect("write ready cache");
+    application
+        .finish_thumbnail_generation(
+            ready_id,
+            Ok(ThumbnailGenerationSuccess {
+                width: 1,
+                height: 1,
+            }),
+        )
+        .expect("finish ready thumbnail");
+
+    let shared = share_application(application);
+    let server = RunningServer::start_shared(Arc::clone(&shared)).await;
+    let started = server
+        .request_json(
+            "POST",
+            "/api/thumbnail-cache-jobs",
+            &serde_json::json!({ "root_ids": [selected_root_id] }),
+        )
+        .await;
+    assert_eq!(200, started.status);
+    assert_eq!(
+        serde_json::json!([selected_root_id]),
+        started.json["root_ids"]
+    );
+    assert_eq!("running", started.json["status"]);
+    assert_eq!(3, started.json["total"]);
+    assert_eq!(1, started.json["ready"]);
+    assert_eq!(2, started.json["pending"]);
+    assert_eq!(Some(33.3), started.json["progress_percent"].as_f64());
+    assert!(started.json["estimated_seconds_remaining"].is_null());
+    assert_eq!(
+        transparent_placeholder_webp(),
+        fs::read(&ready_state.cache_path).expect("ready cache retained")
+    );
+    assert!(
+        shared
+            .lock()
+            .expect("application")
+            .repository()
+            .thumbnail_state(excluded_id)
+            .is_err(),
+        "excluded root must not be queued"
+    );
+
+    let overlapping = server
+        .request_json(
+            "POST",
+            "/api/thumbnail-cache-jobs",
+            &serde_json::json!({ "root_ids": [excluded_root_id] }),
+        )
+        .await;
+    assert_eq!(409, overlapping.status);
+    assert_eq!(
+        "thumbnail_cache_job_running",
+        overlapping.json["error"]["code"]
+    );
+
+    {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let mut application = shared.lock().expect("application");
+        let request = application
+            .start_thumbnail_generation(pending_id)
+            .expect("start pending thumbnail");
+        fs::write(&request.cache_path, transparent_placeholder_webp())
+            .expect("write pending cache");
+        application
+            .finish_thumbnail_generation(
+                pending_id,
+                Ok(ThumbnailGenerationSuccess {
+                    width: 1,
+                    height: 1,
+                }),
+            )
+            .expect("finish pending thumbnail");
+    }
+
+    let estimating = server
+        .request("GET", "/api/thumbnail-cache-jobs/current", &[])
+        .await;
+    assert_eq!("running", estimating.json["job"]["status"]);
+    assert_eq!(2, estimating.json["job"]["ready"]);
+    assert_eq!(1, estimating.json["job"]["pending"]);
+    assert!(
+        estimating.json["job"]["estimated_seconds_remaining"]
+            .as_u64()
+            .is_some_and(|seconds| seconds > 0),
+        "ETA becomes available after the first newly completed thumbnail"
+    );
+
+    {
+        let mut application = shared.lock().expect("application");
+        let request = application
+            .start_thumbnail_generation(remaining_id)
+            .expect("start remaining thumbnail");
+        fs::write(&request.cache_path, transparent_placeholder_webp())
+            .expect("write remaining cache");
+        application
+            .finish_thumbnail_generation(
+                remaining_id,
+                Ok(ThumbnailGenerationSuccess {
+                    width: 1,
+                    height: 1,
+                }),
+            )
+            .expect("finish remaining thumbnail");
+    }
+
+    let completed = server
+        .request("GET", "/api/thumbnail-cache-jobs/current", &[])
+        .await;
+    assert_eq!(200, completed.status);
+    assert_eq!("completed", completed.json["job"]["status"]);
+    assert_eq!(3, completed.json["job"]["ready"]);
+    assert_eq!(
+        Some(100.0),
+        completed.json["job"]["progress_percent"].as_f64()
+    );
+    assert_eq!(0, completed.json["job"]["estimated_seconds_remaining"]);
+
+    let next = server
+        .request_json(
+            "POST",
+            "/api/thumbnail-cache-jobs",
+            &serde_json::json!({ "root_ids": [excluded_root_id] }),
+        )
+        .await;
+    assert_eq!(200, next.status);
+    assert_eq!(1, next.json["total"]);
+    assert!(next.json["id"].as_u64() > started.json["id"].as_u64());
+
+    let invalid = server
+        .request_json(
+            "POST",
+            "/api/thumbnail-cache-jobs",
+            &serde_json::json!({ "root_ids": [] }),
+        )
+        .await;
+    assert_eq!(
+        409, invalid.status,
+        "running job is rejected before new scope"
+    );
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn settings_api_validates_persists_and_requeues_existing_thumbnail_state() {
     let tree = TestTree::new("settings-api");
     let (mut application, collection_id) = thumbnail_application(&tree);

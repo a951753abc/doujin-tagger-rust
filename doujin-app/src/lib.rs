@@ -27,8 +27,8 @@ use doujin_storage::roots::LibraryRootSnapshot;
 use doujin_storage::scan::{ScanCompletion, ScanCompletionStatus, ScanIssueRecord};
 use doujin_storage::statistics::{CollectionFacet, CollectionStatistics, NamedCount};
 use doujin_storage::thumbnails::{
-    BACKGROUND_THUMBNAIL_PRIORITY, DEFAULT_THUMBNAIL_PRIORITY, ThumbnailRequestOutcome,
-    ThumbnailStateSnapshot, ThumbnailStatus,
+    BACKGROUND_THUMBNAIL_PRIORITY, BATCH_THUMBNAIL_PRIORITY, DEFAULT_THUMBNAIL_PRIORITY,
+    ThumbnailRequestOutcome, ThumbnailStateSnapshot, ThumbnailStatus, ThumbnailStatusCounts,
 };
 use doujin_storage::{CatalogRepository, IngestOutcome, StorageError};
 use doujin_thumbnails::{
@@ -94,6 +94,12 @@ impl From<ThumbnailError> for ApplicationError {
 }
 
 pub type ApplicationResult<T> = Result<T, ApplicationError>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThumbnailCachePreparation {
+    pub collection_ids: Vec<i64>,
+    pub failed_collection_ids: Vec<i64>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -886,6 +892,59 @@ impl<R: RecycleBin> ApplicationService<R> {
             rebuilt += 1;
         }
         Ok(rebuilt)
+    }
+
+    pub fn prepare_thumbnail_cache(
+        &mut self,
+        root_ids: &[i64],
+    ) -> ApplicationResult<ThumbnailCachePreparation> {
+        self.thumbnail_config()?;
+        let mut selected_root_ids = root_ids.to_vec();
+        selected_root_ids.sort_unstable();
+        selected_root_ids.dedup();
+        if selected_root_ids.is_empty() {
+            return Err(ApplicationError::InvalidSettings(
+                "至少必須選擇一個資料夾來源".to_owned(),
+            ));
+        }
+        let active_root_ids = self
+            .repository
+            .library_roots()?
+            .into_iter()
+            .filter(|root| root.active)
+            .map(|root| root.id)
+            .collect::<std::collections::HashSet<_>>();
+        if selected_root_ids
+            .iter()
+            .any(|root_id| !active_root_ids.contains(root_id))
+        {
+            return Err(ApplicationError::InvalidSettings(
+                "快取建立範圍包含不存在或已停用的資料夾來源".to_owned(),
+            ));
+        }
+
+        let collection_ids = self
+            .repository
+            .active_collection_ids_for_roots(&selected_root_ids)?;
+        let mut prepared_collection_ids = Vec::with_capacity(collection_ids.len());
+        let mut failed_collection_ids = Vec::new();
+        for collection_id in collection_ids {
+            match self.request_thumbnail_with_priority(collection_id, BATCH_THUMBNAIL_PRIORITY) {
+                Ok(_) => prepared_collection_ids.push(collection_id),
+                Err(_) => failed_collection_ids.push(collection_id),
+            }
+        }
+        Ok(ThumbnailCachePreparation {
+            collection_ids: prepared_collection_ids,
+            failed_collection_ids,
+        })
+    }
+
+    pub fn thumbnail_status_counts(
+        &self,
+        collection_ids: &[i64],
+    ) -> ApplicationResult<ThumbnailStatusCounts> {
+        Ok(self.repository.thumbnail_status_counts(collection_ids)?)
     }
 
     pub fn reconcile_thumbnail_settings(&mut self) -> ApplicationResult<usize> {

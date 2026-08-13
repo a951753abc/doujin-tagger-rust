@@ -417,6 +417,30 @@
               <button class="primary-button" type="submit">儲存設定</button>
               <p class="field-note">變更縮圖尺寸或品質時，既有縮圖會自動排入重建。</p>
             </form>
+
+            <section class="thumbnail-cache-builder" aria-labelledby="thumbnail-cache-heading">
+              <div class="thumbnail-cache-heading">
+                <h3 id="thumbnail-cache-heading">一次建立快取縮圖</h3>
+                <p>補齊所選區域缺少或已過期的縮圖；既有有效快取會保留。</p>
+              </div>
+              <form id="thumbnail-cache-form">
+                <fieldset>
+                  <legend>建立範圍</legend>
+                  <div class="thumbnail-cache-roots" id="thumbnail-cache-roots">
+                    <p class="field-note">正在讀取可用區域…</p>
+                  </div>
+                </fieldset>
+                <button class="secondary-button" id="thumbnail-cache-start" type="submit">開始建立</button>
+              </form>
+              <div class="thumbnail-cache-progress" id="thumbnail-cache-progress" aria-live="polite" hidden>
+                <div class="thumbnail-cache-progress-heading">
+                  <strong id="thumbnail-cache-status">準備建立縮圖…</strong>
+                  <output id="thumbnail-cache-percent">0%</output>
+                </div>
+                <progress id="thumbnail-cache-progress-bar" max="100" value="0" aria-label="快取縮圖建立進度">0%</progress>
+                <p id="thumbnail-cache-detail">正在計算工作範圍…</p>
+              </div>
+            </section>
           </section>
 
           <section class="settings-section roots-settings" aria-labelledby="roots-heading">

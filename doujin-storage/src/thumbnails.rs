@@ -13,6 +13,7 @@ const THUMBNAIL_COLUMNS: &str =
 
 pub const BACKGROUND_THUMBNAIL_PRIORITY: i64 = 0;
 pub const DEFAULT_THUMBNAIL_PRIORITY: i64 = 1;
+pub const BATCH_THUMBNAIL_PRIORITY: i64 = 2;
 pub const MAX_THUMBNAIL_PRIORITY: i64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +126,15 @@ pub struct ThumbnailRequestOutcome {
     pub enqueued: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ThumbnailStatusCounts {
+    pub pending: usize,
+    pub running: usize,
+    pub ready: usize,
+    pub failed: usize,
+    pub missing: usize,
+}
+
 impl CatalogRepository {
     pub fn request_thumbnail(
         &mut self,
@@ -187,8 +197,11 @@ impl CatalogRepository {
                         priority,
                     )?;
                     enqueued = true;
-                } else if state.status == ThumbnailStatus::Pending {
-                    prioritize_pending(&transaction, collection_id, priority)?;
+                } else if matches!(
+                    state.status,
+                    ThumbnailStatus::Pending | ThumbnailStatus::Running
+                ) {
+                    prioritize_active_request(&transaction, collection_id, priority)?;
                 }
             }
         }
@@ -236,6 +249,47 @@ impl CatalogRepository {
         raw_thumbnail_state_optional(&self.connection, collection_id)?
             .ok_or(StorageError::ThumbnailStateNotFound(collection_id))
             .and_then(decode_thumbnail_state)
+    }
+
+    pub fn thumbnail_status_counts(
+        &self,
+        collection_ids: &[i64],
+    ) -> StorageResult<ThumbnailStatusCounts> {
+        if collection_ids.is_empty() {
+            return Ok(ThumbnailStatusCounts::default());
+        }
+        let collection_ids_json = serde_json::to_string(collection_ids)?;
+        let counts = self.connection.query_row(
+            "WITH targets AS (
+                 SELECT CAST(value AS INTEGER) AS collection_id FROM json_each(?1)
+             )
+             SELECT
+                 COALESCE(SUM(state.status = 'pending'), 0),
+                 COALESCE(SUM(state.status = 'running'), 0),
+                 COALESCE(SUM(state.status = 'ready'), 0),
+                 COALESCE(SUM(state.status = 'failed'), 0),
+                 COALESCE(SUM(state.collection_id IS NULL), 0)
+             FROM targets
+             LEFT JOIN thumbnail_states AS state
+               ON state.collection_id = targets.collection_id",
+            [collection_ids_json],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )?;
+        Ok(ThumbnailStatusCounts {
+            pending: thumbnail_count(counts.0)?,
+            running: thumbnail_count(counts.1)?,
+            ready: thumbnail_count(counts.2)?,
+            failed: thumbnail_count(counts.3)?,
+            missing: thumbnail_count(counts.4)?,
+        })
     }
 
     pub fn due_thumbnails(&self, limit: u32) -> StorageResult<Vec<ThumbnailStateSnapshot>> {
@@ -406,6 +460,11 @@ impl CatalogRepository {
     }
 }
 
+fn thumbnail_count(value: i64) -> StorageResult<usize> {
+    usize::try_from(value)
+        .map_err(|_| StorageError::InvalidSchema("thumbnail 狀態筆數超出支援範圍".to_owned()))
+}
+
 fn validate_request(
     source_fingerprint: &str,
     settings_fingerprint: &str,
@@ -502,7 +561,7 @@ fn reset_pending(
     Ok(())
 }
 
-fn prioritize_pending(
+fn prioritize_active_request(
     connection: &rusqlite::Connection,
     collection_id: i64,
     priority: i64,
@@ -511,7 +570,7 @@ fn prioritize_pending(
         "UPDATE thumbnail_states
          SET priority = MAX(priority, ?1),
              requested_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE collection_id = ?2 AND status = 'pending'",
+         WHERE collection_id = ?2 AND status IN ('pending', 'running')",
         params![priority, collection_id],
     )?;
     Ok(())

@@ -9,7 +9,7 @@ use doujin_app::external_search::{
     ExternalMetadataProvider, ExternalSearchProviderError, ExternalSearchProviderIssue,
     ExternalSearchProviderResponse, ExternalSearchRequest, ExternalSearchStartOutcome,
 };
-use doujin_app::{ApplicationService, ApplicationSettingsOverrides};
+use doujin_app::{ApplicationResult, ApplicationService, ApplicationSettingsOverrides};
 use doujin_files::RecycleBin;
 use doujin_http::{
     SharedApplication, bind_loopback, serve_shared_with_shutdown, share_application,
@@ -18,8 +18,8 @@ use doujin_provider_dlsite::DlsiteExactProvider;
 use doujin_provider_ehentai::EhentaiProvider;
 use doujin_storage::CatalogRepository;
 use doujin_storage::settings::StoredApplicationSettings;
-use doujin_storage::thumbnails::{BACKGROUND_THUMBNAIL_PRIORITY, DEFAULT_THUMBNAIL_PRIORITY};
-use doujin_thumbnails::{ThumbnailConfig, generate_thumbnail};
+use doujin_storage::thumbnails::DEFAULT_THUMBNAIL_PRIORITY;
+use doujin_thumbnails::{ThumbnailConfig, ThumbnailGenerationRequest, generate_thumbnail};
 use serde::Deserialize;
 
 const WORKER_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -217,17 +217,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     for worker_index in 0..THUMBNAIL_WORKER_COUNT {
         let thumbnail_application = Arc::clone(&application);
         let thumbnail_stopping = Arc::clone(&stopping);
-        let allow_background_prewarm = worker_index + 1 == THUMBNAIL_WORKER_COUNT;
         thumbnail_workers.push(
             thread::Builder::new()
                 .name(format!("thumbnail-worker-{}", worker_index + 1))
-                .spawn(move || {
-                    run_thumbnail_worker(
-                        thumbnail_application,
-                        thumbnail_stopping,
-                        allow_background_prewarm,
-                    )
-                })?,
+                .spawn(move || run_thumbnail_worker(thumbnail_application, thumbnail_stopping))?,
         );
     }
 
@@ -250,51 +243,19 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn run_thumbnail_worker<R>(
-    application: SharedApplication<R>,
-    stopping: Arc<AtomicBool>,
-    allow_background_prewarm: bool,
-) where
+fn run_thumbnail_worker<R>(application: SharedApplication<R>, stopping: Arc<AtomicBool>)
+where
     R: RecycleBin + Send + 'static,
 {
     while !stopping.load(Ordering::Acquire) {
         let job = match application.lock() {
-            Ok(mut application) => {
-                let min_priority = if allow_background_prewarm {
-                    BACKGROUND_THUMBNAIL_PRIORITY
-                } else {
-                    DEFAULT_THUMBNAIL_PRIORITY
-                };
-                let mut due = match application.due_thumbnails_with_min_priority(1, min_priority) {
-                    Ok(states) => states.into_iter().next(),
-                    Err(error) => {
-                        eprintln!("thumbnail worker 無法讀取工作：{error}");
-                        None
-                    }
-                };
-                if due.is_none() && allow_background_prewarm {
-                    match application.prewarm_next_thumbnail() {
-                        Ok(Some(_)) => {
-                            due = application
-                                .due_thumbnails_with_min_priority(1, BACKGROUND_THUMBNAIL_PRIORITY)
-                                .ok()
-                                .and_then(|states| states.into_iter().next());
-                        }
-                        Ok(None) => {}
-                        Err(error) => eprintln!("thumbnail 預熱無法排程：{error}"),
-                    }
+            Ok(mut application) => match claim_next_queued_thumbnail(&mut application) {
+                Ok(job) => job,
+                Err(error) => {
+                    eprintln!("thumbnail worker 無法領取工作：{error}");
+                    None
                 }
-                match due {
-                    Some(due) => match application.start_thumbnail_generation(due.collection_id) {
-                        Ok(request) => Some((due.collection_id, request)),
-                        Err(error) => {
-                            eprintln!("thumbnail {} 無法開始：{error}", due.collection_id);
-                            None
-                        }
-                    },
-                    None => None,
-                }
-            }
+            },
             Err(_) => {
                 eprintln!("thumbnail worker 無法取得 application service");
                 return;
@@ -317,6 +278,24 @@ fn run_thumbnail_worker<R>(
             }
         }
     }
+}
+
+fn claim_next_queued_thumbnail<R>(
+    application: &mut ApplicationService<R>,
+) -> ApplicationResult<Option<(i64, ThumbnailGenerationRequest)>>
+where
+    R: RecycleBin,
+{
+    let Some(due) = application
+        .due_thumbnails_with_min_priority(1, DEFAULT_THUMBNAIL_PRIORITY)?
+        .into_iter()
+        .next()
+    else {
+        return Ok(None);
+    };
+    let collection_id = due.collection_id;
+    let request = application.start_thumbnail_generation(collection_id)?;
+    Ok(Some((collection_id, request)))
 }
 
 fn absolute_path(path: PathBuf) -> Result<PathBuf, std::io::Error> {
@@ -574,7 +553,18 @@ fn usage_and_exit() -> ! {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
+
+    #[derive(Debug, Clone, Copy)]
+    struct NoopRecycleBin;
+
+    impl RecycleBin for NoopRecycleBin {
+        fn recycle(&self, _path: &Path) -> Result<(), String> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn provider_chain_failure_keeps_both_sources_and_retryable_kind() {
@@ -595,6 +585,62 @@ mod tests {
         );
         assert!(combined.message.contains("找不到 E-Hentai gallery"));
         assert!(combined.message.contains("DLsite 暫時無法連線"));
+    }
+
+    #[test]
+    fn production_thumbnail_claim_does_not_enqueue_or_run_background_prewarm() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "doujin-http-explicit-thumbnail-{}-{unique}",
+            std::process::id()
+        ));
+        let library = base.join("library");
+        fs::create_dir_all(&library).expect("create library");
+        fs::write(library.join("[circle] untracked.zip"), b"zip placeholder")
+            .expect("create source");
+        let repository = CatalogRepository::open_in_memory().expect("open catalog");
+        let thumbnail_config =
+            ThumbnailConfig::new(base.join("cache"), 300, 400, 80).expect("thumbnail config");
+        let mut application =
+            ApplicationService::with_thumbnails(repository, NoopRecycleBin, thumbnail_config);
+        application
+            .run_scan(&[doujin_scanner::ScanRoot {
+                path: library,
+                source: doujin_scanner::SourceKind::Downloads,
+                label: "下載區".to_owned(),
+            }])
+            .expect("scan source");
+
+        assert!(
+            claim_next_queued_thumbnail(&mut application)
+                .expect("claim queued thumbnail")
+                .is_none(),
+            "production claim must not turn an untracked collection into background work"
+        );
+        assert!(
+            application
+                .repository()
+                .next_untracked_thumbnail_collection_id()
+                .expect("untracked thumbnail lookup")
+                .is_some()
+        );
+
+        application
+            .prewarm_next_thumbnail()
+            .expect("enqueue background prewarm")
+            .expect("background thumbnail");
+        assert!(
+            claim_next_queued_thumbnail(&mut application)
+                .expect("ignore background thumbnail")
+                .is_none(),
+            "production worker must not claim persisted background prewarm"
+        );
+
+        drop(application);
+        fs::remove_dir_all(base).expect("remove test tree");
     }
 
     #[test]

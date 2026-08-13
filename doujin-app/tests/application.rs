@@ -17,7 +17,10 @@ use doujin_storage::jobs::{ExternalSearchErrorKind, ExternalSearchJobStatus};
 use doujin_storage::lifecycle::{CandidateDecision, CollectionStatus};
 use doujin_storage::metadata::{ConfidenceEvidence, MetadataField, MetadataValue};
 use doujin_storage::scan::ScanRunStatus;
-use doujin_storage::thumbnails::{BACKGROUND_THUMBNAIL_PRIORITY, ThumbnailStatus};
+use doujin_storage::thumbnails::{
+    BACKGROUND_THUMBNAIL_PRIORITY, BATCH_THUMBNAIL_PRIORITY, DEFAULT_THUMBNAIL_PRIORITY,
+    ThumbnailStatus,
+};
 use doujin_storage::{CatalogRepository, StorageError};
 use doujin_thumbnails::{ThumbnailConfig, ThumbnailGenerationSuccess};
 use rusqlite::Connection;
@@ -941,5 +944,93 @@ fn idle_prewarm_enqueues_one_background_thumbnail_at_a_time() {
         application
             .prewarm_next_thumbnail()
             .expect("prewarm complete")
+    );
+}
+
+#[test]
+fn thumbnail_cache_batch_promotes_selected_work_ahead_of_default_queue() {
+    let tree = TestTree::new("thumbnail-cache-priority");
+    let selected_directory = tree.path.join("selected");
+    let ordinary_directory = tree.path.join("ordinary");
+    fs::create_dir_all(&selected_directory).expect("create selected root");
+    fs::create_dir_all(&ordinary_directory).expect("create ordinary root");
+    let selected_path = selected_directory.join("[circle] selected.zip");
+    let ordinary_path = ordinary_directory.join("[circle] ordinary.zip");
+    fs::write(&selected_path, b"zip placeholder").expect("create selected zip");
+    fs::write(&ordinary_path, b"zip placeholder").expect("create ordinary zip");
+
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let thumbnail_config =
+        ThumbnailConfig::new(tree.path.join("cache"), 300, 400, 80).expect("thumbnail config");
+    let mut application =
+        ApplicationService::with_thumbnails(repository, NoopRecycleBin, thumbnail_config);
+    application
+        .run_scan(&[
+            ScanRoot {
+                path: selected_directory,
+                source: SourceKind::Archive,
+                label: "選取區".to_owned(),
+            },
+            ScanRoot {
+                path: ordinary_directory,
+                source: SourceKind::Archive,
+                label: "一般區".to_owned(),
+            },
+        ])
+        .expect("scan roots");
+    let selected_id = application
+        .repository()
+        .collection_id_for_current_path(&selected_path)
+        .expect("selected collection lookup")
+        .expect("selected collection ID");
+    let ordinary_id = application
+        .repository()
+        .collection_id_for_current_path(&ordinary_path)
+        .expect("ordinary collection lookup")
+        .expect("ordinary collection ID");
+    let selected_root_id = application
+        .library_roots()
+        .expect("library roots")
+        .into_iter()
+        .find(|root| root.label == "選取區")
+        .expect("selected root")
+        .id;
+
+    application
+        .request_thumbnail(ordinary_id)
+        .expect("enqueue ordinary thumbnail");
+    application
+        .request_thumbnail(selected_id)
+        .expect("enqueue selected thumbnail at default priority");
+    let prepared = application
+        .prepare_thumbnail_cache(&[selected_root_id])
+        .expect("prepare selected thumbnail cache");
+
+    assert_eq!(vec![selected_id], prepared.collection_ids);
+    assert!(BATCH_THUMBNAIL_PRIORITY > DEFAULT_THUMBNAIL_PRIORITY);
+    assert_eq!(
+        BATCH_THUMBNAIL_PRIORITY,
+        application
+            .repository()
+            .thumbnail_state(selected_id)
+            .expect("selected thumbnail state")
+            .priority
+    );
+    assert_eq!(
+        DEFAULT_THUMBNAIL_PRIORITY,
+        application
+            .repository()
+            .thumbnail_state(ordinary_id)
+            .expect("ordinary thumbnail state")
+            .priority
+    );
+    assert_eq!(
+        vec![selected_id, ordinary_id],
+        application
+            .due_thumbnails(2)
+            .expect("due thumbnails")
+            .into_iter()
+            .map(|state| state.collection_id)
+            .collect::<Vec<_>>()
     );
 }

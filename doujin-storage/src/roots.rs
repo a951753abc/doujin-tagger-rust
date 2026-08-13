@@ -46,6 +46,28 @@ impl CatalogRepository {
         decode_library_root(row)
     }
 
+    pub fn active_collection_ids_for_roots(&self, root_ids: &[i64]) -> StorageResult<Vec<i64>> {
+        if root_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let root_ids_json = serde_json::to_string(root_ids)?;
+        let mut statement = self.connection.prepare(
+            "SELECT collection.id
+             FROM collections AS collection
+             JOIN collection_locations AS location
+               ON location.collection_id = collection.id
+              AND location.location_status = 'current'
+             JOIN library_roots AS root ON root.id = location.root_id
+             JOIN json_each(?1) AS selected_root
+               ON CAST(selected_root.value AS INTEGER) = root.id
+             WHERE collection.status = 'active' AND root.active = 1
+             ORDER BY collection.id",
+        )?;
+        Ok(statement
+            .query_map([root_ids_json], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
     pub fn deactivate_library_root(&mut self, root_id: i64) -> StorageResult<LibraryRootSnapshot> {
         let transaction = self.connection.transaction()?;
         let changed = transaction.execute(
