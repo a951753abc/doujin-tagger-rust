@@ -162,6 +162,7 @@
     lastBatchActivity: null,
     batchRetry: null,
     batchRunning: null,
+    renamePreflight: null,
     activityTimer: null,
     activitySignature: null,
     scanPreflight: null,
@@ -427,6 +428,12 @@
       batchProgressCount: byId("batch-progress-count"),
       batchProgressBar: byId("batch-progress-bar"),
       retryBatchFailures: byId("retry-batch-failures"),
+      renamePreflightForm: byId("rename-preflight-form"),
+      renamePreflight: byId("rename-preflight"),
+      renamePreflightSummary: byId("rename-preflight-summary"),
+      renamePreflightItems: byId("rename-preflight-items"),
+      renameStatusFilter: byId("rename-status-filter"),
+      applyRenamePreflight: byId("apply-rename-preflight"),
       externalBatchPreflight: byId("external-batch-preflight"),
       externalBatchActions: byId("external-batch-actions"),
       externalBatchResult: byId("external-batch-result"),
@@ -593,6 +600,10 @@
     ui.batchMetadataForm.elements.field.addEventListener("change", syncBatchMetadataField);
     ui.batchMetadataForm.addEventListener("submit", batchSetMetadata);
     ui.retryBatchFailures.addEventListener("click", retryFailedBatch);
+    ui.renamePreflightForm.addEventListener("submit", preflightRename);
+    ui.applyRenamePreflight.addEventListener("click", applyRenamePreflight);
+    ui.renameStatusFilter.addEventListener("change", () => renderRenamePreflightItems(state.renamePreflight));
+    byId("cancel-rename-preflight").addEventListener("click", clearRenamePreflight);
     byId("prepare-external-batch").addEventListener("click", preflightExternalBatch);
     byId("start-external-batch").addEventListener("click", startExternalBatch);
     byId("cancel-external-batch").addEventListener("click", clearExternalBatchPreflight);
@@ -4581,6 +4592,126 @@
     const item = el("li", `result-${status}`);
     item.append(el("strong", "", displayTitle(collection)), el("span", "", message));
     return item;
+  }
+
+  function clearRenamePreflight() {
+    state.renamePreflight = null;
+    ui.renamePreflight.hidden = true;
+    ui.renamePreflightItems.replaceChildren();
+  }
+
+  async function preflightRename(event) {
+    event.preventDefault();
+    const collections = selectedCollections();
+    if (!collections.length) return;
+    const template = String(new FormData(ui.renamePreflightForm).get("template") || "").trim();
+    if (!template) {
+      toast("請輸入 Rename Template", true);
+      return;
+    }
+    const submit = ui.renamePreflightForm.querySelector('[type="submit"]');
+    submit.disabled = true;
+    submit.textContent = "正在預覽…";
+    try {
+      const preflight = await api("/api/file-actions/rename/preflight", {
+        method: "POST",
+        body: {
+          collection_ids: collections.map((collection) => collection.id),
+          template,
+        },
+      });
+      state.renamePreflight = preflight;
+      renderRenamePreflight(preflight);
+    } catch (error) {
+      clearRenamePreflight();
+      toast(error.message, true);
+    } finally {
+      submit.disabled = false;
+      submit.textContent = "預覽批次改名";
+    }
+  }
+
+  function renderRenamePreflight(preflight) {
+    const summary = preflight.summary || {};
+    const blocked = Number(summary.total || 0) - Number(summary.safe || 0);
+    ui.renamePreflight.hidden = false;
+    ui.renamePreflightSummary.textContent = `選取 ${formatNumber(summary.total || 0)} 本 · ${formatNumber(summary.safe || 0)} 本可改名 · ${formatNumber(summary.unchanged || 0)} 本名稱不變 · ${formatNumber(summary.missing_metadata || 0)} 本缺資料 · ${formatNumber(summary.collision || 0)} 本衝突 · ${formatNumber(summary.illegal || 0)} 本名稱非法 · ${formatNumber(summary.path_too_long || 0)} 本路徑過長 · ${formatNumber(summary.source_changed || 0)} 本來源已變 · ${formatNumber(summary.unsupported || 0)} 本類型不支援`;
+    ui.applyRenamePreflight.disabled = !summary.safe;
+    ui.applyRenamePreflight.textContent = summary.safe
+      ? `套用 ${formatNumber(summary.safe)} 本安全項目`
+      : "沒有可安全套用的項目";
+    renderRenamePreflightItems(preflight);
+    if (blocked) {
+      toast(`改名預覽完成；${formatNumber(blocked)} 本不會套用`, false);
+    }
+  }
+
+  function renderRenamePreflightItems(preflight) {
+    if (!preflight) return;
+    ui.renamePreflightItems.replaceChildren();
+    const statusLabels = {
+      safe: "可安全改名",
+      unchanged: "名稱未變",
+      missing_metadata: "缺少必要 metadata",
+      collision: "目標名稱衝突",
+      illegal: "Windows 名稱非法",
+      path_too_long: "路徑過長",
+      source_changed: "來源已變更",
+      unsupported: "類型不支援",
+    };
+    const filter = ui.renameStatusFilter.value;
+    (preflight.items || []).filter((entry) => {
+      if (filter === "all") return true;
+      if (filter === "blocked") return entry.status !== "safe";
+      return entry.status === filter;
+    }).forEach((entry) => {
+      const item = el("li", `rename-change-item status-${entry.status}`);
+      const identity = el("span", "rename-change-id", `#${entry.collection_id}`);
+      const status = el("strong", "rename-change-status", statusLabels[entry.status] || entry.status);
+      const diff = el("div", "rename-change-diff");
+      diff.append(
+        el("code", "", entry.before || "—"),
+        el("span", "", "→"),
+        el("code", "", entry.after || "不產生名稱"),
+      );
+      const details = el("small", "rename-change-message");
+      const missing = (entry.missing_tokens || []).length
+        ? `跳過缺少欄位：${entry.missing_tokens.join("、")}`
+        : "";
+      details.textContent = [entry.message, missing].filter(Boolean).join(" · ");
+      details.hidden = !details.textContent;
+      item.append(identity, status, diff, details);
+      ui.renamePreflightItems.append(item);
+    });
+  }
+
+  async function applyRenamePreflight() {
+    const preflight = state.renamePreflight;
+    if (!preflight) return;
+    const safeItems = (preflight.items || []).filter((item) => item.status === "safe");
+    if (!safeItems.length) return;
+    const collections = selectedCollections();
+    ui.applyRenamePreflight.disabled = true;
+    ui.applyRenamePreflight.textContent = "正在重新驗證並改名…";
+    try {
+      const report = await api("/api/file-actions/rename", {
+        method: "POST",
+        body: {
+          template: preflight.template,
+          items: safeItems.map((item) => ({
+            collection_id: item.collection_id,
+            expected_source: item.expected_source,
+            expected_destination: item.expected_destination,
+          })),
+        },
+      });
+      clearRenamePreflight();
+      applyFileReport("批次改名", report, collections);
+    } catch (error) {
+      ui.applyRenamePreflight.disabled = false;
+      ui.applyRenamePreflight.textContent = `套用 ${formatNumber(safeItems.length)} 本安全項目`;
+      toast(error.message, true);
+    }
   }
 
   async function prepareMove() {

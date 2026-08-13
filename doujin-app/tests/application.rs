@@ -8,6 +8,7 @@ use doujin_app::external_search::{
     ExternalSearchProviderIssue, ExternalSearchProviderResponse, ExternalSearchRequest,
     ExternalTagCandidate,
 };
+use doujin_app::rename::{RenameExpectedItem, RenamePreflightStatus};
 use doujin_app::{
     ApplicationBatchOutcome, ApplicationError, ApplicationScanIssueKind, ApplicationScanMode,
     ApplicationScanOptions, ApplicationScanStatus, ApplicationService,
@@ -324,6 +325,182 @@ fn successful_scan_is_idempotent_and_persists_each_run() {
             .repository()
             .scan_run_count()
             .expect("scan runs")
+    );
+}
+
+#[test]
+fn rename_preflight_handles_more_than_one_hundred_and_applies_without_confirmation_per_item() {
+    let tree = TestTree::new("rename-large-batch");
+    for index in 0..101 {
+        tree.zip(&format!("title {index:03}.zip"));
+    }
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application.run_scan(&[tree.root()]).expect("scan batch");
+    let collection_ids = (0..101)
+        .map(|index| {
+            application
+                .repository()
+                .collection_id_for_current_path(
+                    &tree.library().join(format!("title {index:03}.zip")),
+                )
+                .expect("path lookup")
+                .expect("collection id")
+        })
+        .collect::<Vec<_>>();
+
+    let preflight = application
+        .rename_preflight(&collection_ids, "renamed - {title}")
+        .expect("rename preflight");
+    assert_eq!(101, preflight.summary.total);
+    assert_eq!(101, preflight.summary.safe);
+    assert!(
+        preflight
+            .items
+            .iter()
+            .all(|item| item.status == RenamePreflightStatus::Safe)
+    );
+    let expected = preflight
+        .items
+        .into_iter()
+        .map(|item| RenameExpectedItem {
+            collection_id: item.collection_id,
+            expected_source: item.expected_source,
+            expected_destination: item.expected_destination.expect("destination"),
+        })
+        .collect::<Vec<_>>();
+    let report = application
+        .apply_rename_preflight("renamed - {title}", &expected)
+        .expect("apply batch rename");
+
+    assert_eq!(101, report.succeeded());
+    assert_eq!(0, report.failed());
+    assert!(tree.library().join("renamed - title 000.zip").exists());
+    assert!(tree.library().join("renamed - title 100.zip").exists());
+}
+
+#[test]
+fn rename_apply_rejects_stale_preflight_and_preflight_classifies_blockers() {
+    let tree = TestTree::new("rename-stale");
+    let first = tree.zip("first.zip");
+    let second = tree.zip("second.zip");
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application.run_scan(&[tree.root()]).expect("scan");
+    let first_id = application
+        .repository()
+        .collection_id_for_current_path(&first)
+        .expect("lookup")
+        .expect("first id");
+    let second_id = application
+        .repository()
+        .collection_id_for_current_path(&second)
+        .expect("lookup")
+        .expect("second id");
+
+    let collision = application
+        .rename_preflight(&[first_id, second_id], "same")
+        .expect("collision preflight");
+    assert_eq!(2, collision.summary.collision);
+    let missing = application
+        .rename_preflight(&[first_id], "[{event}]")
+        .expect("missing preflight");
+    assert_eq!(
+        RenamePreflightStatus::MissingMetadata,
+        missing.items[0].status
+    );
+    let illegal = application
+        .rename_preflight(&[first_id], "bad:name")
+        .expect("illegal preflight");
+    assert_eq!(RenamePreflightStatus::Illegal, illegal.items[0].status);
+
+    let preview = application
+        .rename_preflight(&[first_id], "renamed - {title}")
+        .expect("safe preflight");
+    let item = &preview.items[0];
+    let expected = RenameExpectedItem {
+        collection_id: item.collection_id,
+        expected_source: item.expected_source.clone(),
+        expected_destination: item.expected_destination.clone().expect("destination"),
+    };
+    let external_path = tree.library().join("externally changed.zip");
+    fs::rename(&first, &external_path).expect("external source change");
+    let report = application
+        .apply_rename_preflight("renamed - {title}", &[expected])
+        .expect("stale apply report");
+    assert_eq!(1, report.failed());
+    assert_eq!(
+        0,
+        application
+            .repository()
+            .file_operation_count()
+            .expect("journal")
+    );
+
+    fs::rename(&external_path, &first).expect("restore source for retry");
+    let retry_preview = application
+        .rename_preflight(&[first_id], "renamed - {title}")
+        .expect("retry preflight");
+    assert_eq!(1, retry_preview.summary.safe);
+    let retry_item = &retry_preview.items[0];
+    let retry = RenameExpectedItem {
+        collection_id: first_id,
+        expected_source: retry_item.expected_source.clone(),
+        expected_destination: retry_item
+            .expected_destination
+            .clone()
+            .expect("retry destination"),
+    };
+    assert_eq!(
+        1,
+        application
+            .apply_rename_preflight("renamed - {title}", &[retry])
+            .expect("retry apply")
+            .succeeded()
+    );
+}
+
+#[test]
+fn rename_preflight_explicitly_reports_image_folder_as_unsupported() {
+    let tree = TestTree::new("rename-folder-unsupported");
+    let source = tree.zip("folder-lifecycle-placeholder.zip");
+    let mut application = ApplicationService::new(
+        CatalogRepository::open(tree.database()).expect("open catalog"),
+        NoopRecycleBin,
+    );
+    application.run_scan(&[tree.root()]).expect("scan");
+    let collection_id = application
+        .repository()
+        .collection_id_for_current_path(&source)
+        .expect("lookup")
+        .expect("id");
+    drop(application);
+    let connection = Connection::open(tree.database()).expect("open raw catalog");
+    connection
+        .execute(
+            "UPDATE collections SET media_kind = 'image_folder' WHERE id = ?1",
+            [collection_id],
+        )
+        .expect("mark image folder lifecycle type");
+    drop(connection);
+    let application = ApplicationService::new(
+        CatalogRepository::open(tree.database()).expect("reopen catalog"),
+        NoopRecycleBin,
+    );
+
+    let preflight = application
+        .rename_preflight(&[collection_id], "{title}")
+        .expect("folder preflight");
+    assert_eq!(1, preflight.summary.unsupported);
+    assert_eq!(
+        RenamePreflightStatus::Unsupported,
+        preflight.items[0].status
+    );
+    assert!(
+        preflight.items[0]
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("第一版只支援 ZIP"))
     );
 }
 

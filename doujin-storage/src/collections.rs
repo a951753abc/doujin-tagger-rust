@@ -154,6 +154,17 @@ pub struct CollectionSnapshot {
 }
 
 impl CatalogRepository {
+    pub fn collection_media_kind(&self, collection_id: i64) -> StorageResult<String> {
+        self.connection
+            .query_row(
+                "SELECT media_kind FROM collections WHERE id = ?1",
+                [collection_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(StorageError::CollectionNotFound(collection_id))
+    }
+
     pub fn add_collection_tag(&mut self, collection_id: i64, tag_name: &str) -> StorageResult<i64> {
         let tag_name = tag_name.trim();
         if tag_name.is_empty() {

@@ -107,6 +107,7 @@ impl DeleteMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileOperationKind {
+    Rename,
     Move,
     SoftDelete,
     HardDelete,
@@ -115,6 +116,7 @@ pub enum FileOperationKind {
 impl FileOperationKind {
     pub(crate) fn parse(value: &str) -> Result<Self, String> {
         match value {
+            "rename" => Ok(Self::Rename),
             "move" => Ok(Self::Move),
             "soft_delete" => Ok(Self::SoftDelete),
             "hard_delete" => Ok(Self::HardDelete),

@@ -1663,6 +1663,97 @@ impl CatalogRepository {
         Ok(operation)
     }
 
+    pub fn begin_rename(
+        &mut self,
+        collection_id: i64,
+        expected_source: &Path,
+        destination: &Path,
+    ) -> StorageResult<PendingFileOperation> {
+        let transaction = self.connection.transaction()?;
+        let current = current_location_for_operation(&transaction, collection_id)?;
+        if current.media_kind != "zip" {
+            return Err(StorageError::InvalidLifecycle(
+                "圖片資料夾尚未接入正式檔案操作 lifecycle，第一版批次改名只支援 ZIP".to_owned(),
+            ));
+        }
+        if current.path != expected_source {
+            return Err(StorageError::InvalidLifecycle(format!(
+                "rename 來源已變更：預期 {}，目前 {}",
+                expected_source.display(),
+                current.path.display()
+            )));
+        }
+        if !current.path.is_file() {
+            return Err(StorageError::InvalidLifecycle(format!(
+                "rename 來源 ZIP 不存在：{}",
+                current.path.display()
+            )));
+        }
+        let source_parent = current.path.parent().ok_or_else(|| {
+            StorageError::InvalidLifecycle("rename 來源缺少 parent directory".to_owned())
+        })?;
+        let destination_parent = destination.parent().ok_or_else(|| {
+            StorageError::InvalidLifecycle("rename 目標缺少 parent directory".to_owned())
+        })?;
+        if path_key(source_parent) != path_key(destination_parent) {
+            return Err(StorageError::InvalidLifecycle(
+                "rename 只允許在相同 parent directory 內變更名稱；跨目錄請使用 move".to_owned(),
+            ));
+        }
+        if !destination
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+        {
+            return Err(StorageError::InvalidLifecycle(
+                "rename 目標必須是 ZIP 檔案".to_owned(),
+            ));
+        }
+        if destination.exists() {
+            return Err(StorageError::InvalidLifecycle(format!(
+                "rename 目標已存在，禁止覆寫：{}",
+                destination.display()
+            )));
+        }
+        let destination_key = path_key(destination);
+        let destination_conflict: bool = transaction.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM collection_locations
+                 WHERE path_key = ?1 AND location_status = 'current'
+                   AND collection_id <> ?2
+             )",
+            params![destination_key, collection_id],
+            |row| row.get(0),
+        )?;
+        if destination_conflict {
+            return Err(StorageError::InvalidLifecycle(format!(
+                "rename 目標已被其他收藏索引：{}",
+                destination.display()
+            )));
+        }
+        transaction.execute(
+            "INSERT INTO file_operations(
+                 collection_id, from_location_id, operation_kind,
+                 from_path, to_path, status
+             ) VALUES (?1, ?2, 'rename', ?3, ?4, 'pending')",
+            params![
+                collection_id,
+                current.location_id,
+                path_text(&current.path)?,
+                path_text(destination)?,
+            ],
+        )?;
+        let operation = PendingFileOperation {
+            id: transaction.last_insert_rowid(),
+            collection_id,
+            kind: FileOperationKind::Rename,
+            from_path: current.path,
+            to_path: Some(destination.to_owned()),
+        };
+        transaction.commit()?;
+        Ok(operation)
+    }
+
     pub fn begin_delete(
         &mut self,
         collection_id: i64,
@@ -1705,6 +1796,7 @@ impl CatalogRepository {
         let transaction = self.connection.transaction()?;
         let operation = pending_operation_row(&transaction, operation_id)?;
         match operation.kind {
+            FileOperationKind::Rename => complete_pending_rename(&transaction, &operation)?,
             FileOperationKind::Move => complete_pending_move(&transaction, &operation)?,
             FileOperationKind::SoftDelete => {
                 complete_pending_delete(&transaction, &operation, false)?
@@ -2045,6 +2137,7 @@ struct CurrentOperationLocation {
     root_path: PathBuf,
     source_kind: String,
     root_active: bool,
+    media_kind: String,
 }
 
 struct PendingOperationRow {
@@ -2067,7 +2160,8 @@ fn current_location_for_operation(
 ) -> StorageResult<CurrentOperationLocation> {
     let row = connection
         .query_row(
-            "SELECT location.id, location.full_path, root.path, root.source_kind, root.active
+            "SELECT location.id, location.full_path, root.path, root.source_kind, root.active,
+                    collection.media_kind
              FROM collection_locations AS location
              JOIN library_roots AS root ON root.id = location.root_id
              JOIN collections AS collection ON collection.id = location.collection_id
@@ -2082,6 +2176,7 @@ fn current_location_for_operation(
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, bool>(4)?,
+                    row.get::<_, String>(5)?,
                 ))
             },
         )
@@ -2097,6 +2192,7 @@ fn current_location_for_operation(
         root_path: PathBuf::from(row.2),
         source_kind: row.3,
         root_active: row.4,
+        media_kind: row.5,
     };
     validate_active_source_location(&current)?;
     Ok(current)
@@ -2334,6 +2430,123 @@ fn complete_pending_move(
         "UPDATE collections
          SET status = 'active', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ?1",
+        [operation.collection_id],
+    )?;
+    Ok(())
+}
+
+fn complete_pending_rename(
+    transaction: &Transaction<'_>,
+    operation: &PendingOperationRow,
+) -> StorageResult<()> {
+    if operation.from_path.exists() {
+        return Err(StorageError::InvalidLifecycle(format!(
+            "rename 來源仍存在：{}",
+            operation.from_path.display()
+        )));
+    }
+    let destination = operation
+        .to_path
+        .as_ref()
+        .ok_or_else(|| StorageError::InvalidLifecycle("pending rename 缺少目標路徑".to_owned()))?;
+    if !destination.is_file() {
+        return Err(StorageError::InvalidLifecycle(format!(
+            "rename 目標 ZIP 不存在：{}",
+            destination.display()
+        )));
+    }
+    let source_parent = operation.from_path.parent().ok_or_else(|| {
+        StorageError::InvalidLifecycle("pending rename 來源缺少 parent directory".to_owned())
+    })?;
+    let destination_parent = destination.parent().ok_or_else(|| {
+        StorageError::InvalidLifecycle("pending rename 目標缺少 parent directory".to_owned())
+    })?;
+    if path_key(source_parent) != path_key(destination_parent) {
+        return Err(StorageError::InvalidLifecycle(
+            "pending rename 目標已離開來源 parent directory".to_owned(),
+        ));
+    }
+    let (root_id, root_path): (i64, String) = transaction.query_row(
+        "SELECT location.root_id, root.path
+         FROM collection_locations AS location
+         JOIN library_roots AS root ON root.id = location.root_id
+         WHERE location.id = ?1 AND location.collection_id = ?2",
+        params![operation.from_location_id, operation.collection_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let root_path = Path::new(&root_path);
+    let relative_path = destination.strip_prefix(root_path).map_err(|_| {
+        StorageError::InvalidLifecycle(format!(
+            "rename 目標不在原 library root 內：{}",
+            destination.display()
+        ))
+    })?;
+    let canonical_root = fs::canonicalize(root_path).map_err(|error| {
+        StorageError::InvalidLifecycle(format!(
+            "無法解析 rename library root {}：{error}",
+            root_path.display()
+        ))
+    })?;
+    let canonical_parent = fs::canonicalize(destination_parent).map_err(|error| {
+        StorageError::InvalidLifecycle(format!(
+            "無法解析 rename parent {}：{error}",
+            destination_parent.display()
+        ))
+    })?;
+    if !canonical_parent.starts_with(&canonical_root) {
+        return Err(StorageError::InvalidLifecycle(format!(
+            "rename 目標解析後不在原 library root 內：{}",
+            destination.display()
+        )));
+    }
+    let destination_key = path_key(destination);
+    let destination_conflict: bool = transaction.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM collection_locations
+             WHERE path_key = ?1 AND location_status = 'current'
+               AND collection_id <> ?2
+         )",
+        params![destination_key, operation.collection_id],
+        |row| row.get(0),
+    )?;
+    if destination_conflict {
+        return Err(StorageError::InvalidLifecycle(format!(
+            "rename 目標已被其他收藏索引：{}",
+            destination.display()
+        )));
+    }
+    let changed = transaction.execute(
+        "UPDATE collection_locations
+         SET location_status = 'moved', ended_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ?1 AND collection_id = ?2 AND location_status = 'current'",
+        params![operation.from_location_id, operation.collection_id],
+    )?;
+    if changed != 1 {
+        return Err(StorageError::InvalidLifecycle(
+            "rename 來源 location 已變更".to_owned(),
+        ));
+    }
+    let filename = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| StorageError::NonUnicodePath(destination.to_owned()))?;
+    transaction.execute(
+        "INSERT INTO collection_locations(
+             collection_id, root_id, full_path, path_key, relative_path,
+             filename, location_status
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'current')",
+        params![
+            operation.collection_id,
+            root_id,
+            path_text(destination)?,
+            destination_key,
+            path_text(relative_path)?,
+            filename,
+        ],
+    )?;
+    transaction.execute(
+        "UPDATE collections
+         SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?1",
         [operation.collection_id],
     )?;
     Ok(())

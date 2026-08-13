@@ -2,7 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use doujin_files::{DeleteRequest, FileOperationService, ItemStatus, MoveRequest, RecycleBin};
+use doujin_files::{
+    DeleteRequest, FileOperationService, ItemStatus, MoveRequest, RecycleBin, RenameRequest,
+};
 use doujin_parser::PARSER_VERSION;
 use doujin_parser::domain::ParseInput;
 use doujin_parser::parser::parse_filename;
@@ -317,5 +319,167 @@ fn ambiguous_post_delete_error_stays_pending_for_recovery() {
         repository
             .collection_status(collection_id)
             .expect("reconciled status")
+    );
+}
+
+#[test]
+fn rename_batch_is_same_parent_no_overwrite_and_partial() {
+    let tree = TestTree::new("rename-batch");
+    let first = tree.pending("archive", SourceKind::Archive, "first.zip");
+    let second = tree.pending("archive", SourceKind::Archive, "second.zip");
+    let conflict = first.path.with_file_name("occupied.zip");
+    fs::write(&conflict, b"occupied").expect("write collision");
+    let first_destination = first.path.with_file_name("renamed.zip");
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    repository.ingest_collection(&first).expect("ingest first");
+    repository
+        .ingest_collection(&second)
+        .expect("ingest second");
+    let first_id = repository
+        .collection_id_for_current_path(&first.path)
+        .expect("first lookup")
+        .expect("first id");
+    let second_id = repository
+        .collection_id_for_current_path(&second.path)
+        .expect("second lookup")
+        .expect("second id");
+    repository
+        .add_collection_tag(first_id, "保留標籤")
+        .expect("tag first");
+    let before = repository.collection(first_id).expect("before snapshot");
+
+    let report = {
+        let mut service = FileOperationService::new(
+            &mut repository,
+            FakeRecycleBin {
+                directory: tree.directory("recycle"),
+                fail_name: None,
+            },
+        );
+        service.rename_batch(&[
+            RenameRequest {
+                collection_id: first_id,
+                expected_source: first.path.clone(),
+                destination: first_destination.clone(),
+            },
+            RenameRequest {
+                collection_id: second_id,
+                expected_source: second.path.clone(),
+                destination: conflict.clone(),
+            },
+        ])
+    };
+
+    assert_eq!(1, report.succeeded());
+    assert_eq!(1, report.failed());
+    assert!(!first.path.exists());
+    assert!(first_destination.exists());
+    assert!(second.path.exists());
+    assert_eq!(
+        b"occupied".as_slice(),
+        fs::read(&conflict).expect("collision intact").as_slice()
+    );
+    assert_eq!(
+        Some(first_id),
+        repository
+            .collection_id_for_current_path(&first_destination)
+            .expect("new path")
+    );
+    let after = repository.collection(first_id).expect("after snapshot");
+    assert_eq!(before.id, after.id);
+    assert_eq!(before.title, after.title);
+    assert_eq!(before.event, after.event);
+    assert_eq!(before.circle, after.circle);
+    assert_eq!(before.authors, after.authors);
+    assert_eq!(before.tags, after.tags);
+    assert_eq!(first_destination, after.path);
+    assert_eq!(
+        2,
+        repository
+            .location_history(first_id)
+            .expect("history")
+            .len()
+    );
+}
+
+#[test]
+fn rename_rejects_toctou_and_cross_parent_without_journaling() {
+    let tree = TestTree::new("rename-safety");
+    let pending = tree.pending("archive", SourceKind::Archive, "source.zip");
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    repository.ingest_collection(&pending).expect("ingest");
+    let collection_id = repository
+        .collection_id_for_current_path(&pending.path)
+        .expect("lookup")
+        .expect("id");
+    let different_source = pending.path.with_file_name("stale.zip");
+    let cross_parent = tree.directory("elsewhere").join("renamed.zip");
+    let before_count = repository.file_operation_count().expect("operation count");
+
+    assert!(
+        repository
+            .begin_rename(
+                collection_id,
+                &different_source,
+                &pending.path.with_file_name("renamed.zip")
+            )
+            .expect_err("source changed")
+            .to_string()
+            .contains("來源已變更")
+    );
+    assert!(
+        repository
+            .begin_rename(collection_id, &pending.path, &cross_parent)
+            .expect_err("cross parent")
+            .to_string()
+            .contains("相同 parent")
+    );
+    assert_eq!(
+        before_count,
+        repository.file_operation_count().expect("unchanged count")
+    );
+}
+
+#[test]
+fn interrupted_rename_uses_existing_pending_recovery() {
+    let tree = TestTree::new("rename-recovery");
+    let pending = tree.pending("downloads", SourceKind::Downloads, "source.zip");
+    let destination = pending.path.with_file_name("renamed.zip");
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    repository.ingest_collection(&pending).expect("ingest");
+    let collection_id = repository
+        .collection_id_for_current_path(&pending.path)
+        .expect("lookup")
+        .expect("id");
+    let operation = repository
+        .begin_rename(collection_id, &pending.path, &destination)
+        .expect("begin rename");
+    fs::rename(&pending.path, &destination).expect("simulate applied filesystem rename");
+
+    let recovery = {
+        let mut service = FileOperationService::new(
+            &mut repository,
+            FakeRecycleBin {
+                directory: tree.directory("recycle"),
+                fail_name: None,
+            },
+        );
+        service.recover_pending().expect("recover pending")
+    };
+
+    assert_eq!(1, recovery.succeeded());
+    assert_eq!(Some(operation.id), recovery.items[0].operation_id);
+    assert_eq!(
+        FileOperationStatus::Succeeded,
+        repository
+            .file_operation(operation.id)
+            .expect("operation")
+            .status
+    );
+    assert_eq!(
+        Some(collection_id),
+        repository
+            .collection_id_for_current_path(&destination)
+            .expect("recovered current path")
     );
 }

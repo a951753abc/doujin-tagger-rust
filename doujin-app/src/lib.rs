@@ -1,6 +1,7 @@
 //! Application use cases over the scanner, repository, and file-operation service.
 
 pub mod external_search;
+pub mod rename;
 
 use std::collections::HashSet;
 use std::error::Error;
@@ -11,7 +12,7 @@ use std::time::Instant;
 
 use doujin_files::{
     BatchReport, CollectionLaunchService, CollectionLauncher, DeleteRequest, FileOperationService,
-    FileServiceError, LaunchError, LaunchReceipt, MoveRequest, RecycleBin,
+    FileServiceError, LaunchError, LaunchReceipt, MoveRequest, RecycleBin, RenameRequest,
     SystemCollectionLauncher, SystemRecycleBin,
 };
 use doujin_scanner::{
@@ -852,6 +853,10 @@ impl<R: RecycleBin> ApplicationService<R> {
 
     pub fn move_collections(&mut self, requests: &[MoveRequest]) -> BatchReport {
         FileOperationService::new(&mut self.repository, &self.recycle_bin).move_batch(requests)
+    }
+
+    pub fn rename_collections(&mut self, requests: &[RenameRequest]) -> BatchReport {
+        FileOperationService::new(&mut self.repository, &self.recycle_bin).rename_batch(requests)
     }
 
     pub fn move_collections_to_archive(

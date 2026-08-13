@@ -22,6 +22,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
 use doujin_app::external_search::{ExternalSearchBatchFieldNeed, ExternalSearchBatchPreflight};
+use doujin_app::rename::{RenameExpectedItem, RenamePreflight};
 use doujin_app::{
     ApplicationBatchOutcome, ApplicationBatchReport, ApplicationError, ApplicationScanExpectation,
     ApplicationScanMode, ApplicationScanOptions, ApplicationScanPreflight, ApplicationScanReport,
@@ -328,6 +329,11 @@ where
             post(reactivate_library_root::<R>),
         )
         .route("/api/file-actions/move", post(move_collections::<R>))
+        .route(
+            "/api/file-actions/rename/preflight",
+            post(preflight_rename_collections::<R>),
+        )
+        .route("/api/file-actions/rename", post(rename_collections::<R>))
         .route("/api/file-actions/delete", post(delete_collections::<R>))
         .route("/api/scans", post(start_scan::<R>))
         .route("/api/scans/preflight", post(preflight_scan::<R>))
@@ -4022,6 +4028,20 @@ struct DeleteCollectionsRequest {
     mode: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RenamePreflightRequest {
+    collection_ids: Vec<i64>,
+    template: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RenameCollectionsRequest {
+    template: String,
+    items: Vec<RenameExpectedItem>,
+}
+
 #[derive(Debug, Serialize)]
 struct FileActionBatchResponse {
     succeeded: usize,
@@ -4090,6 +4110,87 @@ where
             Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
         };
         Ok(application.move_collections_to_archive(&collection_ids, archive_root_id))
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(report.into()))
+}
+
+async fn preflight_rename_collections<R>(
+    State(state): State<HttpState<R>>,
+    payload: Result<Json<RenamePreflightRequest>, JsonRejection>,
+) -> Result<Json<RenamePreflight>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let collection_ids = validated_collection_ids(payload.collection_ids)?;
+    let template = payload.template;
+    if template.trim().is_empty() {
+        return Err(ApiError::bad_request(
+            "invalid_rename_template",
+            "rename template 不得為空",
+        ));
+    }
+    let preflight = tokio::task::spawn_blocking(move || {
+        let application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .rename_preflight(&collection_ids, &template)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(preflight))
+}
+
+async fn rename_collections<R>(
+    State(state): State<HttpState<R>>,
+    payload: Result<Json<RenameCollectionsRequest>, JsonRejection>,
+) -> Result<Json<FileActionBatchResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    if payload.template.trim().is_empty() || payload.items.is_empty() {
+        return Err(ApiError::bad_request(
+            "invalid_rename_request",
+            "rename template 與 preflight items 不得為空",
+        ));
+    }
+    validated_collection_ids(
+        payload
+            .items
+            .iter()
+            .map(|item| item.collection_id)
+            .collect(),
+    )?;
+    let template = payload.template;
+    let items = payload.items;
+    let report = tokio::task::spawn_blocking(move || {
+        let mut application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .apply_rename_preflight(&template, &items)
+            .map_err(ApiError::from_application)
     })
     .await
     .map_err(|_| ApiError::internal())??;
