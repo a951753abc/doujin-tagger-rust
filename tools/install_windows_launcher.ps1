@@ -16,30 +16,34 @@ if (-not $SkipBuild) {
 $release = Join-Path $repository 'target\release'
 $httpSource = Join-Path $release 'doujin-http.exe'
 $launcherSource = Join-Path $release 'doujin-launcher.exe'
+$desktopSource = Join-Path $release 'doujin-tagger.exe'
 if (-not (Test-Path -LiteralPath $httpSource -PathType Leaf) -or
-    -not (Test-Path -LiteralPath $launcherSource -PathType Leaf)) {
+    -not (Test-Path -LiteralPath $launcherSource -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $desktopSource -PathType Leaf)) {
     throw "找不到 release binaries：$release"
 }
 
 New-Item -ItemType Directory -Path $install -Force | Out-Null
 Copy-Item -LiteralPath $httpSource -Destination (Join-Path $install 'doujin-http.exe') -Force
 Copy-Item -LiteralPath $launcherSource -Destination (Join-Path $install 'doujin-launcher.exe') -Force
+Copy-Item -LiteralPath $desktopSource -Destination (Join-Path $install '私藏編目室.exe') -Force
 
 $shell = New-Object -ComObject WScript.Shell
 $programs = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Doujin Tagger'
 New-Item -ItemType Directory -Path $programs -Force | Out-Null
 $launcher = Join-Path $install 'doujin-launcher.exe'
+$desktop = Join-Path $install '私藏編目室.exe'
 
 $shortcuts = @(
-    @{ Name = '開啟私藏編目室'; Arguments = '' },
-    @{ Name = '重新啟動私藏編目室'; Arguments = 'restart' },
-    @{ Name = '停止私藏編目室'; Arguments = 'stop' },
-    @{ Name = '私藏編目室服務狀態'; Arguments = 'status' }
+    @{ Name = '開啟私藏編目室'; Target = $desktop; Arguments = '' },
+    @{ Name = '重新啟動私藏編目室'; Target = $launcher; Arguments = 'restart' },
+    @{ Name = '停止私藏編目室'; Target = $launcher; Arguments = 'stop' },
+    @{ Name = '私藏編目室服務狀態'; Target = $launcher; Arguments = 'status' }
 )
 
 foreach ($entry in $shortcuts) {
     $shortcut = $shell.CreateShortcut((Join-Path $programs ($entry.Name + '.lnk')))
-    $shortcut.TargetPath = $launcher
+    $shortcut.TargetPath = $entry.Target
     $shortcut.Arguments = $entry.Arguments
     $shortcut.WorkingDirectory = $install
     $shortcut.Description = $entry.Name
@@ -47,7 +51,7 @@ foreach ($entry in $shortcuts) {
 }
 
 $desktopShortcut = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) '私藏編目室.lnk'))
-$desktopShortcut.TargetPath = $launcher
+$desktopShortcut.TargetPath = $desktop
 $desktopShortcut.WorkingDirectory = $install
 $desktopShortcut.Description = '開啟私藏編目室'
 $desktopShortcut.Save()

@@ -4,7 +4,7 @@ Doujin Tagger 是一套以 Rust 開發、在本機執行的同人作品收藏管
 
 本專案採本機優先設計：服務只監聽 `127.0.0.1`，不需要雲端帳號，也不會把 catalog 或收藏檔案上傳到遠端。只有在使用外部 metadata 搜尋時，才會向 E-Hentai／ExHentai 或 DLsite 發出查詢。
 
-> 目前是以 Windows 為主要使用環境、從原始碼建置的早期版本，尚未提供正式安裝套件或公開 crate。
+> 一般使用者可直接下載 Windows portable 版本，解壓縮後雙擊 `私藏編目室.exe`；不需要安裝 Rust、Cargo，也不需要輸入指令。
 
 ## 主要功能
 
@@ -23,43 +23,45 @@ Doujin Tagger 是一套以 Rust 開發、在本機執行的同人作品收藏管
 ## 系統需求
 
 - Windows 10 或 Windows 11。
-- PowerShell。
-- Rust `1.97` 以上版本，以及 Cargo。建議透過 [rustup](https://rustup.rs/) 安裝。
 - 現代瀏覽器。
+- 足以保存 SQLite catalog 與縮圖快取的本機空間。
 
 目前的新收藏掃描以 ZIP 為主。Catalog、縮圖與程式狀態都會保存在本機；收藏 ZIP 不會被匯入資料庫。
 
 ## 快速開始
 
-### 1. 安裝 Windows Launcher
+### 1. 下載 Windows 版
 
-取得原始碼後，在專案根目錄執行：
+前往 [GitHub Releases](https://github.com/a951753abc/doujin-tagger-rust/releases/latest)，下載最新的：
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\install_windows_launcher.ps1
+- `Doujin-Tagger-<版本>-Windows-x64.zip`
+
+將 ZIP **完整解壓縮**到一般資料夾，不要留在 ZIP 內直接執行。
+
+### 2. 雙擊啟動
+
+雙擊解壓縮資料夾內的：
+
+```text
+私藏編目室.exe
 ```
 
-這個腳本會：
+程式會自動啟動本機服務並開啟瀏覽器。日常使用也只需要再次雙擊同一個 EXE；若服務已在執行，會直接開啟原本的 UI，不會啟動第二份互相競爭的服務。
 
-1. 以 release 模式建置 `doujin-http` 與 `doujin-launcher`。
-2. 將執行檔安裝到目前使用者的應用程式資料目錄。
-3. 建立桌面捷徑與開始功能表捷徑。
+> 目前執行檔尚未進行程式碼簽章。Windows SmartScreen 若顯示警告，請先確認檔案來自本專案 GitHub Releases，並可用 Release 同頁的 `.sha256` 檔核對下載內容。
 
-之後可直接雙擊桌面的「私藏編目室」。若已自行完成 release build，也可加入 `-SkipBuild` 略過重新建置。
+### 3. 建立或開啟 catalog
 
-### 2. 建立或開啟 catalog
+第一次雙擊後，程式會以 Windows 對話框要求建立新的 v2 catalog，或選取既有的 v2 catalog。接著瀏覽器會開啟首次設定導引：
 
-第一次啟動時，Launcher 會要求：
-
-1. 建立新的 v2 catalog，或選取既有的 v2 catalog。
-2. 登記「新收藏」資料夾，作為尚待整理作品的來源。
-3. 登記「典藏庫」資料夾，作為完成整理後的收藏位置。
-4. 選擇使用 Windows 預設程式，或指定閱讀器。
-5. 決定是否立即預覽第一次掃描。
+1. 登記「新收藏」資料夾，作為尚待整理作品的來源。
+2. 登記「典藏庫」資料夾，作為完成整理後的收藏位置。
+3. 選擇使用 Windows 預設程式，或指定閱讀器。
+4. 決定是否立即預覽第一次掃描。
 
 資料夾必須已存在，並應依實際用途分別登記。舊 Python 版的 `doujin.db` 不能直接當成 v2 catalog 使用，請先參考「舊資料遷移」。
 
-### 3. 執行第一次掃描
+### 4. 執行第一次掃描
 
 在首次設定或「設定 → 資料夾來源」按下掃描後：
 
@@ -115,7 +117,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\install_windows_laun
 
 確認重複只會保存裁決結果，不會自動合併身分或刪除檔案。需要移除其中一本時，請明確送入刪除流程並再次核對。
 
-## 直接執行本機服務
+## 進階與開發者用法
+
+以下指令不是一般安裝或日常使用的必要步驟。一般使用者只需下載 Release、解壓縮並雙擊 `私藏編目室.exe`。
+
+### 直接執行本機服務
 
 不安裝 Launcher 也可以從專案根目錄直接啟動：
 
@@ -134,7 +140,7 @@ doujin-http <v2-catalog.db> [port]
 
 Port 未指定時預設為 `5000`。Listener 固定為 loopback 位址，不能改成區域網路或公開網路介面。
 
-## Launcher 指令
+### Launcher 指令
 
 在 Launcher 安裝目錄執行，或將該目錄加入 `PATH` 後使用：
 
@@ -150,7 +156,7 @@ doujin-launcher.exe help
 
 Launcher 的設定、服務狀態與 log 預設保存在 `%LOCALAPPDATA%\Doujin Tagger`。若啟動失敗，可先查看其中的 `service-error.log`。
 
-## 設定優先序
+### 設定優先序
 
 閱讀器與縮圖設定建議直接在 Web UI 的「設定」頁管理。進階使用者也可以使用 `config.json` 或環境變數。
 
@@ -171,7 +177,7 @@ Launcher 的設定、服務狀態與 log 預設保存在 `%LOCALAPPDATA%\Doujin 
 
 預設縮圖尺寸為 `300x400`、WebP 品質為 `80`；快取目錄位於 catalog 旁的 `<catalog 檔名>.thumbnails`。環境變數鎖定的欄位不能在執行中的 Web UI 覆寫。
 
-## 檔名 Parser CLI
+### 檔名 Parser CLI
 
 `doujin-parser` 可以獨立測試單筆或批次檔名解析，不會讀寫 catalog。它從標準輸入讀取 JSON，並將結果寫到標準輸出。
 
@@ -192,7 +198,7 @@ Launcher 的設定、服務狀態與 log 預設保存在 `%LOCALAPPDATA%\Doujin 
 
 若沒有已確認的原作證據，請傳入空的 `parody_evidence` 陣列。也可以傳入 JSON 陣列批次解析多個檔名，輸出順序會與輸入相同。
 
-## 舊資料遷移
+### 舊資料遷移
 
 `doujin-migrate` 用來把舊 Python catalog 的唯讀副本匯入全新的 v2 catalog。它不會原地升級舊資料庫，也拒絕覆寫已存在的 target。
 
@@ -231,7 +237,19 @@ cargo run --release -p doujin-migrate -- .\migration\legacy-copy.db .\migration\
 | `doujin-provider-dlsite` | DLsite 精確 RJ 與保守 fallback provider。 |
 | `doujin-migrate` | 舊 catalog 唯讀遷移與 v2 path audit。 |
 
-## 開發與驗證
+## 從原始碼建置
+
+只有開發、修改程式或自行製作 Windows 執行檔時才需要 Rust `1.97` 以上版本、Cargo 與 PowerShell。建議透過 [rustup](https://rustup.rs/) 安裝 Rust。
+
+建置並在目前使用者帳號建立桌面與開始功能表捷徑：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\install_windows_launcher.ps1
+```
+
+安裝完成後，一般啟動捷徑會使用不顯示命令列視窗的 `私藏編目室.exe`；服務狀態、重新啟動與停止捷徑則由 `doujin-launcher.exe` 處理。
+
+### 開發驗證
 
 ```powershell
 cargo fmt --all -- --check
