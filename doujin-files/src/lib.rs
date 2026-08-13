@@ -254,6 +254,13 @@ pub struct MoveRequest {
     pub destination: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameRequest {
+    pub collection_id: i64,
+    pub expected_source: PathBuf,
+    pub destination: PathBuf,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeleteRequest {
     pub collection_id: i64,
@@ -321,6 +328,15 @@ impl<'repository, R: RecycleBin> FileOperationService<'repository, R> {
             items: requests
                 .iter()
                 .map(|request| self.move_one(request))
+                .collect(),
+        }
+    }
+
+    pub fn rename_batch(&mut self, requests: &[RenameRequest]) -> BatchReport {
+        BatchReport {
+            items: requests
+                .iter()
+                .map(|request| self.rename_one(request))
                 .collect(),
         }
     }
@@ -421,6 +437,29 @@ impl<'repository, R: RecycleBin> FileOperationService<'repository, R> {
         }
     }
 
+    fn rename_one(&mut self, request: &RenameRequest) -> ItemResult {
+        if let Err(error) = validate_rename_destination(&request.destination) {
+            return failed_without_operation(request.collection_id, error.to_string());
+        }
+        let operation = match self.repository.begin_rename(
+            request.collection_id,
+            &request.expected_source,
+            &request.destination,
+        ) {
+            Ok(operation) => operation,
+            Err(error) => {
+                return failed_without_operation(request.collection_id, error.to_string());
+            }
+        };
+        match move_zip_no_overwrite(&operation.from_path, &request.destination) {
+            Ok(()) => match self.repository.complete_file_operation(operation.id) {
+                Ok(()) => succeeded(&operation),
+                Err(error) => pending_recovery(&operation, error.to_string()),
+            },
+            Err(error) => self.handle_filesystem_failure(&operation, error.to_string()),
+        }
+    }
+
     fn delete_one(&mut self, request: DeleteRequest) -> ItemResult {
         let operation = match self
             .repository
@@ -476,7 +515,9 @@ impl<'repository, R: RecycleBin> FileOperationService<'repository, R> {
         let source_exists = operation.from_path.exists();
         let destination_exists = operation.to_path.as_ref().is_some_and(|path| path.exists());
         let can_complete = match operation.kind {
-            FileOperationKind::Move => !source_exists && destination_exists,
+            FileOperationKind::Rename | FileOperationKind::Move => {
+                !source_exists && destination_exists
+            }
             FileOperationKind::SoftDelete | FileOperationKind::HardDelete => !source_exists,
         };
         if can_complete {
@@ -486,7 +527,9 @@ impl<'repository, R: RecycleBin> FileOperationService<'repository, R> {
             };
         }
         let definitely_not_applied = match operation.kind {
-            FileOperationKind::Move => source_exists && !destination_exists,
+            FileOperationKind::Rename | FileOperationKind::Move => {
+                source_exists && !destination_exists
+            }
             FileOperationKind::SoftDelete | FileOperationKind::HardDelete => source_exists,
         };
         if definitely_not_applied {
@@ -584,6 +627,25 @@ fn validate_zip_filename_component(filename: &str) -> Result<(), FileServiceErro
     {
         return Err(FileServiceError::InvalidFile(
             "收藏檔名不是安全的 ZIP filename component".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_rename_destination(destination: &Path) -> Result<(), FileServiceError> {
+    let filename = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| FileServiceError::InvalidFile("rename 目標檔名不是 Unicode".to_owned()))?;
+    validate_zip_filename_component(filename)?;
+    if filename.encode_utf16().count() > 255 {
+        return Err(FileServiceError::InvalidFile(
+            "rename 目標檔名超過 Windows component 長度限制".to_owned(),
+        ));
+    }
+    if destination.to_string_lossy().encode_utf16().count() > 259 {
+        return Err(FileServiceError::InvalidFile(
+            "rename 目標超過 Windows 相容 path 長度限制".to_owned(),
         ));
     }
     Ok(())

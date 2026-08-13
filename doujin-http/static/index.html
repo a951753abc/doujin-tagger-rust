@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>私藏編目室</title>
-  <link rel="stylesheet" href="/assets/app.css?v=49">
-  <script src="/assets/app.js?v=52" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=50">
+  <script src="/assets/app.js?v=53" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -479,12 +479,34 @@
               </section>
 
               <div class="file-operation-strip">
-                <div><p class="section-index">FILES / 檔案</p><h3>搬移或刪除</h3><p>每筆操作都會由後端重新驗證來源、路徑與檔案狀態，批次允許部分成功。</p></div>
+                <div><p class="section-index">FILES / 檔案</p><h3>改名、搬移或刪除</h3><p>每筆操作都會由後端重新驗證來源、路徑與檔案狀態，批次允許部分成功。</p></div>
                 <div>
                   <button class="secondary-button" id="prepare-move" type="button">搬移至典藏庫</button>
                   <button class="danger-button" id="prepare-delete" type="button">刪除已選收藏</button>
                 </div>
               </div>
+
+              <section class="rename-workflow" aria-labelledby="rename-workflow-heading">
+                <form class="rename-template-form" id="rename-preflight-form">
+                  <div>
+                    <h3 id="rename-workflow-heading">Rename Template</h3>
+                    <p>缺少欄位會跳過並收緊分隔符；結果為空、衝突或不符合 Windows 規則時不會套用。第一版只支援 ZIP。</p>
+                  </div>
+                  <label>單一命名規則
+                    <input name="template" type="text" value="{event} [{circle}] {title}" autocomplete="off" spellcheck="false" required aria-describedby="rename-token-help">
+                  </label>
+                  <button class="secondary-button" type="submit">預覽批次改名</button>
+                </form>
+                <p class="rename-token-help" id="rename-token-help"><strong>可用欄位</strong> <code>{title}</code> <code>{event}</code> <code>{circle}</code> <code>{authors}</code> <code>{parody}</code> <code>{classification}</code> <code>{subcategory}</code> <code>{is_dl}</code></p>
+                <section class="rename-preflight" id="rename-preflight" aria-live="polite" hidden>
+                  <header>
+                    <div><p class="section-index">PREFLIGHT / 改名前檢查</p><h4 id="rename-preflight-summary">正在整理預覽…</h4></div>
+                    <div><label class="rename-status-filter">顯示<select id="rename-status-filter"><option value="all">全部狀態</option><option value="safe">可安全改名</option><option value="blocked">需處理／跳過</option><option value="collision">名稱衝突</option><option value="missing_metadata">缺少 metadata</option><option value="source_changed">來源已變更</option></select></label><button class="text-button" id="cancel-rename-preflight" type="button">收起</button><button class="primary-button" id="apply-rename-preflight" type="button">套用安全項目</button></div>
+                  </header>
+                  <p class="rename-preflight-note">完整預覽不會修改檔案；套用時會重新讀取 current path、metadata 與 collision，過期項目會逐筆拒絕。</p>
+                  <ol class="rename-change-list" id="rename-preflight-items"></ol>
+                </section>
+              </section>
             </div>
 
             <div class="batch-progress" id="batch-progress" role="status" aria-live="polite" hidden>

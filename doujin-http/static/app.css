@@ -3843,6 +3843,131 @@ img[data-thumbnail-status="failed"] {
 .file-operation-strip p {
   margin: 0;
 }
+.rename-workflow {
+  border-top: 2px solid var(--accent-dark);
+  background: var(--paper-raised);
+}
+.rename-template-form {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.75fr) minmax(280px, 1.25fr) auto;
+  align-items: end;
+  gap: 16px;
+  padding: 18px 16px 12px;
+}
+.rename-template-form h3,
+.rename-preflight h4 {
+  margin: 0;
+  color: var(--accent-dark);
+  font-family: var(--serif);
+}
+.rename-template-form p,
+.rename-preflight-note {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+}
+.rename-template-form input {
+  font-family: var(--mono);
+}
+.rename-token-help {
+  margin: 0;
+  padding: 0 16px 14px;
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+}
+.rename-token-help code {
+  display: inline-block;
+  margin: 4px 2px 0 0;
+  padding: 2px 5px;
+  border-radius: 2px;
+  background: var(--paper-deep);
+  color: var(--accent-dark);
+  font-family: var(--mono);
+}
+.rename-preflight {
+  border-top: 1px solid var(--line-strong);
+  padding: 14px 16px 16px;
+  background: color-mix(in srgb, var(--paper-deep) 34%, var(--paper-raised));
+}
+.rename-preflight > header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 18px;
+}
+.rename-preflight > header > div:last-child {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+.rename-status-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+}
+.rename-status-filter select {
+  min-height: 34px;
+  padding-block: 4px;
+}
+.rename-change-list {
+  max-height: 440px;
+  margin: 14px 0 0;
+  padding: 0;
+  overflow: auto;
+  border-top: 1px solid var(--line-strong);
+  list-style: none;
+}
+.rename-change-item {
+  display: grid;
+  grid-template-columns: 58px 132px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.78rem;
+}
+.rename-change-id {
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+.rename-change-status {
+  color: var(--warning);
+  font-weight: 700;
+}
+.rename-change-item.status-safe .rename-change-status {
+  color: var(--success);
+}
+.rename-change-item.status-illegal .rename-change-status,
+.rename-change-item.status-path_too_long .rename-change-status,
+.rename-change-item.status-source_changed .rename-change-status {
+  color: var(--danger);
+}
+.rename-change-diff {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 20px minmax(0, 1fr);
+  align-items: center;
+  min-width: 0;
+}
+.rename-change-diff code {
+  overflow: hidden;
+  color: var(--ink);
+  font-family: var(--sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rename-change-diff span {
+  color: var(--accent);
+  text-align: center;
+}
+.rename-change-message {
+  grid-column: 3;
+  color: var(--ink-soft);
+}
 .candidate-group {
   min-width: 0;
   overflow: hidden;
@@ -5364,6 +5489,20 @@ dialog::backdrop {
 }
 
 @media (max-width: 700px) {
+  .rename-template-form,
+  .rename-change-item {
+    grid-template-columns: 1fr;
+  }
+  .rename-template-form button {
+    justify-self: start;
+  }
+  .rename-preflight > header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .rename-change-message {
+    grid-column: 1;
+  }
   .review-desk,
   .review-comparison,
   .review-actions {

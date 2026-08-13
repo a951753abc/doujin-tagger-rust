@@ -307,8 +307,10 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("href=\"/assets/app.css?v=49\""));
-    assert!(document.contains("src=\"/assets/app.js?v=52\" defer"));
+    assert!(document.contains("href=\"/assets/app.css?v=50\""));
+    assert!(document.contains("src=\"/assets/app.js?v=53\" defer"));
+    assert!(document.contains("id=\"rename-preflight-form\""));
+    assert!(document.contains("id=\"rename-preflight-items\""));
     assert!(document.contains("id=\"review-view\""));
     assert!(document.contains("data-route=\"review\""));
     assert!(document.contains("id=\"review-desk\""));
@@ -435,6 +437,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(stylesheet.contains(".basket-list"));
     assert!(stylesheet.contains(".basket-toggle"));
     assert!(stylesheet.contains(".cover-candidate-gallery"));
+    assert!(stylesheet.contains(".rename-workflow"));
+    assert!(stylesheet.contains(".rename-change-item"));
     assert!(!stylesheet.contains("font-size: 0.6875rem;"));
     assert!(!stylesheet.contains("font-size: 0.625rem;"));
     assert!(!stylesheet.contains("font-size: 0.5625rem;"));
@@ -479,6 +483,9 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("rememberLaunch(state.selected, kind)"));
     assert!(script.contains("applyFilter(filterName, row.name)"));
     assert!(script.contains("/api/file-actions/move"));
+    assert!(script.contains("/api/file-actions/rename/preflight"));
+    assert!(script.contains("function renderRenamePreflight"));
+    assert!(script.contains("expected_destination: item.expected_destination"));
     assert!(script.contains("/api/file-actions/delete"));
     assert!(script.contains("/api/tombstone-candidates"));
     assert!(script.contains("executeConsolidation"));
@@ -4254,6 +4261,158 @@ async fn move_api_derives_safe_destinations_and_reports_each_item() {
     assert_eq!(200, missing_source.status);
     assert_eq!(1, missing_source.json["failed"]);
     assert_eq!("failed", missing_source.json["items"][0]["status"]);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn rename_api_requires_preflight_and_applies_only_expected_safe_paths() {
+    let tree = TestTree::new("file-rename-api");
+    let first_name = "first.zip";
+    let second_name = "second.zip";
+    tree.zip_in("downloads", first_name);
+    tree.zip_in("downloads", second_name);
+    let downloads = tree.root("downloads");
+    let first_path = downloads.join(first_name);
+    let second_path = downloads.join(second_name);
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application
+        .run_scan(&[ScanRoot {
+            path: downloads.clone(),
+            source: SourceKind::Downloads,
+            label: "下載區".to_owned(),
+        }])
+        .expect("scan downloads");
+    let first_id = application
+        .repository()
+        .collection_id_for_current_path(&first_path)
+        .expect("first lookup")
+        .expect("first id");
+    let second_id = application
+        .repository()
+        .collection_id_for_current_path(&second_path)
+        .expect("second lookup")
+        .expect("second id");
+    let server = RunningServer::start(application).await;
+
+    let invalid = server
+        .request_json(
+            "POST",
+            "/api/file-actions/rename/preflight",
+            &serde_json::json!({
+                "collection_ids": [first_id],
+                "template": "{script}"
+            }),
+        )
+        .await;
+    assert_eq!(400, invalid.status);
+    assert_eq!("invalid_settings", invalid.json["error"]["code"]);
+
+    let unknown_field = server
+        .request_json(
+            "POST",
+            "/api/file-actions/rename/preflight",
+            &serde_json::json!({
+                "collection_ids": [first_id],
+                "template": "{title}",
+                "script": "ignored"
+            }),
+        )
+        .await;
+    assert_eq!(400, unknown_field.status);
+    assert_eq!("invalid_json", unknown_field.json["error"]["code"]);
+    let duplicate_ids = server
+        .request_json(
+            "POST",
+            "/api/file-actions/rename/preflight",
+            &serde_json::json!({
+                "collection_ids": [first_id, first_id],
+                "template": "{title}"
+            }),
+        )
+        .await;
+    assert_eq!(400, duplicate_ids.status);
+    assert_eq!(
+        "invalid_collection_ids",
+        duplicate_ids.json["error"]["code"]
+    );
+
+    let preview = server
+        .request_json(
+            "POST",
+            "/api/file-actions/rename/preflight",
+            &serde_json::json!({
+                "collection_ids": [first_id, second_id],
+                "template": "renamed - {title}"
+            }),
+        )
+        .await;
+    assert_eq!(200, preview.status);
+    assert_eq!(2, preview.json["summary"]["total"]);
+    assert_eq!(2, preview.json["summary"]["safe"]);
+    assert_eq!("first.zip", preview.json["items"][0]["before"]);
+    assert_eq!("renamed - first.zip", preview.json["items"][0]["after"]);
+    let mut expected_items = preview.json["items"]
+        .as_array()
+        .expect("preview items")
+        .iter()
+        .map(|item| {
+            serde_json::json!({
+                "collection_id": item["collection_id"],
+                "expected_source": item["expected_source"],
+                "expected_destination": item["expected_destination"]
+            })
+        })
+        .collect::<Vec<_>>();
+    expected_items[0]["expected_source"] = serde_json::json!(downloads.join("stale.zip"));
+    let applied = server
+        .request_json(
+            "POST",
+            "/api/file-actions/rename",
+            &serde_json::json!({
+                "template": "renamed - {title}",
+                "items": expected_items
+            }),
+        )
+        .await;
+    assert_eq!(200, applied.status);
+    assert_eq!(1, applied.json["succeeded"]);
+    assert_eq!(1, applied.json["failed"]);
+    assert!(first_path.exists());
+    assert!(!second_path.exists());
+    assert!(!downloads.join("renamed - first.zip").exists());
+    assert!(downloads.join("renamed - second.zip").is_file());
+
+    let retry_preview = server
+        .request_json(
+            "POST",
+            "/api/file-actions/rename/preflight",
+            &serde_json::json!({
+                "collection_ids": [first_id],
+                "template": "renamed - {title}"
+            }),
+        )
+        .await;
+    assert_eq!(200, retry_preview.status);
+    let retry = serde_json::json!({
+        "collection_id": retry_preview.json["items"][0]["collection_id"],
+        "expected_source": retry_preview.json["items"][0]["expected_source"],
+        "expected_destination": retry_preview.json["items"][0]["expected_destination"]
+    });
+    let retried = server
+        .request_json(
+            "POST",
+            "/api/file-actions/rename",
+            &serde_json::json!({
+                "template": "renamed - {title}",
+                "items": [retry]
+            }),
+        )
+        .await;
+    assert_eq!(200, retried.status);
+    assert_eq!(1, retried.json["succeeded"]);
+    assert!(!first_path.exists());
+    assert!(downloads.join("renamed - first.zip").is_file());
     server.stop().await;
 }
 
