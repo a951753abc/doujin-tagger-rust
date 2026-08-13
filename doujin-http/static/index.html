@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#f7f3ec">
   <title>私藏編目室</title>
   <link rel="stylesheet" href="/assets/app.css?v=36">
-  <script src="/assets/app.js?v=38" defer></script>
+  <script src="/assets/app.js?v=39" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -237,11 +237,12 @@
               <p>試著縮短關鍵字，或清除一項篩選條件。</p>
               <button class="secondary-button" id="empty-reset" type="button">清除搜尋與篩選</button>
             </div>
-            <div class="infinite-scroll-status" id="library-load-more" role="status" aria-live="polite" hidden>
+            <div class="infinite-scroll-status" id="library-load-more" aria-busy="false" hidden>
               <span class="loader" id="library-load-more-spinner" aria-hidden="true"></span>
               <span id="library-load-more-label">正在載入更多收藏…</span>
-              <button class="text-button" id="retry-library-load" type="button" hidden>重試載入</button>
+              <button class="text-button" id="retry-library-load" type="button" hidden>載入更多</button>
             </div>
+            <p class="visually-hidden" id="library-load-announcer" aria-live="polite"></p>
             <div class="library-scroll-sentinel" id="library-scroll-sentinel" aria-hidden="true"></div>
           </section>
 
