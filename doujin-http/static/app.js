@@ -167,6 +167,9 @@
     scanPreflight: null,
     scanRequest: null,
     metadataEditCollection: null,
+    coverCandidates: null,
+    coverCandidatesCollectionId: null,
+    coverCandidateRequestNumber: 0,
   };
 
   if (!Array.isArray(state.recent)) state.recent = [];
@@ -290,6 +293,11 @@
       externalJobStatus: byId("external-job-status"),
       detailTags: byId("detail-tags"),
       detailPath: byId("detail-path"),
+      coverSelectionDialog: byId("cover-selection-dialog"),
+      coverSelectionIntro: byId("cover-selection-intro"),
+      coverSelectionStatus: byId("cover-selection-status"),
+      coverCandidateGallery: byId("cover-candidate-gallery"),
+      clearCoverSelection: byId("clear-cover-selection"),
       tagForm: byId("tag-form"),
       tagInput: byId("tag-input"),
       recentDialog: byId("recent-dialog"),
@@ -515,7 +523,9 @@
     byId("open-button").addEventListener("click", () => launchSelected("open"));
     byId("edit-metadata-button").addEventListener("click", () => openMetadataDialog());
     byId("external-search-button").addEventListener("click", enqueueExternalSearch);
+    byId("select-cover-button").addEventListener("click", openCoverSelection);
     byId("rebuild-thumbnail-button").addEventListener("click", rebuildThumbnail);
+    ui.clearCoverSelection.addEventListener("click", clearCoverSelection);
     ui.detailBasketToggle.addEventListener("click", toggleSelectedWorkBasketMembership);
     ui.tagForm.addEventListener("submit", addTag);
     ui.metadataEvidence.addEventListener("toggle", toggleMetadataEvidence);
@@ -3462,6 +3472,140 @@
     } finally {
       button.disabled = false;
     }
+  }
+
+  async function openCoverSelection() {
+    if (!state.selected) return;
+    const collectionId = state.selected.id;
+    const requestNumber = ++state.coverCandidateRequestNumber;
+    state.coverCandidatesCollectionId = collectionId;
+    state.coverCandidates = null;
+    ui.coverSelectionStatus.className = "cover-selection-status is-loading";
+    ui.coverSelectionStatus.textContent = "正在安全讀取候選圖片…";
+    ui.coverCandidateGallery.replaceChildren();
+    ui.coverCandidateGallery.setAttribute("aria-busy", "true");
+    ui.clearCoverSelection.hidden = true;
+    if (!ui.coverSelectionDialog.open) ui.coverSelectionDialog.showModal();
+    try {
+      const candidates = await api(`/api/collections/${collectionId}/cover-candidates`);
+      if (requestNumber !== state.coverCandidateRequestNumber || state.coverCandidatesCollectionId !== collectionId) return;
+      state.coverCandidates = candidates;
+      renderCoverCandidates(candidates);
+    } catch (error) {
+      if (requestNumber !== state.coverCandidateRequestNumber) return;
+      ui.coverCandidateGallery.setAttribute("aria-busy", "false");
+      ui.coverSelectionStatus.className = "cover-selection-status is-error";
+      ui.coverSelectionStatus.textContent = `無法載入候選封面：${error.message}`;
+    }
+  }
+
+  function renderCoverCandidates(candidates) {
+    const selection = candidates.selection;
+    ui.coverCandidateGallery.replaceChildren();
+    ui.coverCandidateGallery.setAttribute("aria-busy", "false");
+    ui.clearCoverSelection.hidden = !selection;
+    ui.clearCoverSelection.disabled = false;
+    if (selection?.status === "missing") {
+      ui.coverSelectionStatus.className = "cover-selection-status is-error";
+      ui.coverSelectionStatus.textContent = `原先指定的 ${selection.entry_path} 已不存在。Override 仍保留，請另選封面或恢復自動選擇。`;
+    } else if (selection?.status === "source_changed") {
+      ui.coverSelectionStatus.className = "cover-selection-status is-warning";
+      ui.coverSelectionStatus.textContent = `收藏來源已變更；仍找到 ${selection.entry_path}，請確認這張仍是正確封面。`;
+    } else if (selection) {
+      ui.coverSelectionStatus.className = "cover-selection-status is-current";
+      ui.coverSelectionStatus.textContent = `目前手動封面：${selection.entry_path}`;
+    } else {
+      ui.coverSelectionStatus.className = "cover-selection-status";
+      ui.coverSelectionStatus.textContent = "目前使用自動選擇規則。";
+    }
+    if (!candidates.items.length) {
+      ui.coverCandidateGallery.append(el("p", "cover-candidate-empty", "這本收藏沒有可安全解碼的候選圖片。"));
+      return;
+    }
+    if (candidates.items.length === 1) {
+      ui.coverCandidateGallery.append(el("p", "cover-candidate-note", "這本收藏只有一張可用圖片，沒有其他封面候選。"));
+    }
+    candidates.items.forEach((candidate) => {
+      const selected = selection?.entry_path === candidate.entry_path;
+      const button = el("button", `cover-candidate${selected ? " is-selected" : ""}`);
+      button.type = "button";
+      button.setAttribute("aria-pressed", String(selected));
+      button.setAttribute("aria-label", `選擇第 ${candidate.page_order} 張 ${candidate.filename} 作為封面`);
+      const preview = document.createElement("img");
+      preview.loading = "lazy";
+      preview.alt = "";
+      preview.width = 240;
+      preview.height = 320;
+      preview.src = `/api/collections/${state.coverCandidatesCollectionId}/cover-candidates/preview?entry=${encodeURIComponent(candidate.entry_path)}`;
+      const loading = el("span", "cover-candidate-loading", "預覽載入中…");
+      preview.addEventListener("load", () => loading.remove(), { once: true });
+      preview.addEventListener("error", () => {
+        loading.textContent = "預覽解碼失敗";
+        loading.classList.add("is-error");
+        button.classList.add("has-error");
+      }, { once: true });
+      const copy = el("span", "cover-candidate-copy");
+      copy.append(
+        el("strong", "", candidate.filename),
+        el("small", "", `第 ${candidate.page_order} 張 · ${candidate.width} × ${candidate.height}`),
+      );
+      button.append(preview, loading, copy);
+      button.addEventListener("click", () => selectCoverCandidate(candidate, button));
+      ui.coverCandidateGallery.append(button);
+    });
+  }
+
+  async function selectCoverCandidate(candidate, button) {
+    const candidates = state.coverCandidates;
+    const collectionId = state.coverCandidatesCollectionId;
+    if (!candidates || !collectionId) return;
+    setCoverCandidateBusy(true);
+    button.classList.add("is-saving");
+    ui.coverSelectionStatus.className = "cover-selection-status is-loading";
+    ui.coverSelectionStatus.textContent = `正在指定 ${candidate.filename} 並重建縮圖…`;
+    try {
+      await api(`/api/collections/${collectionId}/cover-selection`, {
+        method: "PUT",
+        body: {
+          entry_path: candidate.entry_path,
+          source_fingerprint: candidates.source_fingerprint,
+        },
+      });
+      restartThumbnailCollection(collectionId);
+      toast("已保存手動封面，Library、Shelf 與 Detail 將更新");
+      await openCoverSelection();
+    } catch (error) {
+      setCoverCandidateBusy(false);
+      button.classList.remove("is-saving");
+      ui.coverSelectionStatus.className = "cover-selection-status is-error";
+      ui.coverSelectionStatus.textContent = error.message;
+    }
+  }
+
+  async function clearCoverSelection() {
+    const collectionId = state.coverCandidatesCollectionId;
+    if (!collectionId) return;
+    setCoverCandidateBusy(true);
+    ui.coverSelectionStatus.className = "cover-selection-status is-loading";
+    ui.coverSelectionStatus.textContent = "正在恢復自動選擇並重建縮圖…";
+    try {
+      await api(`/api/collections/${collectionId}/cover-selection`, { method: "DELETE" });
+      restartThumbnailCollection(collectionId);
+      toast("已恢復自動選擇封面");
+      await openCoverSelection();
+    } catch (error) {
+      setCoverCandidateBusy(false);
+      ui.coverSelectionStatus.className = "cover-selection-status is-error";
+      ui.coverSelectionStatus.textContent = error.message;
+    }
+  }
+
+  function setCoverCandidateBusy(busy) {
+    ui.coverCandidateGallery.setAttribute("aria-busy", String(busy));
+    ui.coverCandidateGallery.querySelectorAll("button").forEach((button) => {
+      button.disabled = busy;
+    });
+    ui.clearCoverSelection.disabled = busy;
   }
 
   function replaceSelected(collection) {

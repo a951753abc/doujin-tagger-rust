@@ -3,6 +3,7 @@
 pub mod canonical;
 pub mod collections;
 pub mod consolidation;
+pub mod covers;
 pub mod external_search_batches;
 pub mod jobs;
 pub mod legacy;
@@ -39,7 +40,7 @@ use crate::metadata::{
     MetadataAssertionDecision, MetadataField, MetadataSource, MetadataValue, SelectionSnapshot,
 };
 
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const SCAN_RUN_GUARD_MIGRATION: &str = include_str!("../migrations/0002_scan_run_guard.sql");
 const EXTERNAL_SEARCH_JOBS_MIGRATION: &str =
@@ -60,6 +61,7 @@ const EXTERNAL_SEARCH_BATCHES_MIGRATION: &str =
 const VOCABULARY_GOVERNANCE_MIGRATION: &str =
     include_str!("../migrations/0012_vocabulary_governance.sql");
 const WORK_BASKETS_MIGRATION: &str = include_str!("../migrations/0013_work_baskets.sql");
+const COVER_SELECTIONS_MIGRATION: &str = include_str!("../migrations/0014_cover_selections.sql");
 
 struct Migration {
     version: i64,
@@ -132,6 +134,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 13,
         name: "0013_work_baskets",
         sql: WORK_BASKETS_MIGRATION,
+    },
+    Migration {
+        version: 14,
+        name: "0014_cover_selections",
+        sql: COVER_SELECTIONS_MIGRATION,
     },
 ];
 

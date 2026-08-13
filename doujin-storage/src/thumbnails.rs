@@ -516,7 +516,7 @@ fn validate_priority(priority: i64) -> StorageResult<()> {
     Ok(())
 }
 
-fn ensure_active_collection(
+pub(crate) fn ensure_active_collection(
     connection: &rusqlite::Connection,
     collection_id: i64,
 ) -> StorageResult<()> {

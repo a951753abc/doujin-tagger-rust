@@ -341,6 +341,7 @@
                     <div class="detail-actions governance-actions" aria-label="資料治理動作">
                       <button class="text-button" id="edit-metadata-button" type="button">修正 metadata</button>
                       <button class="text-button" id="external-search-button" type="button">搜尋外部資料</button>
+                      <button class="text-button" id="select-cover-button" type="button">選擇封面</button>
                       <button class="text-button" id="rebuild-thumbnail-button" type="button">重建縮圖</button>
                     </div>
 
@@ -720,6 +721,22 @@
     <footer><button class="text-button" id="refresh-activity" type="button">重新整理狀態</button></footer>
   </aside>
   <p class="visually-hidden" id="activity-announcer" role="status" aria-live="polite" aria-atomic="true"></p>
+
+  <dialog id="cover-selection-dialog" aria-labelledby="cover-selection-heading">
+    <div class="dialog-shell cover-selection-shell">
+      <header>
+        <div><p class="eyebrow">COVER SOURCE / 封面來源</p><h2 id="cover-selection-heading">選擇封面</h2></div>
+        <button class="icon-button" data-close-dialog type="button" aria-label="關閉封面選擇">×</button>
+      </header>
+      <p class="dialog-intro" id="cover-selection-intro">只讀取支援且可安全解碼的前 24 張圖片；不會修改原始 ZIP。</p>
+      <div class="cover-selection-status" id="cover-selection-status" role="status" aria-live="polite"></div>
+      <div class="cover-candidate-gallery" id="cover-candidate-gallery" aria-busy="false"></div>
+      <div class="dialog-footer split-footer">
+        <button class="text-button" id="clear-cover-selection" type="button" hidden>恢復自動選擇封面</button>
+        <button class="secondary-button" data-close-dialog type="button">完成</button>
+      </div>
+    </div>
+  </dialog>
 
   <dialog id="scan-results-dialog" aria-labelledby="scan-results-heading">
     <div class="dialog-shell scan-results-shell">
