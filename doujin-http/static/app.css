@@ -855,6 +855,17 @@ select:disabled {
   gap: 8px;
   margin-top: 10px;
 }
+.tag-suggestion-combobox {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+.tag-suggestion-combobox input {
+  width: 100%;
+}
+.tag-suggestion-options {
+  text-align: left;
+}
 .tag-editor input {
   margin: 0;
 }
@@ -3160,6 +3171,22 @@ img[data-thumbnail-status="failed"] {
   background: var(--paper-raised);
   text-align: center;
 }
+.missing-metadata-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.missing-metadata-actions .text-button {
+  min-height: 36px;
+  padding: 5px 9px;
+  border: 1px solid var(--warning);
+  border-radius: 3px;
+  background: var(--paper-raised);
+  color: var(--accent-dark);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
 .tag-chip {
   display: inline-flex;
   align-items: center;
@@ -3244,6 +3271,7 @@ img[data-thumbnail-status="failed"] {
 }
 .selection-rail .text-button {
   color: var(--accent-dark);
+  white-space: nowrap;
 }
 
 /* 6. Workbench and shared route padding */
@@ -4448,8 +4476,21 @@ dialog::backdrop {
   .library-toolbar-actions > #result-summary {
     flex: 1 0 100%;
   }
-  .selection-rail > div .secondary-button {
-    display: none;
+  .selection-rail {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .selection-rail p,
+  .selection-rail > div {
+    width: 100%;
+  }
+  .selection-rail > div {
+    margin-left: 0;
+    overflow: visible;
+  }
+  .selection-rail > div .button-link {
+    flex: 1 1 auto;
+    justify-content: center;
   }
   .page-heading {
     grid-template-columns: 1fr;

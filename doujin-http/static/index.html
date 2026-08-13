@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>私藏編目室</title>
-  <link rel="stylesheet" href="/assets/app.css?v=43">
-  <script src="/assets/app.js?v=46" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=44">
+  <script src="/assets/app.js?v=47" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -270,8 +270,8 @@
           <aside class="detail-pane" id="detail-pane" aria-label="收藏詳細資料">
             <div class="detail-placeholder" id="detail-placeholder">
               <span aria-hidden="true">選</span>
-              <p>選取一本收藏，在這裡核對封面與編目資料。</p>
-              <small>鍵盤可用 J／K 移動選取</small>
+              <p>查看一本收藏，在這裡核對封面與編目資料。</p>
+              <small>鍵盤可用 J／K 移動目前查看收藏</small>
             </div>
             <article class="collection-detail" id="collection-detail" hidden>
               <div class="cover-stage">
@@ -289,13 +289,17 @@
                 </div>
 
                 <dl class="metadata-list" id="metadata-list"></dl>
+                <div class="missing-metadata-actions" id="missing-metadata-actions" aria-label="快速補齊缺少欄位" hidden></div>
 
                 <section class="tag-editor" aria-labelledby="tags-heading">
                   <h3 id="tags-heading">標籤</h3>
                   <div class="tag-list" id="detail-tags"></div>
                   <form id="tag-form">
                     <label class="visually-hidden" for="tag-input">新增標籤</label>
-                    <input id="tag-input" name="tag" type="text" placeholder="新增標籤" autocomplete="off">
+                    <div class="tag-suggestion-combobox" data-tag-suggestions>
+                      <input id="tag-input" name="tag" type="text" placeholder="搜尋既有標籤或建立新標籤" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="detail-tag-options">
+                      <ul class="facet-options tag-suggestion-options" id="detail-tag-options" role="listbox" hidden></ul>
+                    </div>
                     <button class="secondary-button" type="submit">加入</button>
                   </form>
                 </section>
@@ -338,13 +342,11 @@
         </div>
 
         <aside class="selection-rail" id="selection-rail" aria-label="批次選取" hidden>
-          <p><strong id="selection-count">0</strong> 筆已選</p>
+          <p><strong id="selection-count">0</strong> 筆批次選取</p>
           <span>批次操作只影響已選收藏；新載入結果不會自動加入</span>
           <div>
             <button class="text-button" id="clear-selection" type="button">清除選取</button>
-              <a class="secondary-button button-link" href="#workbench">加標籤</a>
-              <a class="secondary-button button-link" href="#workbench">寫入手動值</a>
-              <a class="primary-button button-link" href="#workbench">前往工作台</a>
+            <a class="primary-button button-link" id="selection-workbench-link" href="#workbench">前往工作台處理 0 筆</a>
           </div>
         </aside>
       </section>
@@ -368,7 +370,12 @@
             <div class="batch-tools" id="batch-tools" hidden>
               <form class="inline-operation" id="batch-tag-form">
                 <div><h3>批次加入標籤</h3><p>已具有同名標籤的收藏不會重複建立關聯。</p></div>
-                <label>標籤名稱<input name="tag" type="text" autocomplete="off" required></label>
+                <label>標籤名稱
+                  <span class="tag-suggestion-combobox" data-tag-suggestions>
+                    <input id="batch-tag-input" name="tag" type="text" autocomplete="off" required role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="batch-tag-options" placeholder="搜尋既有標籤或建立新標籤">
+                    <ul class="facet-options tag-suggestion-options" id="batch-tag-options" role="listbox" hidden></ul>
+                  </span>
+                </label>
                 <button class="primary-button" type="submit">加入</button>
               </form>
 
@@ -683,7 +690,7 @@
   <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-heading">
     <div class="dialog-shell compact-dialog">
       <header><h2 id="shortcuts-heading">鍵盤操作</h2><button class="icon-button" data-close-dialog type="button" aria-label="關閉">×</button></header>
-      <dl class="shortcut-list"><dt><kbd>/</kbd></dt><dd>跳到搜尋</dd><dt><kbd>J</kbd> / <kbd>K</kbd></dt><dd>移動收藏選取</dd><dt><kbd>?</kbd></dt><dd>顯示這份說明</dd><dt><kbd>Esc</kbd></dt><dd>關閉對話框</dd></dl>
+      <dl class="shortcut-list"><dt><kbd>/</kbd></dt><dd>跳到搜尋</dd><dt><kbd>J</kbd> / <kbd>K</kbd></dt><dd>移動目前查看收藏</dd><dt><kbd>Space</kbd></dt><dd>切換目前查看收藏的批次選取</dd><dt><kbd>?</kbd></dt><dd>顯示這份說明</dd><dt><kbd>Esc</kbd></dt><dd>關閉對話框</dd></dl>
     </div>
   </dialog>
 

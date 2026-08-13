@@ -146,6 +146,7 @@
   const ui = {};
   const mobileDetailMedia = window.matchMedia("(max-width: 899px)");
   const facetControllers = new Map();
+  const tagSuggestionControllers = new Map();
   const thumbnailBindings = new WeakMap();
   const thumbnailTrackers = new Map();
   const thumbnailRequestQueue = [];
@@ -231,6 +232,7 @@
       detailTitle: byId("detail-title"),
       detailFilename: byId("detail-filename"),
       metadataList: byId("metadata-list"),
+      missingMetadataActions: byId("missing-metadata-actions"),
       metadataEvidence: byId("metadata-evidence"),
       dataQualitySummary: byId("data-quality-summary"),
       evidenceSummaryCount: byId("evidence-summary-count"),
@@ -295,6 +297,7 @@
       toastRegion: byId("toast-region"),
       selectionRail: byId("selection-rail"),
       selectionCount: byId("selection-count"),
+      selectionWorkbenchLink: byId("selection-workbench-link"),
       workbenchCount: byId("workbench-count"),
       workbenchSelectionSummary: byId("workbench-selection-summary"),
       selectedCollectionList: byId("selected-collection-list"),
@@ -340,6 +343,7 @@
 
   function bindEvents() {
     initializeFacetComboboxes();
+    initializeTagSuggestionInputs();
     window.addEventListener("hashchange", routeFromHash);
     ui.activityTrigger.addEventListener("click", () => setActivityPanelOpen(ui.activityPanel.hidden));
     byId("close-activity").addEventListener("click", () => setActivityPanelOpen(false));
@@ -394,7 +398,7 @@
     ui.librarySort.addEventListener("change", changeLibrarySort);
     byId("read-button").addEventListener("click", () => launchSelected("read"));
     byId("open-button").addEventListener("click", () => launchSelected("open"));
-    byId("edit-metadata-button").addEventListener("click", openMetadataDialog);
+    byId("edit-metadata-button").addEventListener("click", () => openMetadataDialog());
     byId("external-search-button").addEventListener("click", enqueueExternalSearch);
     byId("rebuild-thumbnail-button").addEventListener("click", rebuildThumbnail);
     ui.tagForm.addEventListener("submit", addTag);
@@ -1435,6 +1439,125 @@
     });
   }
 
+  function initializeTagSuggestionInputs() {
+    document.querySelectorAll("[data-tag-suggestions]").forEach((container) => {
+      const input = container.querySelector('[role="combobox"]');
+      const listbox = container.querySelector('[role="listbox"]');
+      const controller = { input, listbox, form: input.closest("form"), options: [], activeIndex: -1, requestNumber: 0, timer: null };
+      tagSuggestionControllers.set(input, controller);
+      input.addEventListener("focus", () => queueTagSuggestions(controller, 0));
+      input.addEventListener("input", () => queueTagSuggestions(controller, 140));
+      input.addEventListener("blur", () => setTimeout(() => closeTagSuggestions(controller), 160));
+      input.addEventListener("keydown", (event) => handleTagSuggestionKeydown(event, controller));
+    });
+  }
+
+  function queueTagSuggestions(controller, delay) {
+    clearTimeout(controller.timer);
+    controller.timer = setTimeout(() => loadTagSuggestions(controller), delay);
+  }
+
+  async function loadTagSuggestions(controller) {
+    const requestNumber = ++controller.requestNumber;
+    const params = new URLSearchParams({ field: "tag", q: controller.input.value.trim(), limit: "20" });
+    try {
+      const data = await api(`/api/facets?${params}`);
+      if (requestNumber !== controller.requestNumber) return;
+      controller.options = data.items || [];
+      renderTagSuggestions(controller);
+    } catch (_) {
+      if (requestNumber === controller.requestNumber) closeTagSuggestions(controller);
+    }
+  }
+
+  function renderTagSuggestions(controller) {
+    controller.listbox.replaceChildren();
+    controller.activeIndex = -1;
+    controller.input.removeAttribute("aria-activedescendant");
+    if (!controller.options.length) {
+      controller.listbox.append(el("li", "facet-empty", "沒有既有標籤；按 Enter 建立新標籤"));
+    } else {
+      controller.options.forEach((option, index) => {
+        const item = el("li", "facet-option");
+        item.id = `${controller.listbox.id}-option-${index}`;
+        item.setAttribute("role", "option");
+        item.setAttribute("aria-selected", "false");
+        item.setAttribute("aria-label", `${option.name}，使用 ${formatNumber(option.count)} 次`);
+        item.append(el("span", "", option.name), el("small", "", `${formatNumber(option.count)} 次`));
+        item.addEventListener("click", () => selectTagSuggestion(controller, index, true));
+        item.addEventListener("pointermove", (event) => {
+          if (event.pointerType === "mouse") setTagSuggestionActive(controller, index);
+        });
+        controller.listbox.append(item);
+      });
+    }
+    controller.listbox.hidden = false;
+    controller.input.setAttribute("aria-expanded", "true");
+  }
+
+  function handleTagSuggestionKeydown(event, controller) {
+    if (event.key === "Escape" && !controller.listbox.hidden) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeTagSuggestions(controller);
+      return;
+    }
+    if (["ArrowDown", "ArrowUp"].includes(event.key)) {
+      event.preventDefault();
+      if (controller.listbox.hidden || !controller.options.length) {
+        queueTagSuggestions(controller, 0);
+        return;
+      }
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      const start = controller.activeIndex < 0 ? (direction > 0 ? -1 : 0) : controller.activeIndex;
+      setTagSuggestionActive(controller, (start + direction + controller.options.length) % controller.options.length);
+      return;
+    }
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    if (!controller.listbox.hidden && controller.activeIndex >= 0) {
+      selectTagSuggestion(controller, controller.activeIndex, true);
+    } else if (controller.input.value.trim()) {
+      closeTagSuggestions(controller);
+      controller.form?.requestSubmit();
+    }
+  }
+
+  function setTagSuggestionActive(controller, index) {
+    controller.activeIndex = index;
+    controller.listbox.querySelectorAll('[role="option"]').forEach((option, optionIndex) => {
+      const active = optionIndex === index;
+      option.classList.toggle("is-active", active);
+      option.setAttribute("aria-selected", String(active));
+    });
+    const activeOption = controller.listbox.querySelectorAll('[role="option"]')[index];
+    if (!activeOption) return;
+    controller.input.setAttribute("aria-activedescendant", activeOption.id);
+    activeOption.scrollIntoView({ block: "nearest" });
+  }
+
+  function selectTagSuggestion(controller, index, submit) {
+    const option = controller.options[index];
+    if (!option) return;
+    controller.input.value = option.name;
+    closeTagSuggestions(controller);
+    controller.input.focus({ preventScroll: true });
+    if (submit) controller.form?.requestSubmit();
+  }
+
+  function closeTagSuggestions(controller) {
+    clearTimeout(controller.timer);
+    controller.listbox.hidden = true;
+    controller.activeIndex = -1;
+    controller.input.setAttribute("aria-expanded", "false");
+    controller.input.removeAttribute("aria-activedescendant");
+  }
+
+  function closeTagSuggestionsFor(input) {
+    const controller = tagSuggestionControllers.get(input);
+    if (controller) closeTagSuggestions(controller);
+  }
+
   function collectionPageParams(page) {
     const params = new URLSearchParams({
       page: String(page),
@@ -1898,7 +2021,7 @@
       button.type = "button";
       button.dataset.collectionId = String(collection.id);
       button.setAttribute("aria-current", String(state.selected?.id === collection.id));
-      button.setAttribute("aria-label", `選取 ${displayTitle(collection)}`);
+      button.setAttribute("aria-label", `查看 ${displayTitle(collection)} 詳情`);
       button.addEventListener("click", () => {
         const scrollPosition = window.scrollY;
         selectCollection(collection);
@@ -2061,28 +2184,41 @@
     prepareMetadataEvidence(collection);
   }
 
-  function missingMetadataLabels(collection) {
+  function missingMetadataFields(collection) {
     if (!collection) return [];
     return [
-      ["標題", collection.title],
-      ["社團", collection.circle],
-      ["作者", collection.authors?.length],
-      ["原作", collection.parody || collection.parody_raw],
-      ["場次", collection.event],
-      ["種類", collection.classification_top],
-      ["版本", collection.is_dl != null],
-    ].filter(([, value]) => !value).map(([label]) => label);
+      ["title", "標題", collection.title],
+      ["circle", "社團", collection.circle],
+      ["authors", "作者", collection.authors?.length],
+      ["parody", "原作", collection.parody || collection.parody_raw],
+      ["event", "場次", collection.event],
+      ["classification", "種類", collection.classification_top],
+      ["is_dl", "版本", collection.is_dl != null],
+    ].filter(([, , value]) => !value).map(([field, label]) => ({ field, label }));
+  }
+
+  function renderMissingMetadataActions(missing) {
+    ui.missingMetadataActions.replaceChildren();
+    ui.missingMetadataActions.hidden = missing.length === 0;
+    missing.forEach(({ field, label }) => {
+      const button = el("button", "text-button", `補上${label}`);
+      button.type = "button";
+      button.addEventListener("click", () => openMetadataDialog(field));
+      ui.missingMetadataActions.append(button);
+    });
   }
 
   function renderDataQualitySummary() {
     if (!ui.dataQualitySummary || !ui.evidenceSummaryCount) return;
-    const missing = missingMetadataLabels(state.selected);
+    const missing = missingMetadataFields(state.selected);
+    const missingLabels = missing.map(({ label }) => label);
+    renderMissingMetadataActions(missing);
     const assertions = (state.metadataHistory?.fields || []).flatMap((field) => field.assertions || []);
     const pending = assertions.filter((assertion) => assertion.status === "candidate").length;
     const externalStatus = state.externalJob?.status;
     const thumbnailFailed = ui.detailCover?.dataset.thumbnailStatus === "failed";
     const parts = [];
-    if (missing.length) parts.push(`缺少 ${missing.length} 欄（${missing.join("、")}）`);
+    if (missing.length) parts.push(`缺少 ${missing.length} 欄（${missingLabels.join("、")}）`);
     if (pending) parts.push(`${pending} 筆 assertion 待裁決`);
     if (["pending", "running"].includes(externalStatus)) parts.push("外部搜尋進行中");
     if (externalStatus === "partial") parts.push("外部搜尋部分完成");
@@ -2170,7 +2306,7 @@
 
   function updateLibrarySummary() {
     if (!ui.resultSummary) return;
-    ui.resultSummary.textContent = `已選 ${formatNumber(state.selectedIds.size)} / 已載入 ${formatNumber(state.items.length)} / 符合 ${formatNumber(state.total)}`;
+    ui.resultSummary.textContent = `批次選取 ${formatNumber(state.selectedIds.size)} / 已載入 ${formatNumber(state.items.length)} / 符合 ${formatNumber(state.total)}`;
   }
 
   function renderTags(collection) {
@@ -2278,6 +2414,7 @@
         body: { name },
       });
       ui.tagInput.value = "";
+      closeTagSuggestionsFor(ui.tagInput);
       replaceSelected(collection);
       invalidateDerivedData();
       toast(`已加入標籤「${name}」`);
@@ -2301,11 +2438,24 @@
     }
   }
 
-  function openMetadataDialog() {
+  function openMetadataDialog(field = null) {
     if (!state.selected) return;
-    ui.metadataField.value = "title";
+    const selectedField = field && METADATA_LABELS[field] ? field : "title";
+    ui.metadataField.value = selectedField;
     syncMetadataEditor();
     ui.metadataDialog.showModal();
+    window.requestAnimationFrame(() => {
+      if (!field) {
+        ui.metadataField.focus();
+        return;
+      }
+      const target = selectedField === "classification"
+        ? ui.metadataForm.elements.classification_top
+        : selectedField === "is_dl"
+          ? ui.metadataForm.elements.boolean_value
+          : ui.metadataValue;
+      target.focus();
+    });
   }
 
   function syncMetadataEditor() {
@@ -2876,6 +3026,7 @@
     const count = state.selectedIds.size;
     ui.selectionRail.hidden = count === 0;
     ui.selectionCount.textContent = String(count);
+    ui.selectionWorkbenchLink.textContent = `前往工作台處理 ${formatNumber(count)} 筆`;
     updateLibrarySummary();
     updateWorkbenchBadge();
     if (state.route === "workbench") renderWorkbenchSelection();
@@ -2959,7 +3110,10 @@
       payload: { name },
       collections,
     });
-    if (completed) ui.batchTagForm.reset();
+    if (completed) {
+      ui.batchTagForm.reset();
+      closeTagSuggestionsFor(ui.batchTagForm.elements.tag);
+    }
   }
 
   async function batchSetMetadata(event) {
