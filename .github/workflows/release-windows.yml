@@ -79,12 +79,16 @@ jobs:
             Write-Error "NSIS installer not found under target/release/bundle/nsis"
             exit 1
           }
-          $installerName = Split-Path -Leaf $installerPath
-          $checksumPath = "$installerPath.sha256"
-          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installerPath).Hash.ToLowerInvariant()
+          # GitHub 會剝除 release asset 檔名中的非 ASCII 字元，
+          # 上傳前改用與 zip 相同慣例的 ASCII 檔名（安裝後名稱不受影響）。
+          $installerName = "Doujin-Tagger-${{ github.ref_name }}-Windows-x64-setup.exe"
+          $renamedPath = Join-Path $env:RUNNER_TEMP $installerName
+          Copy-Item -LiteralPath $installerPath -Destination $renamedPath
+          $checksumPath = "$renamedPath.sha256"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $renamedPath).Hash.ToLowerInvariant()
           "$hash  $installerName" | Set-Content -LiteralPath $checksumPath -Encoding ascii
 
-          "installer=$installerPath" >> $env:GITHUB_OUTPUT
+          "installer=$renamedPath" >> $env:GITHUB_OUTPUT
           "checksum=$checksumPath" >> $env:GITHUB_OUTPUT
 
       - name: Upload workflow artifact

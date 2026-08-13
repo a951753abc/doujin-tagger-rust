@@ -34,7 +34,7 @@ Doujin Tagger 是一套以 Rust 開發、在本機執行的同人作品收藏管
 
 前往 [GitHub Releases](https://github.com/a951753abc/doujin-tagger-rust/releases/latest)，下載最新的安裝檔：
 
-- `私藏編目室_<版本>_x64-setup.exe`
+- `Doujin-Tagger-<版本>-Windows-x64-setup.exe`
 
 雙擊執行安裝精靈：
 
