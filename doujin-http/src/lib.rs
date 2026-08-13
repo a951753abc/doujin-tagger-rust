@@ -158,26 +158,41 @@ where
     R: RecycleBin + Send + 'static,
     F: Future<Output = ()> + Send + 'static,
 {
+    serve_shared_with_shutdown_and_instance(listener, application, None, shutdown).await
+}
+
+/// 與 [`serve_shared_with_shutdown`] 相同，額外帶入 `instance_id` 供 `/api/health` 回報。
+pub(crate) async fn serve_shared_with_shutdown_and_instance<R, F>(
+    listener: TcpListener,
+    application: SharedApplication<R>,
+    instance_id: Option<String>,
+    shutdown: F,
+) -> Result<(), ServerError>
+where
+    R: RecycleBin + Send + 'static,
+    F: Future<Output = ()> + Send + 'static,
+{
     validate_loopback_address(listener.local_addr()?)?;
-    axum::serve(listener, build_router(application))
+    axum::serve(listener, build_router(application, instance_id))
         .with_graceful_shutdown(shutdown)
         .await?;
     Ok(())
 }
 
-fn build_router<R>(application: SharedApplication<R>) -> Router
+fn build_router<R>(application: SharedApplication<R>, instance_id: Option<String>) -> Router
 where
     R: RecycleBin + Send + 'static,
 {
     let state = HttpState {
         application,
         thumbnail_cache_jobs: Arc::new(Mutex::new(ThumbnailCacheJobs::default())),
+        instance_id,
     };
     Router::new()
         .route("/", get(frontend_index))
         .route("/assets/app.css", get(frontend_css))
         .route("/assets/app.js", get(frontend_javascript))
-        .route("/api/health", get(health))
+        .route("/api/health", get(health::<R>))
         .route(
             "/api/settings",
             get(get_settings::<R>).put(update_settings::<R>),
@@ -407,6 +422,7 @@ where
 struct HttpState<R> {
     application: Arc<Mutex<ApplicationService<R>>>,
     thumbnail_cache_jobs: Arc<Mutex<ThumbnailCacheJobs>>,
+    instance_id: Option<String>,
 }
 
 impl<R> Clone for HttpState<R> {
@@ -414,6 +430,7 @@ impl<R> Clone for HttpState<R> {
         Self {
             application: Arc::clone(&self.application),
             thumbnail_cache_jobs: Arc::clone(&self.thumbnail_cache_jobs),
+            instance_id: self.instance_id.clone(),
         }
     }
 }
@@ -466,14 +483,15 @@ struct HealthResponse {
     instance_id: Option<String>,
 }
 
-async fn health() -> Json<HealthResponse> {
+async fn health<R>(State(state): State<HttpState<R>>) -> Json<HealthResponse>
+where
+    R: RecycleBin + Send + 'static,
+{
     Json(HealthResponse {
         status: "ok",
         service: "doujin-http",
         api_version: 1,
-        instance_id: std::env::var("DOUJIN_INSTANCE_ID")
-            .ok()
-            .filter(|value| !value.is_empty()),
+        instance_id: state.instance_id,
     })
 }
 

@@ -2,7 +2,7 @@ use std::fs;
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use doujin_http::{ServiceOptions, run_service};
+use doujin_http::{ServiceInstanceConfig, ServiceOptions, run_service};
 use doujin_storage::CatalogRepository;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot;
@@ -76,6 +76,64 @@ async fn in_process_service_serves_health_until_shutdown_returns() {
     assert!(body.contains("\"status\":\"ok\""), "health body: {body}");
     assert!(
         body.contains("\"service\":\"doujin-http\""),
+        "health body: {body}"
+    );
+    assert!(
+        !body.contains("instance_id"),
+        "health body must omit instance_id when ServiceOptions.instance is None: {body}"
+    );
+
+    shutdown_sender.send(()).expect("send shutdown");
+    let outcome = tokio::time::timeout(Duration::from_secs(30), service)
+        .await
+        .expect("service returns after shutdown")
+        .expect("service task");
+    assert!(outcome.is_ok(), "service result: {outcome:?}");
+
+    let _ = fs::remove_dir_all(&directory);
+}
+
+#[tokio::test]
+async fn in_process_service_reports_instance_id_from_service_options() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!(
+        "doujin-http-instance-id-{}-{unique}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&directory).expect("create test tree");
+    let database = directory.join("catalog.db");
+    drop(CatalogRepository::open(&database).expect("create catalog"));
+
+    let (ready_sender, ready_receiver) = oneshot::channel();
+    let (shutdown_sender, shutdown_receiver) = oneshot::channel::<()>();
+    let service = tokio::spawn(run_service(
+        ServiceOptions {
+            database: database.clone(),
+            port: 0,
+            config_path: directory.join("config.json"),
+            instance: Some(ServiceInstanceConfig {
+                metadata_path: directory.join("instance.json"),
+                lock_path: directory.join("service.lock"),
+                instance_id: "wo2b-test-instance".to_owned(),
+            }),
+        },
+        move |address| {
+            let _ = ready_sender.send(address);
+        },
+        async move {
+            let _ = shutdown_receiver.await;
+        },
+    ));
+
+    let address = ready_receiver.await.expect("bound address");
+
+    let (status, body) = get(address, "/api/health").await;
+    assert_eq!(200, status);
+    assert!(
+        body.contains("\"instance_id\":\"wo2b-test-instance\""),
         "health body: {body}"
     );
 

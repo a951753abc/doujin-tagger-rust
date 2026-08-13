@@ -63,6 +63,10 @@ impl ServiceInstanceGuard {
         Self::acquire(config.metadata_path, config.lock_path, config.instance_id)
     }
 
+    pub(crate) fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
+
     fn acquire(
         metadata_path: PathBuf,
         lock_path: PathBuf,

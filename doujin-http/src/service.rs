@@ -28,7 +28,9 @@ use doujin_thumbnails::{
 use serde::Deserialize;
 
 use crate::instance::{ServiceInstanceConfig, ServiceInstanceGuard};
-use crate::{SharedApplication, bind_loopback, serve_shared_with_shutdown, share_application};
+use crate::{
+    SharedApplication, bind_loopback, serve_shared_with_shutdown_and_instance, share_application,
+};
 
 const WORKER_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const THUMBNAIL_WORKER_COUNT: usize = 2;
@@ -75,6 +77,9 @@ where
     let instance = instance
         .map(ServiceInstanceGuard::from_config)
         .transpose()?;
+    let instance_id = instance
+        .as_ref()
+        .map(|instance| instance.instance_id().to_owned());
     let repository = CatalogRepository::open(&database)?;
     let file_config = load_file_config(&config_path)?;
     let environment = EnvironmentSettings::read()?;
@@ -167,10 +172,15 @@ where
     }
 
     let shutdown_stopping = Arc::clone(&stopping);
-    let serve_result = serve_shared_with_shutdown(listener, application, async move {
-        shutdown.await;
-        shutdown_stopping.store(true, Ordering::Release);
-    })
+    let serve_result = serve_shared_with_shutdown_and_instance(
+        listener,
+        application,
+        instance_id,
+        async move {
+            shutdown.await;
+            shutdown_stopping.store(true, Ordering::Release);
+        },
+    )
     .await;
     stopping.store(true, Ordering::Release);
     if external_worker.join().is_err() {
