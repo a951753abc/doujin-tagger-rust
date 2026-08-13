@@ -284,8 +284,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("href=\"/assets/app.css?v=42\""));
-    assert!(document.contains("src=\"/assets/app.js?v=45\" defer"));
+    assert!(document.contains("href=\"/assets/app.css?v=43\""));
+    assert!(document.contains("src=\"/assets/app.js?v=46\" defer"));
     assert!(document.contains("id=\"library-scroll-sentinel\""));
     assert!(document.contains("id=\"library-load-more\""));
     assert!(document.contains("id=\"library-load-announcer\""));
@@ -297,6 +297,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("id=\"viewer-path-override\""));
     assert!(document.contains("id=\"library-empty-heading\""));
     assert!(document.contains("id=\"library-empty-primary\""));
+    assert!(document.contains("id=\"library-sort\""));
+    assert!(document.contains("最近修改"));
     assert!(document.contains("全選已載入"));
     assert!(document.contains("新載入結果不會自動加入"));
     assert!(!document.contains("目前頁面選取"));
@@ -358,6 +360,7 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(stylesheet.contains(".root-actions"));
     assert!(stylesheet.contains(".field-override-note"));
     assert!(stylesheet.contains(".empty-state-actions"));
+    assert!(stylesheet.contains(".sort-control"));
     assert!(!stylesheet.contains("font-size: 0.6875rem;"));
     assert!(!stylesheet.contains("font-size: 0.625rem;"));
     assert!(!stylesheet.contains("font-size: 0.5625rem;"));
@@ -446,6 +449,9 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("function renderLibraryEmptyState"));
     assert!(script.contains("function scanEmptyLibrary"));
     assert!(script.contains("openLibraryRootSettings(\"new\")"));
+    assert!(script.contains("function changeLibrarySort"));
+    assert!(script.contains("sort: state.sort"));
+    assert!(script.contains("params.set(\"direction\", direction)"));
     assert!(script.contains("/api/thumbnail-cache-jobs/preflight"));
     assert!(script.contains("/api/scans/latest"));
     assert!(script.contains("if (state.route === \"workbench\") renderWorkbenchSelection()"));
@@ -682,6 +688,9 @@ async fn collections_support_paging_safe_search_and_detail_over_loopback() {
     assert_eq!(3, first_page.json["pagination"]["total"]);
     assert_eq!(2, first_page.json["pagination"]["total_pages"]);
     assert_eq!(2, first_page.json["items"].as_array().expect("items").len());
+    let default_first_id = first_page.json["items"][0]["id"]
+        .as_i64()
+        .expect("default first ID");
 
     let second_page = server
         .request("GET", "/api/collections?page=2&per_page=2", &[])
@@ -709,6 +718,48 @@ async fn collections_support_paging_safe_search_and_detail_over_loopback() {
         .await;
     assert_eq!(200, unsupported_sort.status);
     assert_eq!(3, unsupported_sort.json["pagination"]["total"]);
+    assert_eq!(default_first_id, unsupported_sort.json["items"][0]["id"]);
+
+    let title_ascending = server
+        .request(
+            "GET",
+            "/api/collections?sort=title&direction=asc&per_page=2",
+            &[],
+        )
+        .await;
+    assert_eq!(200, title_ascending.status);
+    assert_eq!("First Story", title_ascending.json["items"][0]["title"]);
+    assert_eq!(
+        "RJ123456 [GammaCircle] Third Story",
+        title_ascending.json["items"][1]["title"]
+    );
+    let title_second_page = server
+        .request(
+            "GET",
+            "/api/collections?sort=title&direction=asc&page=2&per_page=2",
+            &[],
+        )
+        .await;
+    assert_eq!("Second Story", title_second_page.json["items"][0]["title"]);
+    let title_locator_id = title_second_page.json["items"][0]["id"]
+        .as_i64()
+        .expect("title locator ID");
+    let title_located = server
+        .request(
+            "GET",
+            &format!(
+                "/api/collections/{title_locator_id}/locate?sort=title&direction=asc&per_page=2"
+            ),
+            &[],
+        )
+        .await;
+    assert_eq!(3, title_located.json["position"]);
+    assert_eq!(2, title_located.json["page"]);
+
+    let title_descending = server
+        .request("GET", "/api/collections?sort=title&direction=desc", &[])
+        .await;
+    assert_eq!("Second Story", title_descending.json["items"][0]["title"]);
 
     let metadata_search = server
         .request("GET", "/api/collections?q=AlphaCircle", &[])

@@ -95,6 +95,8 @@
     leavingLibraryContextCaptured: false,
     selectedIds: new Set(),
     selectedRecords: new Map(),
+    sort: "created",
+    direction: "desc",
     layout: readStorage(LAYOUT_KEY, "grid"),
     recent: readStorage(RECENT_KEY, []),
     requestNumber: 0,
@@ -210,6 +212,7 @@
       emptyPrimary: byId("library-empty-primary"),
       emptySecondary: byId("library-empty-secondary"),
       resultSummary: byId("result-summary"),
+      librarySort: byId("library-sort"),
       loadMore: byId("library-load-more"),
       loadMoreSpinner: byId("library-load-more-spinner"),
       loadMoreLabel: byId("library-load-more-label"),
@@ -388,6 +391,7 @@
     document.querySelectorAll("[data-layout]").forEach((button) => {
       button.addEventListener("click", () => setLayout(button.dataset.layout));
     });
+    ui.librarySort.addEventListener("change", changeLibrarySort);
     byId("read-button").addEventListener("click", () => launchSelected("read"));
     byId("open-button").addEventListener("click", () => launchSelected("open"));
     byId("edit-metadata-button").addEventListener("click", openMetadataDialog);
@@ -592,21 +596,28 @@
     });
     const tags = params.getAll("tag").map((tag) => tag.trim()).filter(Boolean);
     if (tags.length) values.tag = tags;
+    const sort = ["created", "updated", "title"].includes(params.get("sort")) ? params.get("sort") : "created";
+    const direction = ["asc", "desc"].includes(params.get("direction")) ? params.get("direction") : "desc";
     const focusId = Number.parseInt(params.get("focus") || "", 10);
-    const dataParams = libraryParams(values, null);
-    return { values, tags, focusId: Number.isSafeInteger(focusId) && focusId > 0 ? focusId : null, dataKey: dataParams.toString() };
+    const dataParams = libraryParams(values, null, sort, direction);
+    return { values, tags, sort, direction, focusId: Number.isSafeInteger(focusId) && focusId > 0 ? focusId : null, dataKey: dataParams.toString() };
   }
 
   function applyDecodedLibraryState(decoded) {
     state.filters = { ...decoded.values, ...(decoded.tags.length ? { tag: [...decoded.tags] } : {}) };
+    state.sort = decoded.sort;
+    state.direction = decoded.direction;
+    ui.librarySort.value = `${state.sort}:${state.direction}`;
     state.libraryFocusId = decoded.focusId;
     state.libraryDataKey = decoded.dataKey;
     syncFilterDraftFromApplied();
     updateFilterCount();
   }
 
-  function libraryParams(filters = state.filters, focusId = state.libraryFocusId) {
+  function libraryParams(filters = state.filters, focusId = state.libraryFocusId, sort = state.sort, direction = state.direction) {
     const params = new URLSearchParams();
+    params.set("sort", sort);
+    params.set("direction", direction);
     if (filters.q) params.set("q", filters.q);
     FILTER_NAMES.forEach((name) => {
       const value = filters[name];
@@ -1259,6 +1270,14 @@
     navigateLibrary();
   }
 
+  function changeLibrarySort() {
+    const [sort, direction] = ui.librarySort.value.split(":");
+    state.sort = ["created", "updated", "title"].includes(sort) ? sort : "created";
+    state.direction = ["asc", "desc"].includes(direction) ? direction : "desc";
+    state.libraryFocusId = null;
+    navigateLibrary();
+  }
+
   function initializeFacetComboboxes() {
     ui.filterPanel.querySelectorAll("[data-facet-field]").forEach((fieldElement) => {
       const field = fieldElement.dataset.facetField;
@@ -1417,7 +1436,12 @@
   }
 
   function collectionPageParams(page) {
-    const params = new URLSearchParams({ page: String(page), per_page: String(PER_PAGE) });
+    const params = new URLSearchParams({
+      page: String(page),
+      per_page: String(PER_PAGE),
+      sort: state.sort,
+      direction: state.direction,
+    });
     Object.entries(state.filters).forEach(([name, value]) => {
       if (Array.isArray(value)) value.forEach((entry) => params.append(name, entry));
       else params.set(name, value);

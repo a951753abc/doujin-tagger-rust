@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>私藏編目室</title>
-  <link rel="stylesheet" href="/assets/app.css?v=42">
-  <script src="/assets/app.js?v=45" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=43">
+  <script src="/assets/app.js?v=46" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -221,6 +221,16 @@
           </div>
           <div class="library-toolbar-actions">
             <p id="result-summary" aria-live="polite">正在讀取收藏…</p>
+            <label class="sort-control" for="library-sort">排序
+              <select id="library-sort">
+                <option value="created:desc">最近加入</option>
+                <option value="created:asc">最早加入</option>
+                <option value="updated:desc">最近修改</option>
+                <option value="updated:asc">最久未修改</option>
+                <option value="title:asc">標題 A → Z</option>
+                <option value="title:desc">標題 Z → A</option>
+              </select>
+            </label>
             <div class="page-selection" aria-label="已載入收藏選取">
               <button class="text-button" id="select-loaded" type="button">全選已載入</button>
               <button class="text-button" id="invert-loaded" type="button">反選已載入</button>

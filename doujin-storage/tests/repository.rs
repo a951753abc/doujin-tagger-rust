@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use doujin_parser::PARSER_VERSION;
 use doujin_parser::domain::{Authors, Classification, Parody, ParseInput};
@@ -9,7 +9,8 @@ use doujin_parser::parser::parse_filename;
 use doujin_scanner::{FilenameNormalization, PendingCollection, SourceKind};
 use doujin_storage::canonical::{CanonicalMappingEvidence, EntityKind};
 use doujin_storage::collections::{
-    CollectionFilters, CollectionQuery, CollectionRootSnapshot, MissingMetadataField,
+    CollectionFilters, CollectionQuery, CollectionRootSnapshot, CollectionSort,
+    MissingMetadataField, SortDirection,
 };
 use doujin_storage::consolidation::{ConsolidationChoice, ConsolidationResolution};
 use doujin_storage::jobs::{
@@ -1225,6 +1226,7 @@ fn active_collections_support_safe_search_paging_and_detail() {
         .collection_id_for_current_path(&first_path)
         .expect("first lookup")
         .expect("first collection");
+    std::thread::sleep(Duration::from_millis(2));
     repository
         .set_manual_value(
             first_id,
@@ -1260,6 +1262,67 @@ fn active_collections_support_safe_search_paging_and_detail() {
         .expect("second page");
     assert_eq!(1, second_page.items.len());
     assert_eq!(first_id, second_page.items[0].id);
+
+    let title_ascending = repository
+        .collections(&CollectionQuery {
+            sort: CollectionSort::Title,
+            direction: SortDirection::Ascending,
+            ..CollectionQuery::default()
+        })
+        .expect("title ascending");
+    assert_eq!(
+        vec![
+            "RJ123456 [GammaCircle] filename marker",
+            "searchable first",
+            "second title"
+        ],
+        title_ascending
+            .items
+            .iter()
+            .map(|item| item.title.as_deref().expect("title"))
+            .collect::<Vec<_>>()
+    );
+    let title_descending = repository
+        .collections(&CollectionQuery {
+            sort: CollectionSort::Title,
+            direction: SortDirection::Descending,
+            ..CollectionQuery::default()
+        })
+        .expect("title descending");
+    assert_eq!(
+        vec![
+            "second title",
+            "searchable first",
+            "RJ123456 [GammaCircle] filename marker"
+        ],
+        title_descending
+            .items
+            .iter()
+            .map(|item| item.title.as_deref().expect("title"))
+            .collect::<Vec<_>>()
+    );
+    let recently_updated = repository
+        .collections(&CollectionQuery {
+            sort: CollectionSort::Updated,
+            direction: SortDirection::Descending,
+            ..CollectionQuery::default()
+        })
+        .expect("recently updated");
+    assert_eq!(first_id, recently_updated.items[0].id);
+
+    let title_located = repository
+        .locate_collection(
+            first_id,
+            &CollectionQuery {
+                sort: CollectionSort::Title,
+                direction: SortDirection::Ascending,
+                per_page: 2,
+                ..CollectionQuery::default()
+            },
+        )
+        .expect("locate in title ordering");
+    assert_eq!(Some(2), title_located.position);
+    assert_eq!(Some(1), title_located.page);
 
     let located = repository
         .locate_collection(

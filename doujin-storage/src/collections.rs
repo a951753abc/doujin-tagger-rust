@@ -13,6 +13,8 @@ pub struct CollectionQuery {
     pub search: Option<String>,
     pub page: u32,
     pub per_page: u32,
+    pub sort: CollectionSort,
+    pub direction: SortDirection,
     pub filters: CollectionFilters,
 }
 
@@ -22,9 +24,26 @@ impl Default for CollectionQuery {
             search: None,
             page: 1,
             per_page: 50,
+            sort: CollectionSort::Created,
+            direction: SortDirection::Descending,
             filters: CollectionFilters::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CollectionSort {
+    #[default]
+    Created,
+    Updated,
+    Title,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SortDirection {
+    Ascending,
+    #[default]
+    Descending,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -186,8 +205,9 @@ impl CatalogRepository {
         let query_sql = format!(
             "{COLLECTION_SELECT_SQL} {COLLECTION_FROM_SQL}
              WHERE collection.status = 'active'{}
-             ORDER BY collection.id DESC LIMIT ? OFFSET ?",
-            prepared.clause
+             ORDER BY {} LIMIT ? OFFSET ?",
+            prepared.clause,
+            collection_order(query)
         );
         let mut statement = self.connection.prepare(&query_sql)?;
         let rows = statement
@@ -228,11 +248,12 @@ impl CatalogRepository {
         let sql = format!(
             "SELECT query_position FROM (
                  SELECT collection.id,
-                        row_number() OVER (ORDER BY collection.id DESC) AS query_position
+                        row_number() OVER (ORDER BY {}) AS query_position
                  {COLLECTION_FROM_SQL}
                  WHERE collection.status = 'active'{}
              ) AS filtered_collection
              WHERE filtered_collection.id = ?",
+            collection_order(query),
             prepared.clause
         );
         let mut parameters = prepared.parameters;
@@ -250,6 +271,29 @@ impl CatalogRepository {
             position,
             page,
         })
+    }
+}
+
+fn collection_order(query: &CollectionQuery) -> &'static str {
+    match (query.sort, query.direction) {
+        (CollectionSort::Created, SortDirection::Ascending) => {
+            "collection.created_at ASC, collection.id ASC"
+        }
+        (CollectionSort::Created, SortDirection::Descending) => {
+            "collection.created_at DESC, collection.id DESC"
+        }
+        (CollectionSort::Updated, SortDirection::Ascending) => {
+            "metadata.updated_at ASC, collection.id ASC"
+        }
+        (CollectionSort::Updated, SortDirection::Descending) => {
+            "metadata.updated_at DESC, collection.id DESC"
+        }
+        (CollectionSort::Title, SortDirection::Ascending) => {
+            "metadata.title IS NULL ASC, metadata.title COLLATE NOCASE ASC, collection.id DESC"
+        }
+        (CollectionSort::Title, SortDirection::Descending) => {
+            "metadata.title IS NULL ASC, metadata.title COLLATE NOCASE DESC, collection.id DESC"
+        }
     }
 }
 
