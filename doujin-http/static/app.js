@@ -125,6 +125,8 @@
     thumbnailCacheRetrying: false,
     thumbnailCacheTimer: null,
     settingsRoots: [],
+    settingsSnapshot: null,
+    rootsNeedScan: false,
     selectionContext: null,
     lastBatchActivity: null,
     batchRetry: null,
@@ -248,6 +250,9 @@
       statColumns: byId("stat-columns"),
       settingsForm: byId("settings-form"),
       environmentOverrides: byId("environment-overrides"),
+      viewerPathOverride: byId("viewer-path-override"),
+      thumbSizeOverride: byId("thumb-size-override"),
+      thumbQualityOverride: byId("thumb-quality-override"),
       thumbnailCacheForm: byId("thumbnail-cache-form"),
       thumbnailCacheRoots: byId("thumbnail-cache-roots"),
       thumbnailCacheStart: byId("thumbnail-cache-start"),
@@ -266,6 +271,9 @@
       thumbnailCacheConfirm: byId("thumbnail-cache-confirm"),
       rootList: byId("root-list"),
       rootForm: byId("root-form"),
+      rootRescanNote: byId("root-rescan-note"),
+      editRootDialog: byId("edit-root-dialog"),
+      editRootForm: byId("edit-root-form"),
       scanButton: byId("scan-button"),
       scanResultsDialog: byId("scan-results-dialog"),
       scanResultsSummary: byId("scan-results-summary"),
@@ -407,6 +415,7 @@
     ui.thumbnailCacheViewFailures.addEventListener("click", openThumbnailCacheFailures);
     ui.thumbnailCacheRetryFailures.addEventListener("click", retryThumbnailCacheFailures);
     ui.rootForm.addEventListener("submit", registerRoot);
+    ui.editRootForm.addEventListener("submit", saveEditedRoot);
     ui.scanButton.addEventListener("click", startScan);
     ui.scanResultsRetry.addEventListener("click", () => {
       ui.scanResultsDialog.close();
@@ -3430,10 +3439,15 @@
       ui.settingsForm.elements.viewer_path.value = settings.viewer_path;
       ui.settingsForm.elements.thumb_size.value = settings.thumb_size;
       ui.settingsForm.elements.thumb_quality.value = settings.thumb_quality;
+      state.settingsSnapshot = settings;
+      syncSettingsOverride("viewer_path", ui.viewerPathOverride, settings.overrides.viewer_path, settings.viewer_path, settings.saved_viewer_path);
+      syncSettingsOverride("thumb_size", ui.thumbSizeOverride, settings.overrides.thumb_size, settings.thumb_size, settings.saved_thumb_size);
+      syncSettingsOverride("thumb_quality", ui.thumbQualityOverride, settings.overrides.thumb_quality, settings.thumb_quality, settings.saved_thumb_quality);
       ui.environmentOverrides.textContent = settings.environment_overrides.length
-        ? `目前由環境變數覆寫：${settings.environment_overrides.join("、")}；環境變數具有最高優先權。`
-        : "目前沒有環境變數覆寫這些設定；環境變數具有最高優先權。";
+        ? `有 ${formatNumber(settings.environment_overrides.length)} 個欄位由環境變數控制，已在各欄位旁標示目前有效值與已儲存值。`
+        : "目前沒有環境變數覆寫；這裡儲存的值會直接生效。";
       state.settingsRoots = roots.roots;
+      ui.rootRescanNote.hidden = !state.rootsNeedScan;
       updateThumbnailCacheJob(cacheJobs.job, { announce: false });
       renderRoots(roots.roots);
       renderThumbnailCacheRoots();
@@ -3442,6 +3456,17 @@
     } catch (error) {
       toast(error.message, true);
     }
+  }
+
+  function syncSettingsOverride(fieldName, note, environmentName, effectiveValue, savedValue) {
+    const input = ui.settingsForm.elements[fieldName];
+    input.disabled = Boolean(environmentName);
+    note.hidden = !environmentName;
+    if (!environmentName) {
+      note.textContent = "";
+      return;
+    }
+    note.textContent = `${environmentName} 控制中：目前有效值為「${effectiveValue || "系統預設"}」；UI 已儲存值為「${savedValue || "系統預設"}」。儲存本頁不會改變目前有效值。`;
   }
 
   function renderThumbnailCacheRoots() {
@@ -3698,17 +3723,24 @@
     const submit = ui.settingsForm.querySelector('[type="submit"]');
     submit.disabled = true;
     try {
+      const settingsSnapshot = state.settingsSnapshot;
       const settings = await api("/api/settings", {
         method: "PUT",
         body: {
-          viewer_path: String(form.get("viewer_path") || "").trim(),
-          thumb_size: String(form.get("thumb_size") || "").trim(),
-          thumb_quality: Number(form.get("thumb_quality")),
+          viewer_path: settingsSnapshot?.overrides.viewer_path
+            ? settingsSnapshot.saved_viewer_path
+            : String(form.get("viewer_path") || "").trim(),
+          thumb_size: settingsSnapshot?.overrides.thumb_size
+            ? settingsSnapshot.saved_thumb_size
+            : String(form.get("thumb_size") || "").trim(),
+          thumb_quality: settingsSnapshot?.overrides.thumb_quality
+            ? settingsSnapshot.saved_thumb_quality
+            : Number(form.get("thumb_quality")),
         },
       });
       const requeued = settings.thumbnails_requeued || 0;
       toast(requeued ? `設定已儲存，${formatNumber(requeued)} 張縮圖已排入重建` : "設定已儲存");
-      loadSettingsPage();
+      await loadSettingsPage();
     } catch (error) {
       toast(error.message, true);
     } finally {
@@ -3731,14 +3763,23 @@
         el("span", `root-purpose ${root.source}`, purposeLabel),
         el("span", `root-status ${root.active ? "active" : "inactive"}`, root.active ? "已啟用" : "已停用"),
       );
+      const actions = el("div", "root-actions");
+      const edit = el("button", "text-button", "編輯");
+      edit.type = "button";
+      edit.addEventListener("click", () => openEditRoot(root));
+      actions.append(edit);
       if (root.active) {
         const deactivate = el("button", "text-button danger-text", "停用");
         deactivate.type = "button";
         deactivate.addEventListener("click", () => deactivateRoot(root));
-        item.append(deactivate);
+        actions.append(deactivate);
       } else {
-        item.append(el("span", "root-action-placeholder", ""));
+        const activate = el("button", "secondary-button", "重新啟用");
+        activate.type = "button";
+        activate.addEventListener("click", () => reactivateRoot(root));
+        actions.append(activate);
       }
+      item.append(actions);
       ui.rootList.append(item);
     });
   }
@@ -3758,8 +3799,9 @@
         },
       });
       ui.rootForm.reset();
-      toast(`已登記資料夾「${root.label}」`);
-      loadSettingsPage();
+      state.rootsNeedScan = true;
+      toast(`已登記資料夾「${root.label}」；請重新掃描`);
+      await loadSettingsPage();
     } catch (error) {
       toast(error.message, true);
     } finally {
@@ -3767,12 +3809,65 @@
     }
   }
 
+  function openEditRoot(root) {
+    const form = ui.editRootForm;
+    form.elements.root_id.value = root.id;
+    form.elements.label.value = root.label;
+    form.elements.path.value = root.path;
+    form.elements.source.value = root.source;
+    form.dataset.originalPath = root.path;
+    form.dataset.originalSource = root.source;
+    ui.editRootDialog.showModal();
+    form.elements.label.focus();
+  }
+
+  async function saveEditedRoot(event) {
+    event.preventDefault();
+    const form = new FormData(ui.editRootForm);
+    const submit = ui.editRootForm.querySelector('[type="submit"]');
+    const rootId = Number(form.get("root_id"));
+    const path = String(form.get("path") || "").trim();
+    const source = String(form.get("source") || "downloads");
+    const requiresScan = path !== ui.editRootForm.dataset.originalPath || source !== ui.editRootForm.dataset.originalSource;
+    submit.disabled = true;
+    try {
+      const root = await api(`/api/library-roots/${rootId}`, {
+        method: "PATCH",
+        body: {
+          label: String(form.get("label") || "").trim(),
+          path,
+          source,
+        },
+      });
+      ui.editRootDialog.close();
+      if (requiresScan) state.rootsNeedScan = true;
+      toast(requiresScan ? `已更新「${root.label}」；請重新掃描` : `已更新「${root.label}」`);
+      await loadSettingsPage();
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      submit.disabled = false;
+    }
+  }
+
+  async function reactivateRoot(root) {
+    try {
+      const activated = await api(`/api/library-roots/${root.id}/activate`, { method: "POST" });
+      state.rootsNeedScan = true;
+      toast(`已重新啟用「${activated.label}」；請重新掃描`);
+      await loadSettingsPage();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
   async function deactivateRoot(root) {
     if (!window.confirm(`停用資料夾來源「${root.label}」？這不會刪除磁碟檔案或既有收藏紀錄。`)) return;
     try {
       await api(`/api/library-roots/${root.id}`, { method: "DELETE" });
-      toast(`已停用「${root.label}」`);
-      loadSettingsPage();
+      state.rootsNeedScan = true;
+      toast(`已停用「${root.label}」；請重新掃描`);
+      await loadSettingsPage();
     } catch (error) {
       toast(error.message, true);
     }
@@ -3791,6 +3886,8 @@
       const summary = report.summary;
       const prefix = report.status === "partial" ? "掃描部分完成" : "掃描完成";
       state.activityScan = scanActivity(report);
+      state.rootsNeedScan = false;
+      ui.rootRescanNote.hidden = true;
       toast(`${prefix}：新增 ${formatNumber(summary.added)}、略過 ${formatNumber(summary.skipped)}、問題 ${formatNumber(report.issues.length)}`, report.status === "partial");
       invalidateDerivedData({ library: true });
       state.libraryFocusId = null;

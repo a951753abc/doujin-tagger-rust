@@ -20,7 +20,7 @@ use axum::http::uri::Authority;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, patch, post, put};
+use axum::routing::{get, patch, post, put};
 use doujin_app::{
     ApplicationBatchOutcome, ApplicationBatchReport, ApplicationError, ApplicationScanReport,
     ApplicationService, ApplicationSettingsSnapshot,
@@ -251,7 +251,11 @@ where
         )
         .route(
             "/api/library-roots/{root_id}",
-            delete(deactivate_library_root::<R>),
+            patch(update_library_root::<R>).delete(deactivate_library_root::<R>),
+        )
+        .route(
+            "/api/library-roots/{root_id}/activate",
+            post(reactivate_library_root::<R>),
         )
         .route("/api/file-actions/move", post(move_collections::<R>))
         .route("/api/file-actions/delete", post(delete_collections::<R>))
@@ -384,9 +388,20 @@ struct SettingsResponse {
     viewer_path: String,
     thumb_size: String,
     thumb_quality: u8,
+    saved_viewer_path: String,
+    saved_thumb_size: String,
+    saved_thumb_quality: u8,
+    overrides: SettingsOverridesResponse,
     environment_overrides: Vec<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thumbnails_requeued: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+struct SettingsOverridesResponse {
+    viewer_path: Option<&'static str>,
+    thumb_size: Option<&'static str>,
+    thumb_quality: Option<&'static str>,
 }
 
 impl SettingsResponse {
@@ -411,6 +426,26 @@ impl SettingsResponse {
                 .unwrap_or_default(),
             thumb_size: format!("{}x{}", settings.thumbnail_width, settings.thumbnail_height),
             thumb_quality: settings.thumbnail_quality,
+            saved_viewer_path: settings
+                .saved_reader_path
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            saved_thumb_size: format!(
+                "{}x{}",
+                settings.saved_thumbnail_width, settings.saved_thumbnail_height
+            ),
+            saved_thumb_quality: settings.saved_thumbnail_quality,
+            overrides: SettingsOverridesResponse {
+                viewer_path: settings
+                    .reader_overridden_by_environment
+                    .then_some("DOUJIN_READER_PATH"),
+                thumb_size: settings
+                    .thumbnail_size_overridden_by_environment
+                    .then_some("DOUJIN_THUMB_SIZE"),
+                thumb_quality: settings
+                    .thumbnail_quality_overridden_by_environment
+                    .then_some("DOUJIN_THUMB_QUALITY"),
+            },
             environment_overrides,
             thumbnails_requeued,
         }
@@ -2711,6 +2746,14 @@ struct RegisterLibraryRootRequest {
     label: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateLibraryRootRequest {
+    path: String,
+    source: String,
+    label: String,
+}
+
 #[derive(Debug, Serialize)]
 struct LibraryRootsResponse {
     roots: Vec<LibraryRootResponse>,
@@ -2939,16 +2982,7 @@ where
 {
     let Json(payload) =
         payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
-    let source = match payload.source.as_str() {
-        "archive" => SourceKind::Archive,
-        "downloads" => SourceKind::Downloads,
-        _ => {
-            return Err(ApiError::bad_request(
-                "invalid_library_root_source",
-                "library root source 必須是 archive 或 downloads",
-            ));
-        }
-    };
+    let source = parse_library_root_source(&payload.source)?;
     let path = PathBuf::from(payload.path);
     let label = payload.label.trim().to_owned();
     let root = tokio::task::spawn_blocking(move || {
@@ -2971,6 +3005,68 @@ where
     Ok(Json(root.into()))
 }
 
+async fn update_library_root<R>(
+    State(state): State<HttpState<R>>,
+    Path(root_id): Path<String>,
+    payload: Result<Json<UpdateLibraryRootRequest>, JsonRejection>,
+) -> Result<Json<LibraryRootResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let root_id = parse_library_root_id(root_id)?;
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let source = parse_library_root_source(&payload.source)?;
+    let path = PathBuf::from(payload.path);
+    let label = payload.label.trim().to_owned();
+    let root = tokio::task::spawn_blocking(move || {
+        let mut application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .update_library_root(root_id, &path, source, &label)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(root.into()))
+}
+
+async fn reactivate_library_root<R>(
+    State(state): State<HttpState<R>>,
+    Path(root_id): Path<String>,
+) -> Result<Json<LibraryRootResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let root_id = parse_library_root_id(root_id)?;
+    let root = tokio::task::spawn_blocking(move || {
+        let mut application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .reactivate_library_root(root_id)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(root.into()))
+}
+
 async fn deactivate_library_root<R>(
     State(state): State<HttpState<R>>,
     Path(root_id): Path<String>,
@@ -2978,13 +3074,7 @@ async fn deactivate_library_root<R>(
 where
     R: RecycleBin + Send + 'static,
 {
-    let root_id = root_id
-        .parse::<i64>()
-        .ok()
-        .filter(|id| *id > 0)
-        .ok_or_else(|| {
-            ApiError::bad_request("invalid_library_root_id", "library root ID 必須是正整數")
-        })?;
+    let root_id = parse_library_root_id(root_id)?;
     let root = tokio::task::spawn_blocking(move || {
         let mut application = match state.application.try_lock() {
             Ok(application) => application,
@@ -3003,6 +3093,27 @@ where
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(root.into()))
+}
+
+fn parse_library_root_id(root_id: String) -> Result<i64, ApiError> {
+    root_id
+        .parse::<i64>()
+        .ok()
+        .filter(|id| *id > 0)
+        .ok_or_else(|| {
+            ApiError::bad_request("invalid_library_root_id", "library root ID 必須是正整數")
+        })
+}
+
+fn parse_library_root_source(source: &str) -> Result<SourceKind, ApiError> {
+    match source {
+        "archive" => Ok(SourceKind::Archive),
+        "downloads" => Ok(SourceKind::Downloads),
+        _ => Err(ApiError::bad_request(
+            "invalid_library_root_source",
+            "library root source 必須是 archive 或 downloads",
+        )),
+    }
 }
 
 async fn not_found() -> ApiError {

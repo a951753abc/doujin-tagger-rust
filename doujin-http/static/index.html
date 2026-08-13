@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>私藏編目室</title>
-  <link rel="stylesheet" href="/assets/app.css?v=40">
-  <script src="/assets/app.js?v=43" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=41">
+  <script src="/assets/app.js?v=44" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -421,11 +421,18 @@
             <p class="settings-intro" id="environment-overrides">正在讀取設定優先權…</p>
             <form id="settings-form">
               <label>閱讀器執行檔
-                <input name="viewer_path" type="text" autocomplete="off" placeholder="留空時使用系統預設程式">
+                <input name="viewer_path" type="text" autocomplete="off" placeholder="留空時使用系統預設程式" aria-describedby="viewer-path-override">
+                <span class="field-override-note" id="viewer-path-override" hidden></span>
               </label>
               <div class="form-row">
-                <label>縮圖尺寸<input name="thumb_size" type="text" inputmode="numeric" placeholder="300x400" required></label>
-                <label>WebP 品質<input name="thumb_quality" type="number" min="1" max="100" required></label>
+                <label>縮圖尺寸
+                  <input name="thumb_size" type="text" inputmode="numeric" placeholder="300x400" required aria-describedby="thumb-size-override">
+                  <span class="field-override-note" id="thumb-size-override" hidden></span>
+                </label>
+                <label>WebP 品質
+                  <input name="thumb_quality" type="number" min="1" max="100" required aria-describedby="thumb-quality-override">
+                  <span class="field-override-note" id="thumb-quality-override" hidden></span>
+                </label>
               </div>
               <button class="primary-button" type="submit">儲存設定</button>
               <p class="field-note">變更縮圖尺寸或品質時，既有縮圖會自動排入重建。</p>
@@ -466,6 +473,7 @@
               <p>掃描只會處理這裡登記且啟用的來源。</p>
               <button class="secondary-button" id="scan-button" type="button">重新掃描</button>
             </div>
+            <p class="root-rescan-note" id="root-rescan-note" role="status" hidden>來源設定已變更。請重新掃描，讓藏書清單反映新的來源設定。</p>
             <ul class="root-list" id="root-list"></ul>
             <form class="root-form" id="root-form">
               <h3>新增來源</h3>
@@ -525,6 +533,24 @@
         <button class="text-button" data-close-dialog type="button">取消</button>
         <button class="primary-button" id="thumbnail-cache-confirm" type="submit">開始建立</button>
       </div>
+    </form>
+  </dialog>
+
+  <dialog id="edit-root-dialog" aria-labelledby="edit-root-heading">
+    <form class="dialog-shell edit-root-dialog" id="edit-root-form">
+      <header><div><p class="eyebrow">SOURCE / 資料夾來源</p><h2 id="edit-root-heading">編輯資料夾來源</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉來源編輯">×</button></header>
+      <p class="dialog-intro">路徑或用途變更後，需要重新掃描才會完整反映在藏書清單；既有收藏紀錄不會在儲存時刪除。</p>
+      <input name="root_id" type="hidden">
+      <label>顯示名稱<input name="label" type="text" required autocomplete="off"></label>
+      <label>完整路徑<input name="path" type="text" required autocomplete="off"></label>
+      <label>用途
+        <select name="source" required>
+          <option value="downloads">新收藏（會解析）</option>
+          <option value="archive">典藏庫</option>
+        </select>
+      </label>
+      <p class="field-note">完整路徑必須是本機現有的絕對資料夾路徑。</p>
+      <div class="dialog-footer"><button class="text-button" data-close-dialog type="button">取消</button><button class="primary-button" type="submit">儲存來源</button></div>
     </form>
   </dialog>
 

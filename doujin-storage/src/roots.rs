@@ -1,11 +1,13 @@
 //! Library-root configuration snapshots and state changes.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use doujin_scanner::SourceKind;
-use rusqlite::OptionalExtension;
+use rusqlite::{OptionalExtension, params};
 
-use crate::{CatalogRepository, StorageError, StorageResult};
+use crate::{
+    CatalogRepository, StorageError, StorageResult, path_key, path_text, source_kind_text,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LibraryRootSnapshot {
@@ -83,6 +85,80 @@ impl CatalogRepository {
         transaction.commit()?;
         self.library_root(root_id)
     }
+
+    pub fn update_library_root(
+        &mut self,
+        root_id: i64,
+        path: &Path,
+        source: SourceKind,
+        label: &str,
+    ) -> StorageResult<LibraryRootSnapshot> {
+        self.library_root(root_id)?;
+        validate_library_root(path, label)?;
+        let root_path_key = path_key(path);
+        let conflicting_root_id = self
+            .connection
+            .query_row(
+                "SELECT id FROM library_roots WHERE path_key = ?1 AND id <> ?2",
+                params![root_path_key, root_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        if let Some(conflicting_root_id) = conflicting_root_id {
+            return Err(StorageError::InvalidLibraryRoot(format!(
+                "此路徑已由資料夾來源 {conflicting_root_id} 使用：{}",
+                path.display()
+            )));
+        }
+        self.connection.execute(
+            "UPDATE library_roots
+             SET path = ?1, path_key = ?2, source_kind = ?3, label = ?4,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?5",
+            params![
+                path_text(path)?,
+                root_path_key,
+                source_kind_text(source),
+                label.trim(),
+                root_id
+            ],
+        )?;
+        self.library_root(root_id)
+    }
+
+    pub fn reactivate_library_root(&mut self, root_id: i64) -> StorageResult<LibraryRootSnapshot> {
+        let root = self.library_root(root_id)?;
+        validate_library_root(&root.path, &root.label)?;
+        self.connection.execute(
+            "UPDATE library_roots
+             SET active = 1,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1",
+            [root_id],
+        )?;
+        self.library_root(root_id)
+    }
+}
+
+pub(crate) fn validate_library_root(path: &Path, label: &str) -> StorageResult<()> {
+    if !path.is_absolute() {
+        return Err(StorageError::InvalidLibraryRoot(format!(
+            "路徑必須是絕對路徑：{}",
+            path.display()
+        )));
+    }
+    if !path.is_dir() {
+        return Err(StorageError::InvalidLibraryRoot(format!(
+            "library root 不存在或不是資料夾：{}",
+            path.display()
+        )));
+    }
+    if label.trim().is_empty() {
+        return Err(StorageError::InvalidLibraryRoot(
+            "library root label 不得為空白".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 type LibraryRootRow = (i64, String, String, String, bool, String, String);

@@ -1096,23 +1096,7 @@ impl CatalogRepository {
         source: SourceKind,
         label: &str,
     ) -> StorageResult<i64> {
-        if !path.is_absolute() {
-            return Err(StorageError::InvalidLibraryRoot(format!(
-                "路徑必須是絕對路徑：{}",
-                path.display()
-            )));
-        }
-        if !path.is_dir() {
-            return Err(StorageError::InvalidLibraryRoot(format!(
-                "library root 不存在或不是資料夾：{}",
-                path.display()
-            )));
-        }
-        if label.trim().is_empty() {
-            return Err(StorageError::InvalidLibraryRoot(
-                "library root label 不得為空白".to_owned(),
-            ));
-        }
+        roots::validate_library_root(path, label)?;
         let transaction = self.connection.transaction()?;
         let root_id = upsert_library_root(&transaction, path, source, label)?;
         transaction.commit()?;

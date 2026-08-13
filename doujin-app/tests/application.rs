@@ -887,6 +887,13 @@ fn environment_overrides_remain_effective_while_user_settings_are_persisted() {
     assert_eq!(500, saved.settings.thumbnail_width);
     assert_eq!(600, saved.settings.thumbnail_height);
     assert_eq!(90, saved.settings.thumbnail_quality);
+    assert_eq!(
+        Some(stored_reader.clone()),
+        saved.settings.saved_reader_path
+    );
+    assert_eq!(360, saved.settings.saved_thumbnail_width);
+    assert_eq!(480, saved.settings.saved_thumbnail_height);
+    assert_eq!(85, saved.settings.saved_thumbnail_quality);
     assert!(saved.settings.reader_overridden_by_environment);
     assert!(saved.settings.thumbnail_size_overridden_by_environment);
     assert!(saved.settings.thumbnail_quality_overridden_by_environment);
