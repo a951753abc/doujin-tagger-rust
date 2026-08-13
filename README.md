@@ -1,10 +1,10 @@
 # Doujin Tagger（私藏編目室）
 
-Doujin Tagger 是一套以 Rust 開發、在本機執行的同人作品收藏管理工具。它會掃描使用者指定的資料夾，從 ZIP 檔名解析作品資訊，建立可搜尋的 SQLite catalog，並透過瀏覽器提供書架、編目、批次整理與檔案管理介面。
+Doujin Tagger 是一套以 Rust 開發、在本機執行的同人作品收藏管理工具。它會掃描使用者指定的資料夾，從 ZIP 檔名解析作品資訊，建立可搜尋的 SQLite catalog，並提供書架、編目、批次整理與檔案管理介面：安裝版為原生視窗程式，portable 版則透過瀏覽器開啟。
 
 本專案採本機優先設計：服務只監聽 `127.0.0.1`，不需要雲端帳號，也不會把 catalog 或收藏檔案上傳到遠端。只有在使用外部 metadata 搜尋時，才會向 E-Hentai／ExHentai 或 DLsite 發出查詢。
 
-> 一般使用者可直接下載 Windows portable 版本，解壓縮後雙擊 `私藏編目室.exe`；不需要安裝 Rust、Cargo，也不需要輸入指令。
+> 一般使用者建議直接下載 Windows 安裝版（NSIS 安裝檔），依安裝精靈完成後從開始功能表或桌面捷徑開啟即可；也提供免安裝的 portable 版本可替代使用。兩者都不需要安裝 Rust、Cargo，也不需要輸入指令。
 
 ## 主要功能
 
@@ -23,24 +23,38 @@ Doujin Tagger 是一套以 Rust 開發、在本機執行的同人作品收藏管
 ## 系統需求
 
 - Windows 10 或 Windows 11。
-- 現代瀏覽器。
+- 現代瀏覽器（僅 portable 版需要；安裝版為原生視窗程式，開啟後不需要另外準備瀏覽器）。
 - 足以保存 SQLite catalog 與縮圖快取的本機空間。
 
 目前的新收藏掃描以 ZIP 為主。Catalog、縮圖與程式狀態都會保存在本機；收藏 ZIP 不會被匯入資料庫。
 
 ## 快速開始
 
-### 1. 下載 Windows 版
+### 1. 下載並安裝（推薦：安裝版）
 
-前往 [GitHub Releases](https://github.com/a951753abc/doujin-tagger-rust/releases/latest)，下載最新的：
+前往 [GitHub Releases](https://github.com/a951753abc/doujin-tagger-rust/releases/latest)，下載最新的安裝檔：
+
+- `私藏編目室_<版本>_x64-setup.exe`
+
+雙擊執行安裝精靈：
+
+- 採「目前使用者」安裝（per-user），不需要系統管理員權限。
+- 若系統尚未安裝 WebView2，安裝程式會自動下載並安裝，不需要另外處理。
+- 安裝完成後，可從開始功能表或桌面捷徑開啟「私藏編目室」。
+
+> 目前執行檔尚未進行程式碼簽章。Windows SmartScreen 若顯示警告，或部分防毒軟體（如卡巴斯基）將其誤判為風險，請先確認檔案來自本專案 GitHub Releases，並可用 Release 同頁的 `.sha256` 檔核對下載內容。
+
+安裝版是原生視窗程式：開啟後直接顯示程式視窗，不會另外開啟瀏覽器分頁。**關閉視窗即完全結束程式，不會留下背景服務。**
+
+若先前使用過 portable 版本，安裝版會沿用同一份 catalog 選擇（設定保存在 `%LOCALAPPDATA%\Doujin Tagger`），不需要重新登記新收藏、典藏庫或閱讀器設定。
+
+### 2. 免安裝版（portable，替代方案）
+
+若不想安裝，也可以下載免安裝的 portable 版本：
 
 - `Doujin-Tagger-<版本>-Windows-x64.zip`
 
-將 ZIP **完整解壓縮**到一般資料夾，不要留在 ZIP 內直接執行。
-
-### 2. 雙擊啟動
-
-雙擊解壓縮資料夾內的：
+將 ZIP **完整解壓縮**到一般資料夾，不要留在 ZIP 內直接執行，接著雙擊解壓縮資料夾內的：
 
 ```text
 私藏編目室.exe
@@ -48,11 +62,11 @@ Doujin Tagger 是一套以 Rust 開發、在本機執行的同人作品收藏管
 
 程式會自動啟動本機服務並開啟瀏覽器。日常使用也只需要再次雙擊同一個 EXE；若服務已在執行，會直接開啟原本的 UI，不會啟動第二份互相競爭的服務。
 
-> 目前執行檔尚未進行程式碼簽章。Windows SmartScreen 若顯示警告，請先確認檔案來自本專案 GitHub Releases，並可用 Release 同頁的 `.sha256` 檔核對下載內容。
+此版本同樣未進行程式碼簽章，SmartScreen 或防毒軟體誤判時，請比照上方安裝版的核對方式處理。
 
 ### 3. 建立或開啟 catalog
 
-第一次雙擊後，程式會以 Windows 對話框要求建立新的 v2 catalog，或選取既有的 v2 catalog。接著瀏覽器會開啟首次設定導引：
+第一次啟動時，程式會以原生對話框（安裝版）或 Windows 對話框（portable 版）要求建立新的 v2 catalog，或選取既有的 v2 catalog。接著會開啟首次設定導引（安裝版在程式視窗內、portable 版在瀏覽器內）：
 
 1. 登記「新收藏」資料夾，作為尚待整理作品的來源。
 2. 登記「典藏庫」資料夾，作為完成整理後的收藏位置。
@@ -119,7 +133,7 @@ Doujin Tagger 是一套以 Rust 開發、在本機執行的同人作品收藏管
 
 ## 進階與開發者用法
 
-以下指令不是一般安裝或日常使用的必要步驟。一般使用者只需下載 Release、解壓縮並雙擊 `私藏編目室.exe`。
+以下指令不是一般安裝或日常使用的必要步驟。一般使用者只需下載 Release 並依安裝精靈安裝（或改用免安裝版，解壓縮並雙擊 `私藏編目室.exe`）。
 
 ### 直接執行本機服務
 
@@ -227,6 +241,7 @@ cargo run --release -p doujin-migrate -- .\migration\legacy-copy.db .\migration\
 |---|---|
 | `doujin-http` | Axum 本機服務、內嵌 Web UI 與背景 workers。 |
 | `doujin-launcher` | Windows 啟動、停止、重啟、catalog 選擇與瀏覽器開啟。 |
+| `doujin-desktop` | 原生視窗桌面版：同 process 內嵌 doujin-http 服務，關閉視窗即結束程式。 |
 | `doujin-app` | 掃描、metadata、檔案操作、重複判定、改名與匯出的 use cases。 |
 | `doujin-storage` | SQLite schema、repository、搜尋索引與稽核資料。 |
 | `doujin-parser` | 檔名解析 library 與 JSON CLI。 |
