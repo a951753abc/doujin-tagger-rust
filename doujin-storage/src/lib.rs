@@ -3,6 +3,7 @@
 pub mod canonical;
 pub mod collections;
 pub mod consolidation;
+pub mod external_search_batches;
 pub mod jobs;
 pub mod legacy;
 pub mod lifecycle;
@@ -36,7 +37,7 @@ use crate::metadata::{
     MetadataAssertionDecision, MetadataField, MetadataSource, MetadataValue, SelectionSnapshot,
 };
 
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const SCAN_RUN_GUARD_MIGRATION: &str = include_str!("../migrations/0002_scan_run_guard.sql");
 const EXTERNAL_SEARCH_JOBS_MIGRATION: &str =
@@ -52,6 +53,8 @@ const DL_EVENT_FALLBACK_MIGRATION: &str = include_str!("../migrations/0008_dl_ev
 const REVERT_IS_DL_EVENT_FALLBACK_MIGRATION: &str =
     include_str!("../migrations/0009_revert_is_dl_event_fallback.sql");
 const SAVED_VIEWS_MIGRATION: &str = include_str!("../migrations/0010_saved_views.sql");
+const EXTERNAL_SEARCH_BATCHES_MIGRATION: &str =
+    include_str!("../migrations/0011_external_search_batches.sql");
 
 struct Migration {
     version: i64,
@@ -110,6 +113,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0010_saved_views",
         sql: SAVED_VIEWS_MIGRATION,
     },
+    Migration {
+        version: 11,
+        name: "0011_external_search_batches",
+        sql: EXTERNAL_SEARCH_BATCHES_MIGRATION,
+    },
 ];
 
 #[derive(Debug)]
@@ -129,6 +137,8 @@ pub enum StorageError {
     ExternalSearchJobNotFound(i64),
     ExternalSearchJobUnavailable(i64),
     InvalidExternalSearchJob(String),
+    ExternalSearchBatchNotFound(i64),
+    InvalidExternalSearchBatch(String),
     InvalidMetadata(String),
     InvalidProjection {
         collection_id: i64,
@@ -197,6 +207,12 @@ impl fmt::Display for StorageError {
             }
             Self::InvalidExternalSearchJob(reason) => {
                 write!(formatter, "external search job 無效：{reason}")
+            }
+            Self::ExternalSearchBatchNotFound(batch_id) => {
+                write!(formatter, "找不到 external search batch ID：{batch_id}")
+            }
+            Self::InvalidExternalSearchBatch(reason) => {
+                write!(formatter, "external search batch 無效：{reason}")
             }
             Self::InvalidMetadata(reason) => write!(formatter, "metadata 無效：{reason}"),
             Self::InvalidProjection {
@@ -277,6 +293,8 @@ impl Error for StorageError {
             | Self::ExternalSearchJobNotFound(_)
             | Self::ExternalSearchJobUnavailable(_)
             | Self::InvalidExternalSearchJob(_)
+            | Self::ExternalSearchBatchNotFound(_)
+            | Self::InvalidExternalSearchBatch(_)
             | Self::InvalidMetadata(_)
             | Self::InvalidProjection { .. }
             | Self::CanonicalEntityNotFound(_)

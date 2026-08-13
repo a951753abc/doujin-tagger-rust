@@ -148,6 +148,23 @@ pub struct ExternalSearchEnqueueOutcome {
 }
 
 impl CatalogRepository {
+    pub fn active_external_search_job(
+        &self,
+        collection_id: i64,
+    ) -> StorageResult<Option<ExternalSearchJobSnapshot>> {
+        let sql = format!(
+            "SELECT {EXTERNAL_SEARCH_JOB_COLUMNS} FROM background_jobs
+             WHERE collection_id = ?1 AND job_kind = 'external_search'
+               AND status IN ('pending', 'running')
+             ORDER BY id DESC LIMIT 1"
+        );
+        self.connection
+            .query_row(&sql, [collection_id], raw_external_search_job)
+            .optional()?
+            .map(TryInto::try_into)
+            .transpose()
+    }
+
     pub fn enqueue_external_search(
         &mut self,
         collection_id: i64,

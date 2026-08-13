@@ -136,6 +136,9 @@
     externalJobRefs: readStorage(EXTERNAL_JOB_KEY, {}),
     externalJob: null,
     externalJobTimer: null,
+    externalBatch: null,
+    externalBatchPreflight: null,
+    externalBatchTimer: null,
     serviceOnline: null,
     activityExternalJobs: new Map(),
     activityScan: null,
@@ -388,6 +391,9 @@
       batchProgressCount: byId("batch-progress-count"),
       batchProgressBar: byId("batch-progress-bar"),
       retryBatchFailures: byId("retry-batch-failures"),
+      externalBatchPreflight: byId("external-batch-preflight"),
+      externalBatchActions: byId("external-batch-actions"),
+      externalBatchResult: byId("external-batch-result"),
       moveDialog: byId("move-dialog"),
       moveForm: byId("move-form"),
       archiveRootSelect: byId("archive-root-select"),
@@ -534,6 +540,9 @@
     ui.batchMetadataForm.elements.field.addEventListener("change", syncBatchMetadataField);
     ui.batchMetadataForm.addEventListener("submit", batchSetMetadata);
     ui.retryBatchFailures.addEventListener("click", retryFailedBatch);
+    byId("prepare-external-batch").addEventListener("click", preflightExternalBatch);
+    byId("start-external-batch").addEventListener("click", startExternalBatch);
+    byId("cancel-external-batch").addEventListener("click", clearExternalBatchPreflight);
     byId("prepare-move").addEventListener("click", prepareMove);
     ui.moveForm.addEventListener("submit", executeMove);
     byId("prepare-delete").addEventListener("click", prepareDelete);
@@ -885,12 +894,17 @@
       if (latestScan?.scan && state.activityScan?.status !== "running") {
         state.activityScan = scanActivity(latestScan.scan);
       }
+      if (state.externalBatch?.id) {
+        state.externalBatch = await api(`/api/external-search-batches/${state.externalBatch.id}`).catch(() => state.externalBatch);
+        renderExternalBatch(state.externalBatch);
+      }
     }
 
     renderActivityCenter();
     const thumbnailCacheRunning = state.thumbnailCacheJob?.status === "running";
     const active = state.activityScan?.status === "running"
       || thumbnailCacheRunning
+      || Boolean(state.externalBatch?.summary?.pending || state.externalBatch?.summary?.running)
       || state.batchRunning != null
       || [...state.activityExternalJobs.values()].some((job) => ["pending", "running"].includes(job.status));
     state.activityTimer = window.setTimeout(() => refreshActivityCenter(), active ? 4000 : 15000);
@@ -924,8 +938,10 @@
       : 0;
     const batchRunning = state.batchRunning != null;
     const batchFailures = state.lastBatchActivity?.failed || 0;
-    const attentionCount = failedJobs.length + state.activityThumbnailFailures.size + Number(scanNeedsAttention) + batchFailures + thumbnailCacheFailures;
-    const runningCount = activeJobs.length + Number(scanRunning) + Number(thumbnailCacheRunning) + Number(batchRunning);
+    const enrichmentNeedsAttention = Boolean(state.externalBatch?.summary?.partial || state.externalBatch?.summary?.failed);
+    const enrichmentRunning = Boolean(state.externalBatch?.summary?.pending || state.externalBatch?.summary?.running);
+    const attentionCount = failedJobs.length + state.activityThumbnailFailures.size + Number(scanNeedsAttention) + batchFailures + thumbnailCacheFailures + Number(enrichmentNeedsAttention);
+    const runningCount = activeJobs.length + Number(scanRunning) + Number(thumbnailCacheRunning) + Number(batchRunning) + Number(enrichmentRunning);
 
     let summary = "本機服務正常";
     let mode = "is-online";
@@ -946,6 +962,9 @@
       mode = "is-running";
     } else if (batchRunning) {
       summary = `批次操作 ${formatNumber(state.batchRunning.completed)} / ${formatNumber(state.batchRunning.total)}`;
+      mode = "is-running";
+    } else if (enrichmentRunning) {
+      summary = `外部補齊 ${formatNumber(state.externalBatch.summary.succeeded + state.externalBatch.summary.partial + state.externalBatch.summary.failed)} / ${formatNumber(state.externalBatch.summary.total)}`;
       mode = "is-running";
     } else if (activeJobs.length) {
       summary = `外部搜尋 ${formatNumber(activeJobs.length)}`;
@@ -984,6 +1003,20 @@
       const fields = job.fields.map((field) => METADATA_LABELS[field] || field).join("、");
       ui.activityList.append(activityItem(`external ${job.status}`, `外部資料搜尋 #${job.id}`, `${fields} · 收藏 #${job.collection_id}`, EXTERNAL_JOB_STATUS_LABELS[job.status] || job.status, "查看收藏", () => openActivityCollection(job.collection_id)));
     });
+    if (state.externalBatch) {
+      const batch = state.externalBatch;
+      const finished = batch.summary.succeeded + batch.summary.partial + batch.summary.failed + batch.summary.skipped + batch.summary.unchanged;
+      ui.activityList.append(activityItem(
+        `external-batch ${enrichmentNeedsAttention ? "failed" : enrichmentRunning ? "running" : "succeeded"}`,
+        `批次外部資料補齊 #${batch.id}`,
+        `已完成 ${formatNumber(finished)} / ${formatNumber(batch.summary.total)} · 沿用 ${formatNumber(batch.summary.reused)} 筆既有工作`,
+        batchStatusLabel(batch.summary),
+        "查看工作台",
+        () => { setActivityPanelOpen(false); location.hash = "workbench"; },
+        enrichmentNeedsAttention ? "前往品質審核" : null,
+        enrichmentNeedsAttention ? () => { setActivityPanelOpen(false); location.hash = "review"; } : null,
+      ));
+    }
     if (state.activityThumbnailFailures.size) {
       ui.activityList.append(activityItem("thumbnail failed", "縮圖生成失敗", `${formatNumber(state.activityThumbnailFailures.size)} 冊需要從收藏詳細資料重建縮圖。`, "需要處理", "查看藏書", () => {
         setActivityPanelOpen(false);
@@ -1025,7 +1058,7 @@
     }
     ui.activityEmpty.hidden = ui.activityList.children.length > 0;
 
-    const signature = [state.serviceOnline, runningCount, attentionCount, state.activityScan?.status || "", state.thumbnailCacheJob ? `${state.thumbnailCacheJob.id}:${state.thumbnailCacheJob.status}:${state.thumbnailCacheJob.progress_percent}` : "", state.batchRunning ? `${state.batchRunning.title}:${state.batchRunning.completed}:${state.batchRunning.total}` : "", ...activeJobs.map((job) => `${job.id}:${job.status}`), ...failedJobs.map((job) => `${job.id}:${job.status}`)].join("|");
+    const signature = [state.serviceOnline, runningCount, attentionCount, state.activityScan?.status || "", state.thumbnailCacheJob ? `${state.thumbnailCacheJob.id}:${state.thumbnailCacheJob.status}:${state.thumbnailCacheJob.progress_percent}` : "", state.batchRunning ? `${state.batchRunning.title}:${state.batchRunning.completed}:${state.batchRunning.total}` : "", state.externalBatch ? `${state.externalBatch.id}:${state.externalBatch.summary.pending}:${state.externalBatch.summary.running}:${state.externalBatch.summary.partial}:${state.externalBatch.summary.failed}` : "", ...activeJobs.map((job) => `${job.id}:${job.status}`), ...failedJobs.map((job) => `${job.id}:${job.status}`)].join("|");
     if (state.activitySignature != null && signature !== state.activitySignature) {
       ui.activityAnnouncer.textContent = summary;
     }
@@ -3783,6 +3816,188 @@
     const label = byId("batch-metadata-value-label");
     label.firstChild.textContent = isClassification ? "新的種類" : "新的原作";
     ui.batchMetadataForm.elements.value.placeholder = isClassification ? "例如：同人誌、商業誌或其他" : "";
+  }
+
+  function externalBatchRequest() {
+    return {
+      collection_ids: Array.from(state.selectedIds),
+      fields: Array.from(document.querySelectorAll('[name="external-batch-field"]:checked'), (input) => input.value),
+      strategy: document.querySelector('[name="external-batch-strategy"]:checked')?.value || "only_missing",
+    };
+  }
+
+  async function preflightExternalBatch() {
+    const request = externalBatchRequest();
+    if (!request.collection_ids.length) {
+      toast("請先選取要補齊 metadata 的收藏", true);
+      return;
+    }
+    if (!request.fields.length) {
+      toast("至少選擇一個 metadata 欄位", true);
+      return;
+    }
+    const button = byId("prepare-external-batch");
+    button.disabled = true;
+    button.textContent = "正在檢查…";
+    try {
+      const preflight = await api("/api/external-search-batches/preflight", { method: "POST", body: request });
+      state.externalBatchPreflight = { request, preflight };
+      renderExternalBatchPreflight(preflight);
+    } catch (error) {
+      toast(`無法檢查批次搜尋範圍：${error.message}`, true);
+    } finally {
+      button.disabled = false;
+      button.textContent = "檢查搜尋範圍";
+    }
+  }
+
+  function renderExternalBatchPreflight(preflight) {
+    ui.externalBatchPreflight.hidden = false;
+    ui.externalBatchPreflight.replaceChildren();
+    const summary = el("dl", "enrichment-summary");
+    [
+      ["已選", preflight.total],
+      ["建立工作", preflight.will_enqueue],
+      ["沿用工作", preflight.reused],
+      ["略過", preflight.skipped],
+      ["無需搜尋", preflight.unchanged],
+    ].forEach(([label, value]) => summary.append(el("dt", "", label), el("dd", "", formatNumber(value))));
+    const fieldNeeds = preflight.field_needs
+      .filter((need) => need.count > 0)
+      .map((need) => `${METADATA_LABELS[need.field] || need.field} ${formatNumber(need.count)}`)
+      .join(" · ");
+    ui.externalBatchPreflight.append(
+      el("strong", "", "預檢完成"),
+      summary,
+      el("p", "", fieldNeeds || "沒有欄位需要搜尋。"),
+    );
+    if (preflight.insufficient_identifiers) {
+      ui.externalBatchPreflight.append(el("p", "enrichment-warning", `${formatNumber(preflight.insufficient_identifiers)} 筆缺少 provider 可用的識別碼或辨識書名，將略過。`));
+    }
+    ui.externalBatchActions.hidden = preflight.will_enqueue + preflight.reused === 0;
+  }
+
+  function clearExternalBatchPreflight() {
+    state.externalBatchPreflight = null;
+    ui.externalBatchPreflight.hidden = true;
+    ui.externalBatchPreflight.replaceChildren();
+    ui.externalBatchActions.hidden = true;
+  }
+
+  async function startExternalBatch() {
+    const prepared = state.externalBatchPreflight;
+    if (!prepared) return;
+    const button = byId("start-external-batch");
+    button.disabled = true;
+    button.textContent = "正在建立工作…";
+    try {
+      const batch = await api("/api/external-search-batches", { method: "POST", body: prepared.request });
+      state.externalBatch = batch;
+      batch.items.forEach((item) => {
+        if (!item.job_id) return;
+        state.externalJobRefs[String(item.collection_id)] = item.job_id;
+      });
+      writeStorage(EXTERNAL_JOB_KEY, state.externalJobRefs);
+      clearExternalBatchPreflight();
+      renderExternalBatch(batch);
+      scheduleExternalBatchPoll(batch);
+      refreshActivityCenter(true);
+      toast(`已建立批次外部搜尋 #${batch.id}`);
+    } catch (error) {
+      toast(`無法建立批次外部搜尋：${error.message}`, true);
+    } finally {
+      button.disabled = false;
+      button.textContent = "開始背景搜尋";
+    }
+  }
+
+  function renderExternalBatch(batch) {
+    ui.externalBatchResult.hidden = false;
+    ui.externalBatchResult.replaceChildren();
+    const heading = el("div", "enrichment-result-heading");
+    heading.append(
+      el("strong", "", `BATCH #${batch.id} · 外部資料補齊`),
+      el("span", "job-status", batchStatusLabel(batch.summary)),
+    );
+    const summary = el("dl", "enrichment-summary");
+    [
+      ["等待", batch.summary.pending], ["處理中", batch.summary.running],
+      ["完成", batch.summary.succeeded], ["部分完成", batch.summary.partial],
+      ["失敗", batch.summary.failed], ["略過", batch.summary.skipped],
+      ["無變更", batch.summary.unchanged], ["沿用", batch.summary.reused],
+    ].forEach(([label, value]) => summary.append(el("dt", "", label), el("dd", "", formatNumber(value))));
+    const links = el("div", "enrichment-result-links");
+    const activity = el("button", "text-button", "在 Activity 查看");
+    activity.type = "button";
+    activity.addEventListener("click", () => setActivityPanelOpen(true));
+    const review = el("a", "text-link", "前往品質審核 →");
+    review.href = "#review";
+    links.append(activity, review);
+    if (batch.summary.partial) {
+      const retry = el("button", "secondary-button", `重試 ${formatNumber(batch.summary.partial)} 筆部分完成`);
+      retry.type = "button";
+      retry.addEventListener("click", () => retryExternalBatch(batch.id, retry));
+      links.prepend(retry);
+    }
+    ui.externalBatchResult.append(heading, summary, links);
+    const failures = batch.items.filter((item) => ["partial", "failed"].includes(item.status));
+    if (batch.summary.failed) {
+      ui.externalBatchResult.append(el("p", "enrichment-warning", `${formatNumber(batch.summary.failed)} 筆為 typed terminal failure，保留在清單供定位；批次不會強制繞過 retry policy。暫時性錯誤會維持等待狀態並依 backoff 自動重試。`));
+    }
+    if (failures.length) {
+      const list = el("ol", "enrichment-failure-list");
+      failures.slice(0, 20).forEach((item) => {
+        const row = el("li", "");
+        const open = el("button", "text-button", `收藏 #${item.collection_id}`);
+        open.type = "button";
+        open.addEventListener("click", () => openActivityCollection(item.collection_id));
+        row.append(open, el("span", "", item.error_message || EXTERNAL_JOB_STATUS_LABELS[item.status] || item.status));
+        list.append(row);
+      });
+      ui.externalBatchResult.append(list);
+    }
+    renderActivityCenter();
+  }
+
+  async function retryExternalBatch(batchId, button) {
+    button.disabled = true;
+    button.textContent = "正在依既有規則重試…";
+    try {
+      const batch = await api(`/api/external-search-batches/${batchId}/retry`, { method: "POST" });
+      state.externalBatch = batch;
+      batch.items.forEach((item) => {
+        if (item.job_id) state.externalJobRefs[String(item.collection_id)] = item.job_id;
+      });
+      writeStorage(EXTERNAL_JOB_KEY, state.externalJobRefs);
+      renderExternalBatch(batch);
+      scheduleExternalBatchPoll(batch);
+      toast(`已建立重試批次 #${batch.id}`);
+    } catch (error) {
+      toast(`無法重試批次：${error.message}`, true);
+      renderExternalBatch(state.externalBatch);
+    }
+  }
+
+  function batchStatusLabel(summary) {
+    if (summary.running) return "處理中";
+    if (summary.pending) return "等待背景處理";
+    if (summary.failed || summary.partial) return "需要檢查";
+    return "已完成";
+  }
+
+  function scheduleExternalBatchPoll(batch) {
+    if (state.externalBatchTimer != null) window.clearTimeout(state.externalBatchTimer);
+    if (!batch.summary.pending && !batch.summary.running) return;
+    state.externalBatchTimer = window.setTimeout(async () => {
+      try {
+        const refreshed = await api(`/api/external-search-batches/${batch.id}`);
+        state.externalBatch = refreshed;
+        renderExternalBatch(refreshed);
+        scheduleExternalBatchPoll(refreshed);
+      } catch (error) {
+        toast(`無法更新批次搜尋 #${batch.id}：${error.message}`, true);
+      }
+    }, 4000);
   }
 
   async function batchAddTag(event) {
