@@ -5,7 +5,9 @@ pub mod collections;
 pub mod consolidation;
 pub mod covers;
 pub mod duplicates;
+mod exports;
 pub mod external_search_batches;
+pub use exports::*;
 pub mod jobs;
 pub mod legacy;
 pub mod lifecycle;
@@ -41,7 +43,7 @@ use crate::metadata::{
     MetadataAssertionDecision, MetadataField, MetadataSource, MetadataValue, SelectionSnapshot,
 };
 
-const SCHEMA_VERSION: i64 = 15;
+const SCHEMA_VERSION: i64 = 16;
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const SCAN_RUN_GUARD_MIGRATION: &str = include_str!("../migrations/0002_scan_run_guard.sql");
 const EXTERNAL_SEARCH_JOBS_MIGRATION: &str =
@@ -65,6 +67,7 @@ const WORK_BASKETS_MIGRATION: &str = include_str!("../migrations/0013_work_baske
 const COVER_SELECTIONS_MIGRATION: &str = include_str!("../migrations/0014_cover_selections.sql");
 const DUPLICATE_DETECTION_MIGRATION: &str =
     include_str!("../migrations/0015_duplicate_detection.sql");
+const EXPORT_PACKAGES_MIGRATION: &str = include_str!("../migrations/0016_export_packages.sql");
 
 struct Migration {
     version: i64,
@@ -148,6 +151,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0015_duplicate_detection",
         sql: DUPLICATE_DETECTION_MIGRATION,
     },
+    Migration {
+        version: 16,
+        name: "0016_export_packages",
+        sql: EXPORT_PACKAGES_MIGRATION,
+    },
 ];
 
 #[derive(Debug)]
@@ -179,6 +187,10 @@ pub enum StorageError {
     CanonicalEntityInUse(i64),
     LibraryRootNotFound(i64),
     InvalidLibraryRoot(String),
+    ExportRootNotFound(i64),
+    InvalidExportRoot(String),
+    ExportJobNotFound(i64),
+    InvalidExportJob(String),
     InvalidLifecycle(String),
     LegacyImportRequiresEmptyCatalog,
     InvalidLegacyImport(String),
@@ -269,6 +281,12 @@ impl fmt::Display for StorageError {
             Self::InvalidLibraryRoot(reason) => {
                 write!(formatter, "library root 設定無效：{reason}")
             }
+            Self::ExportRootNotFound(root_id) => {
+                write!(formatter, "找不到 export root ID：{root_id}")
+            }
+            Self::InvalidExportRoot(reason) => write!(formatter, "export root 設定無效：{reason}"),
+            Self::ExportJobNotFound(job_id) => write!(formatter, "找不到 export job ID：{job_id}"),
+            Self::InvalidExportJob(reason) => write!(formatter, "export job 無效：{reason}"),
             Self::InvalidLifecycle(reason) => write!(formatter, "收藏生命週期操作無效：{reason}"),
             Self::LegacyImportRequiresEmptyCatalog => {
                 write!(formatter, "legacy import 只允許寫入全新的空白 v2 catalog")
@@ -336,6 +354,10 @@ impl Error for StorageError {
             | Self::CanonicalEntityInUse(_)
             | Self::LibraryRootNotFound(_)
             | Self::InvalidLibraryRoot(_)
+            | Self::ExportRootNotFound(_)
+            | Self::InvalidExportRoot(_)
+            | Self::ExportJobNotFound(_)
+            | Self::InvalidExportJob(_)
             | Self::InvalidLifecycle(_)
             | Self::LegacyImportRequiresEmptyCatalog
             | Self::InvalidLegacyImport(_)

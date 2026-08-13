@@ -11,8 +11,10 @@ doujin-parser = { path = "../doujin-parser" }
 doujin-scanner = { path = "../doujin-scanner" }
 doujin-storage = { path = "../doujin-storage" }
 doujin-thumbnails = { path = "../doujin-thumbnails" }
+fs2 = "0.4.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+zip = { version = "8.4.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 image = { version = "0.25.10", default-features = false, features = ["png"] }

@@ -162,6 +162,9 @@
     thumbnailCacheRetrying: false,
     thumbnailCacheTimer: null,
     settingsRoots: [],
+    exportRoots: [],
+    exportPreflight: null,
+    exportJob: null,
     settingsSnapshot: null,
     rootsNeedScan: false,
     settingsRootFocus: null,
@@ -354,6 +357,8 @@
       thumbnailCacheConfirm: byId("thumbnail-cache-confirm"),
       rootList: byId("root-list"),
       rootForm: byId("root-form"),
+      exportRootList: byId("export-root-list"),
+      exportRootForm: byId("export-root-form"),
       rootsHeading: byId("roots-heading"),
       rootRescanNote: byId("root-rescan-note"),
       editRootDialog: byId("edit-root-dialog"),
@@ -461,6 +466,14 @@
       moveDialog: byId("move-dialog"),
       moveForm: byId("move-form"),
       archiveRootSelect: byId("archive-root-select"),
+      exportDialog: byId("export-dialog"),
+      exportForm: byId("export-form"),
+      exportRootSelect: byId("export-root-select"),
+      exportPackageName: byId("export-package-name"),
+      exportPreflightSummary: byId("export-preflight-summary"),
+      exportPreflightFacts: byId("export-preflight-facts"),
+      exportPreflightWarnings: byId("export-preflight-warnings"),
+      startExport: byId("start-export"),
       deleteDialog: byId("delete-dialog"),
       deleteForm: byId("delete-form"),
       permanentConfirmGroup: byId("permanent-confirm-group"),
@@ -601,6 +614,7 @@
     ui.thumbnailCacheViewFailures.addEventListener("click", openThumbnailCacheFailures);
     ui.thumbnailCacheRetryFailures.addEventListener("click", retryThumbnailCacheFailures);
     ui.rootForm.addEventListener("submit", registerRoot);
+    ui.exportRootForm.addEventListener("submit", registerExportRoot);
     ui.editRootForm.addEventListener("submit", saveEditedRoot);
     ui.scanButton.addEventListener("click", startScan);
     ui.scanPreflightForm.addEventListener("submit", applyScanPreflight);
@@ -636,6 +650,11 @@
     byId("start-external-batch").addEventListener("click", startExternalBatch);
     byId("cancel-external-batch").addEventListener("click", clearExternalBatchPreflight);
     byId("prepare-move").addEventListener("click", prepareMove);
+    byId("prepare-export").addEventListener("click", prepareExport);
+    byId("refresh-export-preflight").addEventListener("click", refreshExportPreflight);
+    ui.exportForm.addEventListener("submit", startExport);
+    ui.exportRootSelect.addEventListener("change", clearExportPreflight);
+    ui.exportPackageName.addEventListener("input", clearExportPreflight);
     ui.moveForm.addEventListener("submit", executeMove);
     byId("prepare-delete").addEventListener("click", prepareDelete);
     ui.deleteForm.addEventListener("change", syncDeleteMode);
@@ -982,14 +1001,16 @@
         }));
         jobs.filter(Boolean).forEach((job) => state.activityExternalJobs.set(job.id, job));
       }
-      const [cacheJobs, latestScan] = await Promise.all([
+      const [cacheJobs, latestScan, exportJobs] = await Promise.all([
         api("/api/thumbnail-cache-jobs/current").catch(() => null),
         api("/api/scans/latest").catch(() => null),
+        api("/api/export-jobs/current").catch(() => null),
       ]);
       if (cacheJobs) updateThumbnailCacheJob(cacheJobs.job, { announce: false });
       if (latestScan?.scan && state.activityScan?.status !== "running") {
         state.activityScan = scanActivity(latestScan.scan);
       }
+      if (exportJobs) state.exportJob = exportJobs.job;
       if (state.externalBatch?.id) {
         state.externalBatch = await api(`/api/external-search-batches/${state.externalBatch.id}`).catch(() => state.externalBatch);
         renderExternalBatch(state.externalBatch);
@@ -1000,6 +1021,7 @@
     const thumbnailCacheRunning = state.thumbnailCacheJob?.status === "running";
     const active = state.activityScan?.status === "running"
       || thumbnailCacheRunning
+      || ["pending", "running"].includes(state.exportJob?.status)
       || Boolean(state.externalBatch?.summary?.pending || state.externalBatch?.summary?.running)
       || state.batchRunning != null
       || [...state.activityExternalJobs.values()].some((job) => ["pending", "running"].includes(job.status));
@@ -1036,8 +1058,10 @@
     const batchFailures = state.lastBatchActivity?.failed || 0;
     const enrichmentNeedsAttention = Boolean(state.externalBatch?.summary?.partial || state.externalBatch?.summary?.failed);
     const enrichmentRunning = Boolean(state.externalBatch?.summary?.pending || state.externalBatch?.summary?.running);
-    const attentionCount = failedJobs.length + state.activityThumbnailFailures.size + Number(scanNeedsAttention) + batchFailures + thumbnailCacheFailures + Number(enrichmentNeedsAttention);
-    const runningCount = activeJobs.length + Number(scanRunning) + Number(thumbnailCacheRunning) + Number(batchRunning) + Number(enrichmentRunning);
+    const exportNeedsAttention = state.exportJob?.status === "failed";
+    const exportRunning = ["pending", "running"].includes(state.exportJob?.status);
+    const attentionCount = failedJobs.length + state.activityThumbnailFailures.size + Number(scanNeedsAttention) + batchFailures + thumbnailCacheFailures + Number(enrichmentNeedsAttention) + Number(exportNeedsAttention);
+    const runningCount = activeJobs.length + Number(scanRunning) + Number(thumbnailCacheRunning) + Number(batchRunning) + Number(enrichmentRunning) + Number(exportRunning);
 
     let summary = "本機服務正常";
     let mode = "is-online";
@@ -1055,6 +1079,9 @@
       mode = "is-running";
     } else if (thumbnailCacheRunning) {
       summary = `縮圖快取 ${formatProgressPercent(state.thumbnailCacheJob.progress_percent)}`;
+      mode = "is-running";
+    } else if (exportRunning) {
+      summary = `匯出中 ${formatNumber(state.exportJob.processed_items)} / ${formatNumber(state.exportJob.total_items)}`;
       mode = "is-running";
     } else if (batchRunning) {
       summary = `批次操作 ${formatNumber(state.batchRunning.completed)} / ${formatNumber(state.batchRunning.total)}`;
@@ -1138,6 +1165,28 @@
         hasErrors ? retryThumbnailCacheFailures : null,
       ));
     }
+    if (state.exportJob) {
+      const job = state.exportJob;
+      const running = ["pending", "running"].includes(job.status);
+      const failed = job.status === "failed";
+      const detail = running
+        ? `${formatNumber(job.processed_items)} / ${formatNumber(job.total_items)} 本 · ${formatBytes(job.processed_bytes)} / ${formatBytes(job.total_bytes)}${job.current_collection_id ? ` · 收藏 #${job.current_collection_id}` : ""}`
+        : failed
+          ? job.error_message || "匯出未產生正式 package；partial 已清理。"
+          : `${formatNumber(job.succeeded_items)} 本 · ${formatBytes(job.processed_bytes)} · ${job.package_filename}`;
+      ui.activityList.append(activityItem(
+        `export ${failed ? "failed" : running ? "running" : "succeeded"}`,
+        `ZIP 套件 #${job.id}`,
+        detail,
+        failed ? "失敗" : running ? "進行中" : "完成",
+        failed ? "返回工作台" : running ? "查看進度" : "在系統中開啟",
+        failed || running
+          ? () => { setActivityPanelOpen(false); location.hash = "workbench"; }
+          : () => openExportLocation(job.id),
+        failed ? "重試整包" : null,
+        failed ? () => retryExportJob(job.id) : null,
+      ));
+    }
     if (state.batchRunning) {
       const batch = state.batchRunning;
       ui.activityList.append(activityItem("batch running", batch.title, `已完成 ${formatNumber(batch.completed)} / ${formatNumber(batch.total)}；已完成項目不會回滾。`, "進行中", "查看工作台", () => {
@@ -1154,7 +1203,7 @@
     }
     ui.activityEmpty.hidden = ui.activityList.children.length > 0;
 
-    const signature = [state.serviceOnline, runningCount, attentionCount, state.activityScan?.status || "", state.thumbnailCacheJob ? `${state.thumbnailCacheJob.id}:${state.thumbnailCacheJob.status}:${state.thumbnailCacheJob.progress_percent}` : "", state.batchRunning ? `${state.batchRunning.title}:${state.batchRunning.completed}:${state.batchRunning.total}` : "", state.externalBatch ? `${state.externalBatch.id}:${state.externalBatch.summary.pending}:${state.externalBatch.summary.running}:${state.externalBatch.summary.partial}:${state.externalBatch.summary.failed}` : "", ...activeJobs.map((job) => `${job.id}:${job.status}`), ...failedJobs.map((job) => `${job.id}:${job.status}`)].join("|");
+    const signature = [state.serviceOnline, runningCount, attentionCount, state.activityScan?.status || "", state.thumbnailCacheJob ? `${state.thumbnailCacheJob.id}:${state.thumbnailCacheJob.status}:${state.thumbnailCacheJob.progress_percent}` : "", state.exportJob ? `${state.exportJob.id}:${state.exportJob.status}:${state.exportJob.processed_items}:${state.exportJob.processed_bytes}` : "", state.batchRunning ? `${state.batchRunning.title}:${state.batchRunning.completed}:${state.batchRunning.total}` : "", state.externalBatch ? `${state.externalBatch.id}:${state.externalBatch.summary.pending}:${state.externalBatch.summary.running}:${state.externalBatch.summary.partial}:${state.externalBatch.summary.failed}` : "", ...activeJobs.map((job) => `${job.id}:${job.status}`), ...failedJobs.map((job) => `${job.id}:${job.status}`)].join("|");
     if (state.activitySignature != null && signature !== state.activitySignature) {
       ui.activityAnnouncer.textContent = summary;
     }
@@ -4512,6 +4561,145 @@
     return `${scaled.toLocaleString("zh-TW", { maximumFractionDigits: scaled >= 100 ? 0 : 1 })} ${unit}`;
   }
 
+  function exportRequest(collectionIds, exportRootId, packageFilename) {
+    return {
+      collection_ids: Array.from(collectionIds, Number),
+      export_root_id: Number(exportRootId),
+      package_filename: String(packageFilename || "").trim(),
+    };
+  }
+
+  async function prepareExport() {
+    const collections = selectedCollections();
+    if (!collections.length) {
+      toast("請先將明確選取的收藏送到工作台", true);
+      return;
+    }
+    try {
+      const response = await api("/api/export-roots");
+      state.exportRoots = response.roots || [];
+      const activeRoots = state.exportRoots.filter((root) => root.active);
+      ui.exportRootSelect.replaceChildren();
+      activeRoots.forEach((root) => {
+        const option = document.createElement("option");
+        option.value = root.id;
+        option.textContent = `${root.label} · ${root.path}`;
+        ui.exportRootSelect.append(option);
+      });
+      ui.exportRootSelect.disabled = activeRoots.length === 0;
+      clearExportPreflight();
+      ui.exportDialog.showModal();
+      if (!activeRoots.length) {
+        ui.exportPreflightSummary.textContent = "尚未登記可用的匯出目的地";
+        ui.exportPreflightWarnings.append(el("li", "", "請先到設定登記一個匯出目的地。"));
+        return;
+      }
+      await refreshExportPreflight();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  function clearExportPreflight() {
+    state.exportPreflight = null;
+    ui.startExport.disabled = true;
+    ui.exportPreflightSummary.textContent = "設定已變更，請重新檢查";
+    ui.exportPreflightFacts.replaceChildren();
+    ui.exportPreflightWarnings.replaceChildren();
+  }
+
+  async function refreshExportPreflight() {
+    const rootId = Number(ui.exportRootSelect.value);
+    if (!Number.isSafeInteger(rootId) || rootId <= 0) return;
+    ui.exportPreflightSummary.textContent = "正在核對來源與目的地…";
+    ui.startExport.disabled = true;
+    try {
+      const preflight = await api("/api/export-jobs/preflight", {
+        method: "POST",
+        body: exportRequest(state.selectedIds, rootId, ui.exportPackageName.value),
+      });
+      state.exportPreflight = preflight;
+      renderExportPreflight(preflight);
+    } catch (error) {
+      state.exportPreflight = null;
+      ui.exportPreflightFacts.replaceChildren();
+      ui.exportPreflightWarnings.replaceChildren(el("li", "", error.message));
+      ui.exportPreflightSummary.textContent = "匯出前檢查未通過";
+      toast(error.message, true);
+    }
+  }
+
+  function renderExportPreflight(preflight) {
+    ui.exportPackageName.value = preflight.package_filename;
+    ui.exportPreflightSummary.textContent = `${formatNumber(preflight.exportable)} / ${formatNumber(preflight.selected)} 本可匯出`;
+    ui.exportPreflightFacts.replaceChildren();
+    [
+      ["選取收藏", `${formatNumber(preflight.selected)} 本`],
+      ["來源總大小", formatBytes(preflight.total_bytes)],
+      ["預計輸出", `約 ${formatBytes(preflight.estimated_bytes)}`],
+      ["目的地空間", preflight.free_bytes == null ? "無法可靠取得" : formatBytes(preflight.free_bytes)],
+      ["來源遺失", `${formatNumber(preflight.missing)} 本`],
+      ["不支援", `${formatNumber(preflight.unsupported)} 本`],
+    ].forEach(([term, value]) => {
+      const group = document.createElement("div");
+      group.append(el("dt", "", term), el("dd", "", value));
+      ui.exportPreflightFacts.append(group);
+    });
+    ui.exportPreflightWarnings.replaceChildren();
+    if (preflight.package_collision) ui.exportPreflightWarnings.append(el("li", "", "目的地已有同名 package；不會覆寫，請更換名稱。"));
+    (preflight.items || [])
+      .filter((item) => item.status !== "exportable")
+      .slice(0, 12)
+      .forEach((item) => ui.exportPreflightWarnings.append(el("li", "", `#${item.collection_id} ${item.original_filename}：${item.reason || item.status}`)));
+    if ((preflight.items || []).filter((item) => item.status !== "exportable").length > 12) {
+      ui.exportPreflightWarnings.append(el("li", "", "另有更多不可匯出項目；請先修正來源。"));
+    }
+    ui.startExport.disabled = !preflight.can_start;
+  }
+
+  async function startExport(event) {
+    event.preventDefault();
+    if (!state.exportPreflight?.can_start) return;
+    ui.startExport.disabled = true;
+    ui.startExport.textContent = "正在建立工作…";
+    try {
+      state.exportJob = await api("/api/export-jobs", {
+        method: "POST",
+        body: exportRequest(state.selectedIds, state.exportPreflight.export_root_id, state.exportPreflight.package_filename),
+      });
+      ui.exportDialog.close();
+      renderActivityCenter();
+      refreshActivityCenter(true);
+      toast(`匯出工作 #${state.exportJob.id} 已開始；完成前不能取消`);
+    } catch (error) {
+      toast(error.message, true);
+      await refreshExportPreflight();
+    } finally {
+      ui.startExport.textContent = "開始匯出";
+      ui.startExport.disabled = !state.exportPreflight?.can_start;
+    }
+  }
+
+  async function retryExportJob(jobId) {
+    try {
+      state.exportJob = await api(`/api/export-jobs/${jobId}/retry`, { method: "POST" });
+      renderActivityCenter();
+      refreshActivityCenter(true);
+      toast(`匯出工作 #${jobId} 已重新開始`);
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  async function openExportLocation(jobId) {
+    try {
+      await api(`/api/export-jobs/${jobId}/open-location`, { method: "POST" });
+      toast("已在系統中開啟匯出資料夾");
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
   function renderWorkbenchSelection() {
     if (!ui.selectedCollectionList) return;
     const collections = selectedCollections();
@@ -5696,10 +5884,11 @@
   async function loadSettingsPage() {
     stopThumbnailCachePolling();
     try {
-      const [settings, roots, cacheJobs] = await Promise.all([
+      const [settings, roots, cacheJobs, exportRoots] = await Promise.all([
         api("/api/settings"),
         api("/api/library-roots"),
         api("/api/thumbnail-cache-jobs/current"),
+        api("/api/export-roots"),
       ]);
       ui.settingsForm.elements.viewer_path.value = settings.viewer_path;
       ui.settingsForm.elements.thumb_size.value = settings.thumb_size;
@@ -5712,10 +5901,12 @@
         ? `有 ${formatNumber(settings.environment_overrides.length)} 個欄位由環境變數控制，已在各欄位旁標示目前有效值與已儲存值。`
         : "目前沒有環境變數覆寫；這裡儲存的值會直接生效。";
       state.settingsRoots = roots.roots;
+      state.exportRoots = exportRoots.roots || [];
       renderFirstRun(settings, roots.roots);
       ui.rootRescanNote.hidden = !state.rootsNeedScan;
       updateThumbnailCacheJob(cacheJobs.job, { announce: false });
       renderRoots(roots.roots);
+      renderExportRoots(state.exportRoots);
       renderThumbnailCacheRoots();
       renderThumbnailCacheProgress();
       scheduleThumbnailCachePolling();
@@ -6133,6 +6324,65 @@
       item.append(actions);
       ui.rootList.append(item);
     });
+  }
+
+  function renderExportRoots(roots) {
+    ui.exportRootList.replaceChildren();
+    if (!roots.length) {
+      ui.exportRootList.append(el("li", "root-empty", "尚未登記匯出目的地。匯出 API 不接受任意磁碟路徑。"));
+      return;
+    }
+    roots.forEach((root) => {
+      const item = el("li", `root-item${root.active ? "" : " inactive"}`);
+      item.append(
+        el("strong", "root-name", root.label),
+        el("code", "root-path", root.path),
+        el("span", "root-purpose export", "匯出"),
+        el("span", `root-status ${root.active ? "active" : "inactive"}`, root.active ? "已啟用" : "已停用"),
+      );
+      const actions = el("div", "root-actions");
+      const toggle = el("button", root.active ? "text-button danger-text" : "secondary-button", root.active ? "停用" : "重新啟用");
+      toggle.type = "button";
+      toggle.addEventListener("click", () => setExportRootActive(root, !root.active));
+      actions.append(toggle);
+      item.append(actions);
+      ui.exportRootList.append(item);
+    });
+  }
+
+  async function registerExportRoot(event) {
+    event.preventDefault();
+    const form = new FormData(ui.exportRootForm);
+    const submit = ui.exportRootForm.querySelector('[type="submit"]');
+    submit.disabled = true;
+    try {
+      const root = await api("/api/export-roots", {
+        method: "POST",
+        body: {
+          label: String(form.get("label") || "").trim(),
+          path: String(form.get("path") || "").trim(),
+        },
+      });
+      ui.exportRootForm.reset();
+      toast(`已登記匯出目的地「${root.label}」`);
+      await loadSettingsPage();
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      submit.disabled = false;
+    }
+  }
+
+  async function setExportRootActive(root, active) {
+    if (!active && !window.confirm(`停用匯出目的地「${root.label}」？既有 package 不會被刪除。`)) return;
+    try {
+      const endpoint = active ? `/api/export-roots/${root.id}/activate` : `/api/export-roots/${root.id}`;
+      await api(endpoint, { method: active ? "POST" : "DELETE" });
+      toast(`已${active ? "重新啟用" : "停用"}「${root.label}」`);
+      await loadSettingsPage();
+    } catch (error) {
+      toast(error.message, true);
+    }
   }
 
   async function registerRoot(event) {
@@ -6785,6 +7035,6 @@
   }
 
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { replaceOperationSelection, workBasketHandoffEntries };
+    module.exports = { exportRequest, replaceOperationSelection, workBasketHandoffEntries };
   }
 })();
