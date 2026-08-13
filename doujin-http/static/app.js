@@ -77,6 +77,7 @@
     libraryRouteHash: "#library",
     libraryScrollY: 0,
     libraryFocusId: null,
+    pendingLibraryCollection: null,
     restoreLibraryContext: false,
     leavingLibraryContextCaptured: false,
     selectedIds: new Set(),
@@ -395,7 +396,7 @@
         if (previousRoute === "library") {
           applyDecodedLibraryState(decodeLibraryParams(parseRouteHash().params));
         }
-        return;
+        return Promise.resolve(false);
       }
       if (dataChanged) state.libraryScrollY = 0;
       applyDecodedLibraryState(decoded);
@@ -418,13 +419,18 @@
       else link.removeAttribute("aria-current");
     });
     if (state.route === "shelf") loadShelf();
-    if (state.route === "library" && libraryNeedsLoad) loadCollections();
-    else if (state.route === "library" && state.restoreLibraryContext) restoreLibraryWorkContext();
+    let libraryReady = Promise.resolve(true);
+    if (state.route === "library" && libraryNeedsLoad) libraryReady = loadCollections();
+    else if (state.route === "library") {
+      if (!applyLibraryFocus()) clearDetail();
+      if (state.restoreLibraryContext) restoreLibraryWorkContext();
+    }
     if (state.route === "workbench") loadWorkbench();
     if (state.route === "stats") loadStats();
     if (state.route === "settings") loadSettingsPage();
     if (state.route !== "library") window.scrollTo({ top: 0, behavior: "auto" });
     document.title = `${routeTitle(state.route)}｜私藏編目室`;
+    return libraryReady;
   }
 
   function parseRouteHash() {
@@ -481,8 +487,8 @@
     return params;
   }
 
-  function libraryHash() {
-    const query = libraryParams().toString();
+  function libraryHash(focusId = state.libraryFocusId) {
+    const query = libraryParams(state.filters, state.page, focusId).toString();
     return `#library${query ? `?${query}` : ""}`;
   }
 
@@ -496,6 +502,18 @@
       return;
     }
     location.hash = hash;
+  }
+
+  function navigateToCollection(collection) {
+    state.pendingLibraryCollection = collection;
+    const hash = libraryHash(collection.id);
+    if (location.hash !== hash) {
+      history[state.route === "library" ? "replaceState" : "pushState"](null, "", hash);
+    }
+    return routeFromHash().then((navigated) => {
+      if (state.pendingLibraryCollection?.id === collection.id) state.pendingLibraryCollection = null;
+      return navigated && state.selected?.id === collection.id;
+    });
   }
 
   function confirmSelectionClear() {
@@ -675,9 +693,8 @@
     try {
       const collection = await api(`/api/collections/${collectionId}`);
       setActivityPanelOpen(false);
-      if (state.route !== "library") location.hash = state.libraryRouteHash;
-      selectCollection(collection);
-      if (mobileDetailMedia.matches) openMobileDetail();
+      const opened = await navigateToCollection(collection);
+      if (opened && mobileDetailMedia.matches) openMobileDetail();
     } catch (error) {
       toast(`無法開啟這筆收藏：${error.message}`, true);
     }
@@ -1101,14 +1118,16 @@
       renderPagination();
       if (state.route === "library" && state.restoreLibraryContext) restoreLibraryWorkContext();
       setServiceState("online", "本機服務正常");
+      return true;
     } catch (error) {
-      if (requestNumber !== state.requestNumber) return;
+      if (requestNumber !== state.requestNumber) return false;
       ui.loading.hidden = true;
       ui.results.hidden = false;
       ui.results.replaceChildren();
       ui.resultSummary.textContent = "無法讀取收藏";
       setServiceState("offline", "要求失敗");
       toast(error.message, true);
+      return false;
     } finally {
       if (requestNumber === state.requestNumber) state.libraryLoading = false;
     }
@@ -1173,13 +1192,12 @@
       ui.results.append(item);
     });
 
-    const preferredId = state.libraryFocusId || state.selected?.id;
-    const onPage = preferredId && state.items.find((item) => item.id === preferredId);
-    if (onPage) selectCollection(onPage, false);
-    else if (state.items[0] && !window.matchMedia("(max-width: 899px)").matches) selectCollection(state.items[0], false);
-    else {
-      state.libraryFocusId = null;
-      clearDetail();
+    if (!applyLibraryFocus()) {
+      if (state.items[0] && !window.matchMedia("(max-width: 899px)").matches) selectCollection(state.items[0]);
+      else {
+        state.libraryFocusId = null;
+        clearDetail();
+      }
     }
     updateSelectionUI();
   }
@@ -1209,14 +1227,30 @@
     });
   }
 
-  function selectCollection(collection, focus = false) {
+  function applyLibraryFocus() {
+    if (!state.libraryFocusId) return false;
+    const pending = state.pendingLibraryCollection?.id === state.libraryFocusId
+      ? state.pendingLibraryCollection
+      : null;
+    const collection = state.items.find((item) => item.id === state.libraryFocusId) || pending;
+    state.pendingLibraryCollection = null;
+    if (collection) selectCollection(collection, { updateRoute: false });
+    else {
+      state.libraryFocusId = null;
+      document.querySelectorAll(".collection-item-button").forEach((button) => button.setAttribute("aria-current", "false"));
+      clearDetail();
+    }
+    return true;
+  }
+
+  function selectCollection(collection, { focus = false, updateRoute = true } = {}) {
     state.selected = collection;
     state.libraryFocusId = collection.id;
     document.querySelectorAll(".collection-item-button").forEach((button) => {
       button.setAttribute("aria-current", String(Number(button.dataset.collectionId) === collection.id));
     });
     renderDetail(collection);
-    if (state.route === "library") navigateLibrary({ replace: true });
+    if (updateRoute && state.route === "library") navigateLibrary({ replace: true });
     if (focus) {
       document.querySelector(`[data-collection-id="${collection.id}"]`)?.focus({ preventScroll: true });
     }
@@ -2865,7 +2899,7 @@
     const current = state.items.findIndex((item) => item.id === state.selected?.id);
     const direction = event.key.toLowerCase() === "j" ? 1 : -1;
     const next = Math.min(state.items.length - 1, Math.max(0, (current < 0 ? 0 : current) + direction));
-    selectCollection(state.items[next], true);
+    selectCollection(state.items[next], { focus: true });
   }
 
   function isDialogOpen() {

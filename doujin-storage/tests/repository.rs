@@ -1414,6 +1414,121 @@ fn collection_statistics_count_only_active_library_values_and_split_authors() {
     );
 }
 
+#[test]
+fn collection_facets_merge_ascii_case_variants_like_collection_filters() {
+    let tree = TestTree::new("collection-facet-case");
+    let lowercase = tree.pending("[SeedCircle (SeedAuthor)] lowercase.zip");
+    let uppercase = tree.pending("[SeedCircle (SeedAuthor)] uppercase.zip");
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    for pending in [&lowercase, &uppercase] {
+        repository
+            .ingest_collection(pending)
+            .expect("ingest collection");
+    }
+    let ids = [&lowercase, &uppercase].map(|pending| {
+        repository
+            .collection_id_for_current_path(&pending.path)
+            .expect("collection lookup")
+            .expect("collection ID")
+    });
+
+    for (collection_id, value) in [(ids[0], "foo"), (ids[1], "Foo")] {
+        repository
+            .set_manual_value(
+                collection_id,
+                MetadataField::Event,
+                MetadataValue::Text(value.to_owned()),
+            )
+            .expect("set event");
+        repository
+            .set_manual_value(
+                collection_id,
+                MetadataField::Circle,
+                MetadataValue::Text(value.to_owned()),
+            )
+            .expect("set circle");
+        repository
+            .set_manual_value(
+                collection_id,
+                MetadataField::Authors,
+                MetadataValue::Authors(Authors {
+                    raw: Some(value.to_owned()),
+                    values: vec![value.to_owned()],
+                }),
+            )
+            .expect("set author");
+        repository
+            .set_manual_value(
+                collection_id,
+                MetadataField::Parody,
+                MetadataValue::Parody(Parody {
+                    raw: value.to_owned(),
+                    canonical: value.to_owned(),
+                    evidence: "manual test".to_owned(),
+                }),
+            )
+            .expect("set parody");
+        repository
+            .add_collection_tag(collection_id, value)
+            .expect("add tag");
+    }
+
+    let cases = [
+        (
+            CollectionFacet::Event,
+            CollectionFilters {
+                event: Some("Foo".to_owned()),
+                ..CollectionFilters::default()
+            },
+        ),
+        (
+            CollectionFacet::Circle,
+            CollectionFilters {
+                circle: Some("Foo".to_owned()),
+                ..CollectionFilters::default()
+            },
+        ),
+        (
+            CollectionFacet::Author,
+            CollectionFilters {
+                author: Some("Foo".to_owned()),
+                ..CollectionFilters::default()
+            },
+        ),
+        (
+            CollectionFacet::Parody,
+            CollectionFilters {
+                parody: Some("Foo".to_owned()),
+                ..CollectionFilters::default()
+            },
+        ),
+        (
+            CollectionFacet::Tag,
+            CollectionFilters {
+                tags: vec!["Foo".to_owned()],
+                ..CollectionFilters::default()
+            },
+        ),
+    ];
+
+    for (facet, filters) in cases {
+        let facets = repository
+            .collection_facets(facet, "foo", 20)
+            .expect("case-insensitive facets");
+        assert_eq!(1, facets.len(), "{facet:?}");
+        assert_eq!("Foo", facets[0].name, "{facet:?}");
+
+        let filtered = repository
+            .collections(&CollectionQuery {
+                filters,
+                ..CollectionQuery::default()
+            })
+            .expect("case-insensitive collection filter");
+        assert_eq!(filtered.total, facets[0].count, "{facet:?}");
+        assert_eq!(2, filtered.total, "{facet:?}");
+    }
+}
+
 fn collection_ids(collections: &[doujin_storage::collections::CollectionSnapshot]) -> Vec<i64> {
     collections.iter().map(|collection| collection.id).collect()
 }
