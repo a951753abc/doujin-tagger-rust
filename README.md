@@ -1,22 +1,179 @@
-# Rust v2
+# Doujin Tagger（私藏編目室）
 
-本專案已與既有 Python 版本分離。Rust v2 位於 `L:\doujin-tagger-rust`；舊 Python 程式與 legacy catalog 保留在 `L:\doujin-tagger`，只在 migration rehearsal 或 shadow comparison 時以唯讀方式參照。
+Doujin Tagger 是一套以 Rust 開發、在本機執行的同人作品收藏管理工具。它會掃描使用者指定的資料夾，從 ZIP 檔名解析作品資訊，建立可搜尋的 SQLite catalog，並透過瀏覽器提供書架、編目、批次整理與檔案管理介面。
 
-目前 Rust workspace 包含：
+本專案採本機優先設計：服務只監聽 `127.0.0.1`，不需要雲端帳號，也不會把 catalog 或收藏檔案上傳到遠端。只有在使用外部 metadata 搜尋時，才會向 E-Hentai／ExHentai 或 DLsite 發出查詢。
 
-- `doujin-app`：application use cases；把 scanner、單一 writer repository 與檔案操作 service 組成可供未來 HTTP adapter 呼叫的同步邊界。
-- `doujin-parser`：獨立 parser library 與同名 CLI。CLI 從標準輸入讀取單筆 `ParseInput` 或 JSON 陣列，輸出完整 `ParseResult`；不會讀寫收藏資料庫。
-- `doujin-scanner`：新收藏掃描 library。它遞迴發現 ZIP、跳過既有完整路徑、排除系統／應用目錄、安全正規化新檔名，並產生待入庫資料。
-- `doujin-storage`：SQLite v2 schema 與單一 writer repository，保存 metadata 來源、選擇、canonical mapping、位置歷史、tags 與檔案操作 journal。
-- `doujin-thumbnails`：從 ZIP 或圖片資料夾安全選取自然排序第一張圖片，套用資源限制後產生 WebP cache。
-- `doujin-files`：安全開啟／閱讀、搬移、軟刪除／永久刪除與 pending operation recovery；測試只使用臨時檔案、fake launcher 及 fake trash backend。
-- `doujin-provider-dlsite`：RJ 優先、唯一完全相符書名 fallback 的 DLsite provider；成功匹配但沒有活動 option 時可提供 `DL` 場次候選，欄位解析、HTTP 錯誤分類與保守限速獨立於 application core。
-- `doujin-http`：只允許 loopback listener 的 Axum HTTP adapter，內嵌無建置步驟的 Rust Library UI，並在獨立 blocking thread 執行 external search worker。
-- `doujin-migrate`：依 DEC-037 將舊 catalog 的副本唯讀匯入全新 v2 catalog，並輸出 JSON 驗證報告。
+> 目前是以 Windows 為主要使用環境、從原始碼建置的早期版本，尚未提供正式安裝套件或公開 crate。
 
-## 執行
+## 主要功能
 
-在 repository 根目錄使用 PowerShell：
+- 遞迴掃描新收藏與典藏庫中的 ZIP，建立本機收藏索引。
+- 從檔名解析標題、場次、社團、作者、原作、分類、RJ 編號與 DL 標記。
+- 以書架、列表或比較模式瀏覽，並依 metadata、來源、標籤或缺漏欄位搜尋及篩選。
+- 保存常用篩選為 Saved View，快速回到特定收藏集合。
+- 從 ZIP 產生 WebP 縮圖，亦可手動指定其他圖片作為封面。
+- 手動編輯 metadata、管理標籤，並保留來源、候選、信心度與裁決歷史。
+- 透過背景工作從 E-Hentai／ExHentai、DLsite 補齊外部 metadata。
+- 使用工作籃與工作台批次加標籤、補資料、改名、搬移、匯出或刪除收藏。
+- 在真正改名、搬移或匯出前先執行預檢，避免路徑衝突與意外覆寫。
+- 以檔案內容指紋找出完全相同、內容相同或可能重複的作品，交由使用者裁決。
+- 提供品質審核、名稱正規化、同名收藏身分合併與收藏統計。
+
+## 系統需求
+
+- Windows 10 或 Windows 11。
+- PowerShell。
+- Rust `1.97` 以上版本，以及 Cargo。建議透過 [rustup](https://rustup.rs/) 安裝。
+- 現代瀏覽器。
+
+目前的新收藏掃描以 ZIP 為主。Catalog、縮圖與程式狀態都會保存在本機；收藏 ZIP 不會被匯入資料庫。
+
+## 快速開始
+
+### 1. 安裝 Windows Launcher
+
+取得原始碼後，在專案根目錄執行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\install_windows_launcher.ps1
+```
+
+這個腳本會：
+
+1. 以 release 模式建置 `doujin-http` 與 `doujin-launcher`。
+2. 將執行檔安裝到目前使用者的應用程式資料目錄。
+3. 建立桌面捷徑與開始功能表捷徑。
+
+之後可直接雙擊桌面的「私藏編目室」。若已自行完成 release build，也可加入 `-SkipBuild` 略過重新建置。
+
+### 2. 建立或開啟 catalog
+
+第一次啟動時，Launcher 會要求：
+
+1. 建立新的 v2 catalog，或選取既有的 v2 catalog。
+2. 登記「新收藏」資料夾，作為尚待整理作品的來源。
+3. 登記「典藏庫」資料夾，作為完成整理後的收藏位置。
+4. 選擇使用 Windows 預設程式，或指定閱讀器。
+5. 決定是否立即預覽第一次掃描。
+
+資料夾必須已存在，並應依實際用途分別登記。舊 Python 版的 `doujin.db` 不能直接當成 v2 catalog 使用，請先參考「舊資料遷移」。
+
+### 3. 執行第一次掃描
+
+在首次設定或「設定 → 資料夾來源」按下掃描後：
+
+1. 先檢查掃描預覽、警告與可能的安全改名。
+2. 確認要套用安全改名，或選擇不改名只建立索引。
+3. 執行掃描。
+4. 回到「書架」或「全部藏書」查看結果。
+
+掃描不會直接刪除收藏。檔名無法安全解析、目的名稱衝突或來源讀取不完整時，系統會保留原檔並顯示問題。
+
+## 介面使用說明
+
+| 區域 | 用途 |
+|---|---|
+| 書架 | 查看最近加入、主要原作與場次書架，以及已釘選的 Saved Views。 |
+| 全部藏書 | 搜尋、篩選、排序、切換列表／比較模式，並選取收藏加入工作籃。 |
+| 工作籃 | 暫存跨頁挑選的收藏，準備後續批次操作。 |
+| 品質審核 | 集中處理缺少 metadata、低信心度或需要人工確認的項目。 |
+| 重複作品 | 建立內容指紋、查看重複候選，並記錄確認或排除結果。 |
+| 工作台 | 批次補資料、加標籤、重新命名、搬移、匯出、刪除及處理身分裁決。 |
+| 統計 | 查看有效收藏的分類、場次、社團、作者、原作與標籤分布。 |
+| 設定 | 管理閱讀器、縮圖、掃描來源、典藏庫與匯出目的地。 |
+
+### 搜尋與整理收藏
+
+- 頂端搜尋可查詢標題、社團、作者、原作與檔名。
+- 「全部藏書」可組合 metadata、來源、標籤及缺漏欄位等篩選條件。
+- 常用條件可以保存成 Saved View，並釘選到書架。
+- 開啟單本詳細資料後，可以修改 metadata、加入標籤、查看證據歷史、選擇封面，或用系統預設程式／指定閱讀器開啟 ZIP。
+- 外部 metadata 搜尋是背景工作；可離開目前頁面，進度與結果仍會保留。
+
+### 批次操作
+
+先在「全部藏書」或單本詳細資料把收藏加入工作籃，再前往「工作台」。可執行：
+
+- 批次加入標籤。
+- 批次指定原作或分類。
+- 只補缺漏欄位，或指定欄位進行外部 metadata 搜尋。
+- 依 `{event}`、`{circle}`、`{title}` 等欄位預覽並套用安全改名。
+- 將新收藏搬到指定典藏庫；系統會依場次建立安全子資料夾，且不覆寫同名 ZIP。
+- 將原始 ZIP 複製成匯出套件；匯出不修改 catalog、metadata、標籤或來源檔。
+- 移到資源回收桶，或在再次確認後永久刪除。
+
+涉及檔案變更的操作會在執行前與執行時重新檢查來源、目標、名稱及衝突。一般情況建議優先使用資源回收桶，而非永久刪除。
+
+### 重複作品
+
+前往「重複作品」並啟動掃描後，系統會在背景建立內容指紋。候選分為：
+
+- `exact`：來源檔案完全相同。
+- `content`：壓縮方式可能不同，但作品圖片內容相同或高度重疊。
+- `probable`：內容高度相似，需要人工確認。
+
+確認重複只會保存裁決結果，不會自動合併身分或刪除檔案。需要移除其中一本時，請明確送入刪除流程並再次核對。
+
+## 直接執行本機服務
+
+不安裝 Launcher 也可以從專案根目錄直接啟動：
+
+```powershell
+New-Item -ItemType Directory -Force .\data | Out-Null
+cargo run --release -p doujin-http -- .\data\doujin-v2.db 5000
+```
+
+接著開啟 `http://127.0.0.1:5000/`。按 `Ctrl+C` 可停止服務。
+
+`doujin-http` 的命令格式為：
+
+```text
+doujin-http <v2-catalog.db> [port]
+```
+
+Port 未指定時預設為 `5000`。Listener 固定為 loopback 位址，不能改成區域網路或公開網路介面。
+
+## Launcher 指令
+
+在 Launcher 安裝目錄執行，或將該目錄加入 `PATH` 後使用：
+
+```powershell
+doujin-launcher.exe open --catalog .\doujin-v2.db
+doujin-launcher.exe status
+doujin-launcher.exe restart
+doujin-launcher.exe stop
+doujin-launcher.exe help
+```
+
+未提供子命令時等同 `open`。Launcher 會自動選擇可用的 loopback port、重用健康且屬於同一 catalog 的既有服務，並在啟動完成後開啟瀏覽器。
+
+Launcher 的設定、服務狀態與 log 預設保存在 `%LOCALAPPDATA%\Doujin Tagger`。若啟動失敗，可先查看其中的 `service-error.log`。
+
+## 設定優先序
+
+閱讀器與縮圖設定建議直接在 Web UI 的「設定」頁管理。進階使用者也可以使用 `config.json` 或環境變數。
+
+啟動時的設定優先序如下：
+
+```text
+環境變數 > catalog 內設定 > config.json > 預設值
+```
+
+| 環境變數 | 用途 |
+|---|---|
+| `DOUJIN_READER_PATH` | 指定閱讀器執行檔；必須是絕對路徑。 |
+| `DOUJIN_THUMB_DIR` | 指定縮圖快取目錄；必須是絕對路徑。 |
+| `DOUJIN_THUMB_SIZE` | 縮圖尺寸，例如 `360x480`。 |
+| `DOUJIN_THUMB_QUALITY` | WebP 品質，範圍為 `1` 到 `100`。 |
+| `DOUJIN_CONFIG_PATH` | 指定其他 `config.json` 位置。 |
+| `DOUJIN_EXHENTAI_COOKIE` | 選用的 ExHentai cookie；未設定時使用公開 E-Hentai。 |
+
+預設縮圖尺寸為 `300x400`、WebP 品質為 `80`；快取目錄位於 catalog 旁的 `<catalog 檔名>.thumbnails`。環境變數鎖定的欄位不能在執行中的 Web UI 覆寫。
+
+## 檔名 Parser CLI
+
+`doujin-parser` 可以獨立測試單筆或批次檔名解析，不會讀寫 catalog。它從標準輸入讀取 JSON，並將結果寫到標準輸出。
 
 ```powershell
 @'
@@ -33,256 +190,58 @@
 '@ | cargo run --quiet -p doujin-parser
 ```
 
-輸出：
+若沒有已確認的原作證據，請傳入空的 `parody_evidence` 陣列。也可以傳入 JSON 陣列批次解析多個檔名，輸出順序會與輸入相同。
 
-```json
-{
-  "classification": {
-    "top_level": "同人誌",
-    "subcategory": null,
-    "raw_marker": null
-  },
-  "event": null,
-  "leading_bracket_raw": "社團",
-  "circle": "社團",
-  "authors": {
-    "raw": null,
-    "values": []
-  },
-  "title": "作品名稱",
-  "parody": {
-    "raw": "ポケモン",
-    "canonical": "ポケットモンスター",
-    "evidence": "confirmed_alias"
-  },
-  "identifiers": [],
-  "other_info": [],
-  "ignored_segments": [],
-  "is_dl": false,
-  "parse_status": "complete",
-  "next_action": "none"
-}
-```
+## 舊資料遷移
 
-沒有原作證據時，`parody_evidence` 傳入空陣列；不確定的尾端括號會進入 `other_info`，不會自動成為原作。
+`doujin-migrate` 用來把舊 Python catalog 的唯讀副本匯入全新的 v2 catalog。它不會原地升級舊資料庫，也拒絕覆寫已存在的 target。
 
-大量檔名可以傳入 JSON 陣列；輸出會維持相同順序並回傳 `ParseResult` 陣列，供 shadow comparison 等批次工具使用。
-
-Parser 對合法 percent-encoded 檔名只解碼一次後再做結構解析。新收藏掃描流程會呼叫 library 的 `normalize_new_collection_zip`：它只在解碼後能完整解析出場次、分類或創作者結構，且目標是安全、無衝突的同目錄 ZIP 檔名時才實際重新命名。衝突、不安全名稱、無法解析或檔案系統錯誤都不會覆寫目標；掃描器仍以原路徑產生待入庫資料，並附上正規化警告。
-
-`doujin-scanner::scan_new_collections` 接受掃描來源與既有路徑集合，回傳 `PendingCollection`、逐項問題與摘要。它刻意不直接寫入索引，讓下一個 SQLite repository 切片能在單一 transaction 中決定如何提交。
-
-`doujin-app::ApplicationService::run_scan` 會先建立 persistent scan run，再取得既有 current paths、執行 scanner，並逐筆呼叫 repository 入庫。單筆 constraint failure 不會回滾同批已成功收藏；整次結果標為 `partial`，問題與 JSON 摘要寫入 `scan_issues`／`scan_runs`。同一路徑再次掃描會跳過且不重新解析，database 同時只允許一筆 running scan。
-
-完整掃描若確認 root 仍可讀、舊路徑已消失，且已有一筆或多筆實際存在的同檔名收藏，會將舊收藏轉為 tombstone 並建立待人工裁決關聯。舊 metadata／tags 不會複製到候選，候選也不會沿用舊 ID。整個 root 不存在或任一目錄／entry 讀取不完整時，不會在該 root 執行消失位置 reconciliation。沒有同名候選的消失收藏不屬於 DEC-008，此切片不推定刪除政策。圖片資料夾掃描仍未接入。
-
-Application service 也統一轉呼叫安全 move、軟刪除／永久刪除與 pending file-operation recovery；HTTP、CLI 或桌面 adapter 不應自行繞過它操作檔案。高階歸檔操作只接收 collection IDs 與 archive root ID，目的地由 service 依 effective event 與既有 ZIP 檔名建立，不接受呼叫端提供完整來源或目的路徑。
-
-## Localhost HTTP adapter
-
-`doujin-http` 使用 Axum 0.8.9 與 Tokio 1.53.1。執行檔只接受 v2 catalog 路徑與可選 port，listen address 固定為 `127.0.0.1`；library 的 bind API 也會拒絕 `0.0.0.0`、區域網路或其他非 loopback 位址：
+基本演練流程：
 
 ```powershell
-cargo run --quiet -p doujin-http -- `
-  .\doujin-v2.db 5000
+New-Item -ItemType Directory -Force .\migration | Out-Null
+Copy-Item .\legacy-catalog.db .\migration\legacy-copy.db
+cargo run --release -p doujin-migrate -- .\migration\legacy-copy.db .\migration\doujin-v2.db
 ```
 
-啟動後以瀏覽器開啟 `http://127.0.0.1:5000/`。首頁、CSS 與 JavaScript 都編譯進 Rust 執行檔，不需要 Python template server、Node.js、CDN 或額外 frontend build。介面包含 Library 搜尋／組合篩選、列表／對比模式、分頁、收藏詳細資料、開啟／閱讀、tag、手動 metadata、外部資料搜尋、縮圖重建、依資料夾來源批次建立縮圖快取、統計、設定、來源管理與重新掃描。收藏詳情可漸進展開七個 metadata 欄位的 selection、assertions、confidence 與外部搜尋紀錄，並直接採用或拒絕可裁決 assertion。人工裁決工作台只保留目前頁面的選取，可批次加入 tag、覆寫原作／種類、搬移或刪除收藏，並提供同名候選裁決、合併預檢與逐欄衝突選擇。
+請只把舊 catalog 的副本交給第一次演練，並先確認來源旁沒有 WAL、SHM 或 journal sidecar。正式切換前應備份資料，完成 migration report、path audit 與驗收閘門；完整流程請參考 [正式切換與回復手冊](docs/references/formal-cutover-and-rollback-runbook.md)。
 
-### Windows Launcher
+## 資料與安全
 
-一般 Windows 使用者可從 repository 根目錄安裝小型 Launcher；它只包裝現有 Rust localhost service，不包含 Electron、Tauri 或遠端存取：
+- Catalog 使用 SQLite，保存收藏索引、metadata、標籤、工作狀態與稽核歷史。
+- 縮圖是可重建的 WebP cache，不存入 SQLite。
+- 本機 HTTP 服務只接受 loopback Host，寫入請求也會驗證 Origin／Referer，以降低 DNS rebinding 風險。
+- 掃描來源、典藏庫與匯出目的地都必須先登記；瀏覽器不能提交任意檔案路徑或執行檔。
+- 改名、搬移、刪除與匯出會再次驗證目前路徑及檔案狀態，並保存操作結果。
+- 建議定期備份 catalog；進行大量改名、搬移、永久刪除或舊資料遷移前，請另外備份收藏檔案。
 
-```powershell
-.\tools\install_windows_launcher.ps1
-```
+## Workspace 結構
 
-安裝後雙擊桌面的「私藏編目室」。第一次會選擇「建立新的 catalog」或「開啟既有 v2 catalog」，接著自動選擇可用的 loopback port、啟動 `doujin-http` 並開啟 Settings 導引。導引可設定新收藏資料夾、典藏庫資料夾、Windows 系統預設或指定閱讀器，以及是否立即進入既有掃描預覽。Catalog 只在 Launcher 開啟服務前選擇，Web UI 不會在執行中切換資料庫。
-
-開始功能表另提供開啟、重新啟動、停止與狀態捷徑。進階使用者也可直接執行：
-
-```powershell
-doujin-launcher.exe open --catalog D:\Catalogs\doujin-v2.db
-doujin-launcher.exe status
-doujin-launcher.exe restart
-doujin-launcher.exe stop
-```
-
-Launcher state、service identity、log 與預設 catalog 位於 `%LOCALAPPDATA%\Doujin Tagger`。重複開啟會先核對同一 catalog、loopback health 與 instance identity，再重用現有服務；stale metadata 會在不終止未知 PID 的情況下清理。停止／重新啟動只有在 catalog、port、health 與 instance identity 全部吻合時才會終止程序。啟動錯誤會顯示對話框，詳細輸出保留於 `service-error.log`。既有 `doujin-http <catalog> [port]` CLI mode 保持不變。
-
-列表／對比模式及最近開啟清單使用瀏覽器 `localStorage`。最近開啟只在 server 成功交給外部程式後更新，同一收藏移到最前方且最多保留 20 筆；不會寫入 SQLite，也不會在不同瀏覽器間同步。
-
-舊 `doujin.db` 是未版本化的 Python catalog，不能直接交給此 server；必須先依 migration rehearsal／正式切換流程建立 v2 catalog。
-
-第一批 API：
-
-| Method | Path | 行為 |
-|---|---|---|
-| `GET` | `/` | 回傳 Rust 執行檔內嵌的本機 Library UI |
-| `GET` | `/assets/app.css` | 回傳無外部字型或 CDN 依賴的 responsive 樣式 |
-| `GET` | `/assets/app.js` | 回傳連接同源 API 的無框架 UI controller |
-| `GET` | `/api/health` | 回報 adapter 存活與 API version |
-| `GET` | `/api/settings` | 回傳有效閱讀器與縮圖設定，以及目前由環境變數鎖定的欄位 |
-| `PUT` | `/api/settings` | 驗證並持久化閱讀器、縮圖尺寸與品質；設定變更會重排既有縮圖 |
-| `GET` | `/api/stats` | 回傳 active 收藏總數、tagged 數、分類與常用 metadata 排行 |
-| `GET` | `/api/collections` | 分頁列出 active 收藏；支援 `q`、`page`、`per_page` |
-| `GET` | `/api/collections/{id}` | 回傳目前路徑、來源、effective metadata、tags 與時間戳記 |
-| `POST` | `/api/collections/{id}/open` | 交由作業系統目前為 ZIP 設定的預設程式開啟收藏 |
-| `POST` | `/api/collections/{id}/read` | 使用 application 啟動時設定的閱讀器開啟收藏 |
-| `GET` | `/api/collections/{id}/thumbnail` | 回傳 WebP cache；尚未完成時排程工作並回傳不可快取的透明 placeholder，以及前端自動追蹤所需的 status／error／next-retry headers |
-| `POST` | `/api/collections/{id}/thumbnail/rebuild` | 使單筆縮圖失效並重新排程，不修改收藏來源 |
-| `POST` | `/api/thumbnails/rebuild` | 使全部 active 收藏縮圖失效、重新排程並回報數量 |
-| `POST` | `/api/thumbnail-cache-jobs` | 依 `root_ids` 快照 active 收藏範圍，保留有效快取並優先補齊缺少或過期縮圖 |
-| `GET` | `/api/thumbnail-cache-jobs/current` | 回傳最近一批快取工作的百分比、各狀態數量與預估剩餘秒數 |
-| `GET` | `/api/collections/{id}/metadata` | 回傳各欄位 selection、assertions 與 external search results |
-| `PUT` | `/api/collections/{id}/metadata/{field}` | 建立手動 metadata assertion 並回傳更新後收藏 |
-| `DELETE` | `/api/collections/{id}/metadata/{field}` | 清除手動候選並重新套用來源優先序 |
-| `PATCH` | `/api/collections/{id}/metadata/{field}/assertions/{assertion_id}` | 以 `select` 或 `reject` 人工裁決既有 assertion |
-| `POST` | `/api/collections/{id}/external-search-jobs` | 建立或取得該 active 收藏目前的外部搜尋工作 |
-| `GET` | `/api/external-search-jobs/{job_id}` | 查詢持久化外部搜尋工作狀態與結果 summary |
-| `GET` | `/api/tombstone-candidates` | 列出 tombstone 與同名候選關聯、路徑及裁決狀態 |
-| `PATCH` | `/api/tombstone-candidates/{tombstone_id}/{candidate_id}` | 以 `confirmed` 或 `rejected` 記錄人工裁決 |
-| `GET` | `/api/tombstone-candidates/{tombstone_id}/{candidate_id}/preflight` | 列出 consolidation blockers 與逐欄手動值衝突 |
-| `POST` | `/api/tombstone-candidates/{tombstone_id}/{candidate_id}/consolidate` | 以明確 conflict resolutions 執行可重試的身分合併 transaction |
-| `POST` | `/api/collections/{id}/tags` | 以 `{"name":"..."}` 冪等加入單一 tag |
-| `DELETE` | `/api/collections/{id}/tags` | 以 `{"name":"..."}` 移除 tag 並清理孤兒 tag |
-| `GET` | `/api/library-roots` | 列出全部 library roots，包含停用項目 |
-| `POST` | `/api/library-roots` | 以絕對且存在的資料夾路徑註冊來源；同一路徑會更新並重新啟用 |
-| `DELETE` | `/api/library-roots/{id}` | 停用來源但保留設定與既有收藏資料 |
-| `POST` | `/api/file-actions/move` | 將指定下載區收藏批次搬到啟用中的歸檔區，逐筆回報結果 |
-| `POST` | `/api/file-actions/delete` | 以明確的 `soft` 或 `permanent` 模式批次刪除收藏 |
-| `POST` | `/api/scans` | 只掃描 catalog 中已啟用的 library roots；request 不接受任意路徑 |
-| `GET` | `/api/scans/{id}` | 回傳 persistent scan summary、狀態與 issues |
-
-收藏列表預設每頁 50 筆，`per_page` 會限制在 1 到 200，無效頁碼回到第一頁。`q` 會搜尋檔名、標題、社團、作者與原作；輸入先轉成安全的 FTS terms，雙引號不會直接進入 `MATCH` 語法。列表固定依 collection ID 反向排序，未知排序參數會被忽略。
-
-`GET /api/collections` 的 allowlisted filters：
-
-| Parameter | 語意 |
+| Crate | 職責 |
 |---|---|
-| `event`、`circle`、`author`、`parody` | exact effective metadata；大小寫不敏感 |
-| `classification`、`subcategory` | exact top-level classification 或子分類 |
-| `source` | `archive` 或 `downloads` |
-| `tag` | 可重複；結果必須具有全部指定 tags |
-| `missing` | 可重複；支援 `title`、`event`、`circle`、`authors`、`parody`、`classification` |
+| `doujin-http` | Axum 本機服務、內嵌 Web UI 與背景 workers。 |
+| `doujin-launcher` | Windows 啟動、停止、重啟、catalog 選擇與瀏覽器開啟。 |
+| `doujin-app` | 掃描、metadata、檔案操作、重複判定、改名與匯出的 use cases。 |
+| `doujin-storage` | SQLite schema、repository、搜尋索引與稽核資料。 |
+| `doujin-parser` | 檔名解析 library 與 JSON CLI。 |
+| `doujin-scanner` | 收藏發現、排除規則與安全檔名正規化。 |
+| `doujin-thumbnails` | ZIP 圖片選取、資源限制、縮放與 WebP cache。 |
+| `doujin-files` | 安全開啟、搬移、刪除與中斷操作復原。 |
+| `doujin-provider-ehentai` | E-Hentai／ExHentai metadata provider。 |
+| `doujin-provider-dlsite` | DLsite 精確 RJ 與保守 fallback provider。 |
+| `doujin-migrate` | 舊 catalog 唯讀遷移與 v2 path audit。 |
 
-不同 filters 之間採 AND。單值 filter 重複、空白值、未知 `source`／`missing` 會回傳 JSON 400；未支援的 query parameters 不會拼接進 SQL。
-
-手動 metadata 的 request body 是 `{"value": ...}`。Allowlisted fields 與 value 型別如下：
-
-| Field | Value |
-|---|---|
-| `title`、`event`、`circle` | 非空白 string |
-| `authors` | 非空白 strings array |
-| `parody` | string，或 `{"raw":"...","canonical":"..."}` |
-| `classification` | string，或 `{"top_level":"...","subcategory":"..."}` |
-| `is_dl` | boolean |
-
-空白值不是「清除」；清除 manual assertion 必須使用 DELETE。清除後 repository 依 `manual > external > filename > inference` 重新選擇 effective value。Metadata 與 tags endpoints 只接受 active 收藏，且回傳更新後的 collection detail。
-
-Metadata history 固定回傳七個欄位。每個欄位包含：
-
-- `selection`：目前 assertion ID、`priority|manual|migration` 選擇方式與時間。
-- `assertions`：typed JSON value、`manual|legacy|external|filename|inference` source、status、parser run、來源參照、confidence、理由、建立時間與 selected flag。
-- `external_search_results`：外部搜尋 value、來源參照、confidence、`search_only|suggestion|auto_applied` disposition、可選 assertion ID 與時間。
-
-低於候選門檻的 `search_only` 結果只出現在 external search results，不會偽裝成可選 assertion。此 endpoint 只允許讀取 active 收藏。
-
-Assertion 裁決的 request body 是 `{"decision":"select"}` 或 `{"decision":"reject"}`。Assertion ID 必須屬於 URL 指定的 active 收藏與欄位；選取後 selection 標記為 `manual`，拒絕後 assertion 保留為 `rejected`。若拒絕目前 selection，repository 依既定來源優先序回復下一筆 accepted assertion；拒絕未選中的候選不改變 effective value。`rejected` 或 `obsolete` assertion 不可再次選取，重複拒絕已拒絕 assertion 則是無變更的成功操作。
-
-建立外部搜尋工作的 request body 是 `{"fields":["title","circle"]}`，欄位採 metadata allowlist 並正規化為固定順序。同一收藏只能有一筆 pending／running 工作；重複要求回傳既有工作與 `created: false`。工作保存 `pending|running|succeeded|partial|failed` 狀態、嘗試次數、JSON summary、typed error 與 next retry time。
-
-Application core 透過 `ExternalMetadataProvider` trait 接收 provider response，不依賴特定網站。Production binary 綁定 `doujin-provider-dlsite`：只在最新 parser result 恰有一個不同的 typed RJ 時查詢單一商品，不會由檔名重跑 parser，也不會以標題或社團模糊猜測。各欄位候選獨立保存，因此部分欄位失敗不會回滾已成功欄位。`network`、`rate_limited` 與 `provider_unavailable` 依錯誤種類及嘗試次數採指數退避，最長一天；`invalid_response`、`no_match`、`unsupported` 不安排定時重試。
-
-HTTP server 啟動後每秒檢查一筆到期工作，再透過條件更新逐筆領取。取件與寫回共用單一 SQLite writer；DLsite 的限速等待及 blocking HTTP request 在 application mutex 外執行，不會長時間阻塞 API。Provider 對同一 host 保持單一 in-flight request 與至少 10 秒間隔。HTTP server 啟動時會將前一個程序留下的 running 工作回復為立即可執行的 pending，保留 attempts 並記錄 `worker_interrupted`。
-
-Thumbnail worker 也只在領取與寫回時持有 application mutex；ZIP 解壓、圖片解碼、縮放與 WebP 編碼都在鎖外執行。首次要求會以 source／settings fingerprint 建立 persistent state；相同 pending／running 工作不會重複排程。來源 I/O、cache I/O 與 worker interruption 採最長一小時的指數退避，損壞 archive、無支援圖片、解碼錯誤與資源限制則等待來源變更或手動重建。Schema v5 只保存狀態、cache 路徑與 retry metadata，WebP 內容仍留在檔案系統。
-
-Server 啟動後不會自動遍歷全庫預熱縮圖；worker 只處理畫面可見縮圖要求、手動批次、手動重建或其他已明確排入的工作。
-
-設定頁的批次快取工具只接受已啟用的 library root ID。啟動時會固定這一批的 collection ID 範圍，把缺少或過期的工作提升為批次優先序（高於一般排程、低於畫面可見縮圖），並保留已有效的 WebP；同時間只允許一批。進度將 ready 與永久失敗都視為已處理，ETA 則只使用本批開始後新完成的數量估算，避免既有快取扭曲速度。
-
-Library 對目前畫面使用的 collection ID 共用縮圖 tracker。收到 `pending`／`running` 會自動追蹤到 `ready` 並在不重新整理頁面的情況下替換封面；暫時性失敗依 `X-Thumbnail-Next-Retry-At` 恢復，永久性失敗停止自動要求。換頁或詳細資料改綁時會取消不再使用的 tracker，避免過時結果覆寫新收藏。
-
-Tombstone candidate 裁決的 request body 是 `{"decision":"confirmed"}` 或 `{"decision":"rejected"}`。這個 endpoint 只記錄明確判斷並保留雙方身分；`confirmed` 不會自動執行 consolidation。
-
-Consolidation preflight 要求指定 candidate 已 confirmed、同組其他 candidates 全部 rejected，而且雙方沒有 pending／running background jobs。不同手動選擇會逐欄回傳 assertion、來源與 typed JSON value。執行 request 使用 `{"resolutions":[{"field":"title","choice":"candidate"}]}`；每個衝突欄位都必須明確選擇 `tombstone` 或 `candidate`。
-
-Schema v4 以 audit tables 保存 consolidation 與每筆轉入 record 的原 collection ID。成功後由 tombstone ID 恢復為 active survivor，接管 candidate current location；tags 採聯集，parser runs、metadata assertions、external search results、位置與檔案操作歷史均保留，effective metadata／FTS 在同一 transaction 重建。實體 ZIP 不搬移。Merged candidate 查詢回 HTTP 410、`collection_merged` 與 `merged_into_collection_id`；相同 consolidation request 重送會回傳既有結果。
-
-檔案搬移 request 使用 `{"collection_ids":[1,2],"archive_root_id":3}`。每筆收藏只能由 downloads root 搬到指定的 active archive root；service 將空白場次放入「未分類」，替換 Windows 不允許的字元並避開保留名稱，且不覆寫同名 ZIP。HTTP request 沒有來源路徑或目的路徑欄位，額外欄位會被拒絕。
-
-開啟與閱讀 endpoints 只接受 URL 中的 collection ID。兩者都會重新驗證收藏是 active、current path 位於啟用中的已註冊來源、實體檔案存在，且目標是一般 ZIP 而非 symlink。`open` 使用作業系統預設 handler；`read` 只使用 application 已設定的絕對閱讀器路徑，HTTP request 不能指定任意 executable。閱讀器可由 `PUT /api/settings` 持久化；未設定或路徑不是現存的一般檔案時不啟動外部程式。
-
-```powershell
-$env:DOUJIN_READER_PATH = 'C:\Program Files\Honeyview\Honeyview.exe'
-cargo run --quiet -p doujin-http -- `
-  .\doujin-v2.db 5000
-```
-
-Thumbnail 預設為 `300x400`、WebP 品質 80，cache 目錄是 catalog 旁的 `<catalog filename>.thumbnails`。可在啟動前覆寫；`DOUJIN_THUMB_DIR` 必須是絕對路徑：
-
-```powershell
-$env:DOUJIN_THUMB_DIR = 'D:\doujin-cache\thumbnails'
-$env:DOUJIN_THUMB_SIZE = '360x480'
-$env:DOUJIN_THUMB_QUALITY = '85'
-```
-
-啟動設定依 `環境變數 > SQLite application_settings > config.json > 預設值` 合併。`config.json` 預設從目前工作目錄讀取，也可用 `DOUJIN_CONFIG_PATH` 指定；其中的相對 `viewer_path`／`thumb_dir` 以設定檔所在目錄解析。支援的檔案欄位是 `viewer_path`、`thumb_dir`、`thumb_size`、`thumb_quality`。環境變數覆寫中的欄位會出現在 `GET /api/settings` 的 `environment_overrides`，執行期間不會被 PUT 越過。
-
-Schema v6 以 typed singleton row 保存 reader path、thumbnail width／height／quality。設定寫入與舊 fingerprint 縮圖重排程在同一 SQLite transaction 完成；無效尺寸、品質、相對 reader path 或未知 JSON 欄位不會部分寫入。
-
-`GET /api/stats` 只統計具有 current location 的 active 收藏。分類包含「未分類」bucket；作者由 `authors_json` 逐人計數，原作、作者與社團各取前 20，場次取前 30，並以 count 反向、名稱正向穩定排序。
-
-刪除 request 使用 `{"collection_ids":[1,2],"mode":"soft"}` 或 `mode: "permanent"`。兩個 endpoints 都拒絕空白、重複或非正整數 collection IDs，並以 `succeeded`、`failed`、`pending_recovery` 統計及逐筆 item 回報；單筆失敗不回滾其他成功項目。所有破壞性操作會再次驗證 current path 位於啟用中的已註冊來源內，相似字首不算子路徑。Production server 啟動時會先核對 pending file operations：能確定已套用或未套用者完成 reconciliation，狀態不明確者保持 pending recovery。
-
-所有請求的 HTTP Host 必須是 `localhost` 或實際 loopback IP，以阻止 DNS rebinding；POST／PUT／PATCH／DELETE 如果帶有 Origin 或 Referer，其 host 也必須符合相同規則。相似字首如 `localhost.evil.example` 會被拒絕，沒有來源標頭的本機 CLI 寫入仍可使用。所有 domain、404 與 405 錯誤都使用 `{"error":{"code":"...","message":"..."}}` JSON 格式。
-
-UI document 另外送出 `default-src 'none'` 的 Content Security Policy，只允許同源 script、style、image 與 API connection，並加上 `nosniff`、`no-referrer` 與 `frame-ancestors 'none'`。介面使用語意化 landmarks、可見 focus、鍵盤 `/`、`J`、`K`、`?`、44px 觸控目標與 `prefers-reduced-motion`；窄螢幕重新排列為單欄且不產生水平溢位。
-
-## 唯讀 migration 演練
-
-先停止 Python 版本，確認 `doujin.db-wal`／`doujin.db-shm` 不存在，再複製舊 catalog。只把副本交給 runner，target 必須是尚不存在的新檔：
-
-```powershell
-Copy-Item ..\doujin-tagger\doujin.db .\doujin-rehearsal-source.db
-cargo run --quiet -p doujin-migrate -- `
-  .\doujin-rehearsal-source.db .\doujin-v2-rehearsal.db
-```
-
-Runner 以 `mode=ro&immutable=1`、`SQLITE_OPEN_READ_ONLY` 與 `query_only` 開啟來源；來源旁若已有 WAL／SHM，或 target／target WAL／SHM 任一檔案已存在，就會在寫入前拒絕執行。匯入以單一 transaction 提交，stdout JSON 報告包含收藏、位置、metadata、tags、空值、路徑衝突、均勻 metadata 抽樣、foreign-key check、integrity check，以及來源檔匯入前後的 BLAKE3。
-
-這是演練工具，不會切換 Python 版本，也不應直接以唯一的正式 `doujin.db` 作為第一次 migration 來源。
-
-正式資料的可重複演練可使用 repository 根目錄下的安全包裝腳本。輸出目錄必須尚不存在；腳本會先拒絕帶有 WAL／SHM／journal 的來源，取得不允許其他程序寫入的來源唯讀鎖，在同一鎖內核對 SHA-256 並複製，再讓 runner 只讀取靜態副本：
-
-```powershell
-.\tools\run_migration_rehearsal.ps1 `
-  -SourceCatalog ..\doujin-tagger\doujin.db `
-  -OutputDirectory .\target\formal-rehearsal-YYYYMMDD
-```
-
-成功時輸出目錄保留 `doujin-v2-rehearsal.db`、`migration-report.json` 與 `acceptance-gate.json`；靜態舊 catalog 副本及空的 target WAL／SHM 會自動移除。可用 `-TargetFileName doujin-v2.db` 指定單一 `.db` leaf name，或用 `-KeepSourceCopy` 明確要求保留副本。任何 hash、runner status、path conflict、blocking issue、integrity、foreign-key、數量、tag、metadata 抽樣或空值比較失敗都使驗收閘門失敗；既有輸出目錄不會被覆寫。
-
-正式切換前再以 `tools/test_cutover_readiness.ps1` 核對來源／candidate SHA-256、reports、即時 current path audit、legacy 設定、程序停止狀態及正式 port。完整 Go／No-Go 與 rollback 流程見 [`docs/references/formal-cutover-and-rollback-runbook.md`](docs/references/formal-cutover-and-rollback-runbook.md)。Preflight 回報 `ready` 只代表技術條件成立，不會自行啟動 server 或授權切換。
-
-## 驗證
+## 開發與驗證
 
 ```powershell
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
+cargo build --release -p doujin-http -p doujin-launcher
 ```
 
-黃金語料位於 [`tests/fixtures/parser-corpus-v1.json`](tests/fixtures/parser-corpus-v1.json)。
+Parser 黃金語料位於 [`tests/fixtures/parser-corpus-v1.json`](tests/fixtures/parser-corpus-v1.json)，需求與驗收情境則整理在 [`docs/bdd`](docs/bdd/README.md)。
 
-## 與既有收藏唯讀比較
+## 授權
 
-先建置 CLI，再從 repository 根目錄執行：
-
-```powershell
-cargo build -p doujin-parser
-python tools/shadow_compare.py --output docs/parser-corpus/shadow-comparison-v1.md
-```
-
-比較工具以 SQLite 唯讀 immutable 模式讀取相鄰 Python 專案的 `doujin.db`，不會回寫既有收藏；詳細結果與待確認案例位於 [`docs/parser-corpus`](docs/parser-corpus/README.md)。
+本專案採用 [MIT License](LICENSE)。
