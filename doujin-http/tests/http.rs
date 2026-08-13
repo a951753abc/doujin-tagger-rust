@@ -284,8 +284,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("href=\"/assets/app.css?v=41\""));
-    assert!(document.contains("src=\"/assets/app.js?v=44\" defer"));
+    assert!(document.contains("href=\"/assets/app.css?v=42\""));
+    assert!(document.contains("src=\"/assets/app.js?v=45\" defer"));
     assert!(document.contains("id=\"library-scroll-sentinel\""));
     assert!(document.contains("id=\"library-load-more\""));
     assert!(document.contains("id=\"library-load-announcer\""));
@@ -295,6 +295,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("id=\"edit-root-dialog\""));
     assert!(document.contains("id=\"root-rescan-note\""));
     assert!(document.contains("id=\"viewer-path-override\""));
+    assert!(document.contains("id=\"library-empty-heading\""));
+    assert!(document.contains("id=\"library-empty-primary\""));
     assert!(document.contains("全選已載入"));
     assert!(document.contains("新載入結果不會自動加入"));
     assert!(!document.contains("目前頁面選取"));
@@ -355,6 +357,7 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(stylesheet.contains(".long-task-warning"));
     assert!(stylesheet.contains(".root-actions"));
     assert!(stylesheet.contains(".field-override-note"));
+    assert!(stylesheet.contains(".empty-state-actions"));
     assert!(!stylesheet.contains("font-size: 0.6875rem;"));
     assert!(!stylesheet.contains("font-size: 0.625rem;"));
     assert!(!stylesheet.contains("font-size: 0.5625rem;"));
@@ -439,6 +442,10 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("function saveEditedRoot"));
     assert!(script.contains("function reactivateRoot"));
     assert!(script.contains("settingsSnapshot.saved_thumb_size"));
+    assert!(script.contains("function resolveLibraryEmptyContext"));
+    assert!(script.contains("function renderLibraryEmptyState"));
+    assert!(script.contains("function scanEmptyLibrary"));
+    assert!(script.contains("openLibraryRootSettings(\"new\")"));
     assert!(script.contains("/api/thumbnail-cache-jobs/preflight"));
     assert!(script.contains("/api/scans/latest"));
     assert!(script.contains("if (state.route === \"workbench\") renderWorkbenchSelection()"));

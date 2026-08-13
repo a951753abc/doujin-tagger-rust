@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>私藏編目室</title>
-  <link rel="stylesheet" href="/assets/app.css?v=41">
-  <script src="/assets/app.js?v=44" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=42">
+  <script src="/assets/app.js?v=45" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -238,11 +238,15 @@
               <span class="loader" aria-hidden="true"></span> 正在翻查書目…
             </div>
             <ol class="collection-results layout-list" id="collection-results" aria-label="收藏清單"></ol>
-            <div class="empty-state" id="library-empty" hidden>
-              <span aria-hidden="true">空</span>
-              <h2>沒有符合條件的收藏</h2>
-              <p>試著縮短關鍵字，或清除一項篩選條件。</p>
-              <button class="secondary-button" id="empty-reset" type="button">清除搜尋與篩選</button>
+            <div class="empty-state" id="library-empty" role="region" aria-labelledby="library-empty-heading" hidden>
+              <span id="library-empty-symbol" aria-hidden="true">空</span>
+              <h2 id="library-empty-heading">沒有符合條件的收藏</h2>
+              <p id="library-empty-description">試著縮短關鍵字，或清除一項篩選條件。</p>
+              <p class="empty-state-context" id="library-empty-context" hidden></p>
+              <div class="empty-state-actions">
+                <button class="primary-button" id="library-empty-primary" type="button">清除搜尋與篩選</button>
+                <button class="text-button" id="library-empty-secondary" type="button" hidden>查看資料夾來源</button>
+              </div>
             </div>
             <div class="infinite-scroll-status" id="library-load-more" aria-busy="false" hidden>
               <span class="loader" id="library-load-more-spinner" aria-hidden="true"></span>
@@ -469,7 +473,7 @@
 
           <section class="settings-section roots-settings" aria-labelledby="roots-heading">
             <div class="section-heading roots-heading">
-              <h2 id="roots-heading">資料夾來源</h2>
+              <h2 id="roots-heading" tabindex="-1">資料夾來源</h2>
               <p>掃描只會處理這裡登記且啟用的來源。</p>
               <button class="secondary-button" id="scan-button" type="button">重新掃描</button>
             </div>

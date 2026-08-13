@@ -105,6 +105,7 @@
     libraryLoaded: false,
     libraryLoading: false,
     libraryLoadError: false,
+    libraryEmptyContext: null,
     workbenchLoaded: false,
     candidates: [],
     preflight: null,
@@ -127,6 +128,7 @@
     settingsRoots: [],
     settingsSnapshot: null,
     rootsNeedScan: false,
+    settingsRootFocus: null,
     selectionContext: null,
     lastBatchActivity: null,
     batchRetry: null,
@@ -201,6 +203,12 @@
       results: byId("collection-results"),
       loading: byId("library-loading"),
       empty: byId("library-empty"),
+      emptySymbol: byId("library-empty-symbol"),
+      emptyHeading: byId("library-empty-heading"),
+      emptyDescription: byId("library-empty-description"),
+      emptyContext: byId("library-empty-context"),
+      emptyPrimary: byId("library-empty-primary"),
+      emptySecondary: byId("library-empty-secondary"),
       resultSummary: byId("result-summary"),
       loadMore: byId("library-load-more"),
       loadMoreSpinner: byId("library-load-more-spinner"),
@@ -271,6 +279,7 @@
       thumbnailCacheConfirm: byId("thumbnail-cache-confirm"),
       rootList: byId("root-list"),
       rootForm: byId("root-form"),
+      rootsHeading: byId("roots-heading"),
       rootRescanNote: byId("root-rescan-note"),
       editRootDialog: byId("edit-root-dialog"),
       editRootForm: byId("edit-root-form"),
@@ -372,7 +381,8 @@
       requestFilterPanelClose();
     });
     byId("clear-filters").addEventListener("click", clearAppliedFilters);
-    byId("empty-reset").addEventListener("click", clearAppliedFilters);
+    ui.emptyPrimary.addEventListener("click", handleLibraryEmptyPrimary);
+    ui.emptySecondary.addEventListener("click", handleLibraryEmptySecondary);
     byId("discard-filter-changes").addEventListener("click", discardFilterChanges);
     ui.retryLibraryLoad.addEventListener("click", loadMoreCollections);
     document.querySelectorAll("[data-layout]").forEach((button) => {
@@ -1202,10 +1212,7 @@
   }
 
   function updateFilterCount() {
-    const count = Object.values(state.filters).reduce(
-      (total, value) => total + (Array.isArray(value) ? value.length : value ? 1 : 0),
-      0,
-    );
+    const count = appliedFilterCount();
     ui.activeFilterCount.textContent = String(count);
     ui.filterToggle.setAttribute("aria-label", count ? `更多篩選，目前套用 ${count} 項條件` : "更多篩選，目前沒有套用條件");
     renderActiveFilterChips();
@@ -1429,6 +1436,7 @@
     state.libraryLoaded = false;
     state.libraryLoadError = false;
     state.libraryLoading = true;
+    state.libraryEmptyContext = null;
     const requestNumber = ++state.requestNumber;
     ui.loading.hidden = false;
     ui.empty.hidden = true;
@@ -1441,6 +1449,10 @@
       state.items = data.items;
       state.total = data.pagination.total;
       state.totalPages = data.pagination.total_pages;
+      if (!state.items.length) {
+        state.libraryEmptyContext = await resolveLibraryEmptyContext(data, requestNumber);
+        if (requestNumber !== state.requestNumber) return false;
+      }
       state.libraryLoaded = true;
       ui.loading.hidden = true;
       const focusNeedsLocator = state.libraryFocusId && !state.items.some((item) => item.id === state.libraryFocusId);
@@ -1475,6 +1487,26 @@
         renderLibraryLoadState();
         scheduleLibraryLoadCheck();
       }
+    }
+  }
+
+  async function resolveLibraryEmptyContext(queryData, requestNumber) {
+    const hasFilters = Object.keys(state.filters).length > 0;
+    try {
+      const [rootData, unfilteredData] = await Promise.all([
+        api("/api/library-roots"),
+        hasFilters
+          ? api(`/api/collections?${new URLSearchParams({ page: "1", per_page: "1" })}`)
+          : Promise.resolve(queryData),
+      ]);
+      if (requestNumber !== state.requestNumber) return null;
+      const roots = rootData.roots || [];
+      if (!roots.length) return { kind: "no_roots", filterCount: appliedFilterCount() };
+      if (!roots.some((root) => root.active)) return { kind: "inactive_roots", filterCount: appliedFilterCount() };
+      if (Number(unfilteredData.pagination?.total) === 0) return { kind: "needs_scan", filterCount: appliedFilterCount() };
+      return { kind: "query", filterCount: appliedFilterCount() };
+    } catch (_) {
+      return { kind: "query", filterCount: appliedFilterCount() };
     }
   }
 
@@ -1609,11 +1641,89 @@
   function renderCollections({ deferFocus = false } = {}) {
     ui.results.hidden = state.items.length === 0;
     ui.empty.hidden = state.items.length !== 0;
+    if (!state.items.length) renderLibraryEmptyState();
     updateLibrarySummary();
     renderCollectionWindow({ anchorIndex: state.items.findIndex((item) => item.id === state.libraryFocusId) });
 
     if (!deferFocus) resolveLibraryFocus();
     updateSelectionUI();
+  }
+
+  function renderLibraryEmptyState() {
+    const context = state.libraryEmptyContext || { kind: "query", filterCount: appliedFilterCount() };
+    const views = {
+      no_roots: {
+        symbol: "源",
+        heading: "先加入你的藏書資料夾",
+        description: "登記新收藏或典藏庫所在的資料夾後，即可建立本機索引。",
+        primary: "前往設定新增來源",
+      },
+      inactive_roots: {
+        symbol: "停",
+        heading: "目前沒有啟用中的資料夾來源",
+        description: "重新啟用至少一個資料夾來源後，才能繼續建立或更新收藏索引。",
+        primary: "管理資料夾來源",
+      },
+      needs_scan: {
+        symbol: "掃",
+        heading: "資料夾已設定，尚未建立收藏索引",
+        description: "執行首次掃描後，這裡會顯示資料夾中的收藏。掃描只會處理已登記且啟用的來源。",
+        primary: "開始首次掃描",
+        secondary: "查看資料夾來源",
+      },
+      query: {
+        symbol: "空",
+        heading: "沒有符合條件的收藏",
+        description: "試著縮短關鍵字，或移除一項搜尋與篩選條件。",
+        primary: "清除搜尋與篩選",
+      },
+    };
+    const view = views[context.kind] || views.query;
+    ui.emptySymbol.textContent = view.symbol;
+    ui.emptyHeading.textContent = view.heading;
+    ui.emptyDescription.textContent = view.description;
+    ui.emptyPrimary.textContent = view.primary;
+    ui.emptyPrimary.disabled = false;
+    ui.emptySecondary.hidden = !view.secondary;
+    ui.emptySecondary.textContent = view.secondary || "";
+    const showFilterContext = context.kind === "query" && context.filterCount > 0;
+    ui.emptyContext.hidden = !showFilterContext;
+    ui.emptyContext.textContent = showFilterContext
+      ? `目前套用 ${formatNumber(context.filterCount)} 項搜尋或篩選條件；上方條件標籤可逐項移除。`
+      : "";
+  }
+
+  function appliedFilterCount() {
+    return Object.values(state.filters).reduce(
+      (total, value) => total + (Array.isArray(value) ? value.length : value ? 1 : 0),
+      0,
+    );
+  }
+
+  function handleLibraryEmptyPrimary() {
+    const kind = state.libraryEmptyContext?.kind || "query";
+    if (kind === "no_roots") {
+      openLibraryRootSettings("new");
+      return;
+    }
+    if (kind === "inactive_roots") {
+      openLibraryRootSettings("manage");
+      return;
+    }
+    if (kind === "needs_scan") {
+      scanEmptyLibrary();
+      return;
+    }
+    clearAppliedFilters();
+  }
+
+  function handleLibraryEmptySecondary() {
+    if (state.libraryEmptyContext?.kind === "needs_scan") openLibraryRootSettings("manage");
+  }
+
+  function openLibraryRootSettings(mode) {
+    state.settingsRootFocus = mode;
+    location.hash = "settings";
   }
 
   function resolveLibraryFocus() {
@@ -3453,9 +3563,21 @@
       renderThumbnailCacheRoots();
       renderThumbnailCacheProgress();
       scheduleThumbnailCachePolling();
+      focusRequestedRootSettings();
     } catch (error) {
       toast(error.message, true);
     }
+  }
+
+  function focusRequestedRootSettings() {
+    const mode = state.settingsRootFocus;
+    if (!mode) return;
+    state.settingsRootFocus = null;
+    window.requestAnimationFrame(() => {
+      const target = mode === "new" ? ui.rootForm.elements.label : ui.rootsHeading;
+      target.scrollIntoView({ block: "center" });
+      target.focus({ preventScroll: true });
+    });
   }
 
   function syncSettingsOverride(fieldName, note, environmentName, effectiveValue, savedValue) {
@@ -3799,6 +3921,7 @@
         },
       });
       ui.rootForm.reset();
+      invalidateDerivedData({ library: true });
       state.rootsNeedScan = true;
       toast(`已登記資料夾「${root.label}」；請重新掃描`);
       await loadSettingsPage();
@@ -3840,6 +3963,7 @@
         },
       });
       ui.editRootDialog.close();
+      invalidateDerivedData({ library: true });
       if (requiresScan) state.rootsNeedScan = true;
       toast(requiresScan ? `已更新「${root.label}」；請重新掃描` : `已更新「${root.label}」`);
       await loadSettingsPage();
@@ -3853,6 +3977,7 @@
   async function reactivateRoot(root) {
     try {
       const activated = await api(`/api/library-roots/${root.id}/activate`, { method: "POST" });
+      invalidateDerivedData({ library: true });
       state.rootsNeedScan = true;
       toast(`已重新啟用「${activated.label}」；請重新掃描`);
       await loadSettingsPage();
@@ -3865,6 +3990,7 @@
     if (!window.confirm(`停用資料夾來源「${root.label}」？這不會刪除磁碟檔案或既有收藏紀錄。`)) return;
     try {
       await api(`/api/library-roots/${root.id}`, { method: "DELETE" });
+      invalidateDerivedData({ library: true });
       state.rootsNeedScan = true;
       toast(`已停用「${root.label}」；請重新掃描`);
       await loadSettingsPage();
@@ -3873,12 +3999,20 @@
     }
   }
 
-  async function startScan() {
+  function startScan() {
+    return runScan(ui.scanButton, "掃描中…", false);
+  }
+
+  function scanEmptyLibrary() {
+    return runScan(ui.emptyPrimary, "首次掃描中…", true);
+  }
+
+  async function runScan(button, runningLabel, reloadLibrary) {
     if (state.selectedIds.size > 0 && !confirmSelectionClear()) return;
     if (state.selectedIds.size > 0) clearSelection();
-    const original = ui.scanButton.textContent;
-    ui.scanButton.disabled = true;
-    ui.scanButton.textContent = "掃描中…";
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = runningLabel;
     state.activityScan = { id: null, status: "running", issues: [], message: "正在掃描資料夾來源", updatedAt: new Date().toISOString() };
     renderActivityCenter();
     try {
@@ -3892,12 +4026,13 @@
       invalidateDerivedData({ library: true });
       state.libraryFocusId = null;
       state.libraryDataKey = null;
+      if (reloadLibrary && state.route === "library") await loadCollections();
     } catch (error) {
       state.activityScan = { id: null, status: "failed", issues: [], message: error.message, updatedAt: new Date().toISOString() };
       toast(error.message, true);
     } finally {
-      ui.scanButton.disabled = false;
-      ui.scanButton.textContent = original;
+      button.disabled = false;
+      button.textContent = original;
       renderActivityCenter();
     }
   }

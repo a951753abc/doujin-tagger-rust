@@ -897,6 +897,24 @@ select:disabled {
 .empty-state p {
   margin: 0 0 18px;
 }
+.empty-state .empty-state-context {
+  max-width: 560px;
+  margin: -7px auto 18px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+}
+.empty-state-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 16px;
+}
+.empty-state-actions .primary-button,
+.empty-state-actions .text-button {
+  min-height: 44px;
+}
 
 .selection-rail p,
 .selection-rail span {
@@ -4410,6 +4428,10 @@ dialog::backdrop {
   }
   .dialog-footer,
   .split-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .empty-state-actions {
     align-items: stretch;
     flex-direction: column;
   }
