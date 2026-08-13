@@ -1204,6 +1204,32 @@ fn active_collections_support_safe_search_paging_and_detail() {
     assert_eq!(1, second_page.items.len());
     assert_eq!(first_id, second_page.items[0].id);
 
+    let located = repository
+        .locate_collection(
+            first_id,
+            &CollectionQuery {
+                per_page: 2,
+                ..CollectionQuery::default()
+            },
+        )
+        .expect("locate collection in query");
+    assert_eq!(Some(3), located.position);
+    assert_eq!(Some(2), located.page);
+    assert_eq!(first_id, located.collection.id);
+
+    let outside_query = repository
+        .locate_collection(
+            first_id,
+            &CollectionQuery {
+                search: Some("BetaCircle".to_owned()),
+                per_page: 2,
+                ..CollectionQuery::default()
+            },
+        )
+        .expect("locate collection outside query");
+    assert_eq!(None, outside_query.position);
+    assert_eq!(None, outside_query.page);
+
     for term in ["searchable", "AlphaCircle", "Alice", "Fate"] {
         let metadata_match = repository
             .collections(&CollectionQuery {

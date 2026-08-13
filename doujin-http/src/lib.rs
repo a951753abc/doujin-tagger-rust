@@ -31,8 +31,8 @@ use doujin_parser::domain::{Authors, Classification, Parody};
 use doujin_scanner::SourceKind;
 use doujin_storage::StorageError;
 use doujin_storage::collections::{
-    CollectionPage, CollectionQuery, CollectionRootSnapshot, CollectionSnapshot,
-    MissingMetadataField,
+    CollectionPage, CollectionQuery, CollectionQueryLocation, CollectionRootSnapshot,
+    CollectionSnapshot, MissingMetadataField,
 };
 use doujin_storage::consolidation::{
     ConsolidationChoice, ConsolidationConflict, ConsolidationPreflight, ConsolidationResolution,
@@ -157,6 +157,10 @@ where
         .route("/api/stats", get(get_statistics::<R>))
         .route("/api/facets", get(get_facets::<R>))
         .route("/api/collections", get(list_collections::<R>))
+        .route(
+            "/api/collections/{collection_id}/locate",
+            get(locate_collection::<R>),
+        )
         .route("/api/collections/{collection_id}", get(get_collection::<R>))
         .route(
             "/api/collections/{collection_id}/open",
@@ -1051,6 +1055,14 @@ struct CollectionRootResponse {
     label: String,
 }
 
+#[derive(Debug, Serialize)]
+struct CollectionQueryLocationResponse {
+    status: &'static str,
+    collection: CollectionResponse,
+    position: Option<i64>,
+    page: Option<u32>,
+}
+
 impl From<CollectionRootSnapshot> for CollectionRootResponse {
     fn from(root: CollectionRootSnapshot) -> Self {
         Self {
@@ -1080,6 +1092,21 @@ impl From<CollectionSnapshot> for CollectionResponse {
             tags: collection.tags,
             created_at: collection.created_at,
             updated_at: collection.updated_at,
+        }
+    }
+}
+
+impl From<CollectionQueryLocation> for CollectionQueryLocationResponse {
+    fn from(location: CollectionQueryLocation) -> Self {
+        Self {
+            status: if location.position.is_some() {
+                "in_query"
+            } else {
+                "not_in_query"
+            },
+            collection: location.collection.into(),
+            position: location.position,
+            page: location.page,
         }
     }
 }
@@ -1120,6 +1147,27 @@ where
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(page.into()))
+}
+
+async fn locate_collection<R>(
+    State(state): State<HttpState<R>>,
+    Path(collection_id): Path<String>,
+    RawQuery(raw_query): RawQuery,
+) -> Result<Json<CollectionQueryLocationResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let collection_id = parse_collection_id(&collection_id)?;
+    let query = parse_collection_query(raw_query.as_deref())?;
+    let location = tokio::task::spawn_blocking(move || {
+        let application = lock_interactive_application(&state.application)?;
+        application
+            .locate_collection(collection_id, &query)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(location.into()))
 }
 
 async fn get_collection<R>(

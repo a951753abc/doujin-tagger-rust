@@ -284,7 +284,7 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("src=\"/assets/app.js?v=37\" defer"));
+    assert!(document.contains("src=\"/assets/app.js?v=38\" defer"));
     assert!(document.contains("id=\"library-scroll-sentinel\""));
     assert!(document.contains("id=\"library-load-more\""));
     assert!(document.contains("全選已載入"));
@@ -299,6 +299,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("id=\"workbench-view\""));
     assert!(document.contains("id=\"return-to-library-context\""));
     assert!(document.contains("返回原本的藏書位置調整選取"));
+    assert!(document.contains("id=\"focus-filter-dialog\""));
+    assert!(document.contains("清除篩選並定位"));
     assert!(document.contains("id=\"metadata-evidence\""));
     assert!(document.contains("id=\"mobile-detail-dialog\""));
     assert!(document.contains("id=\"close-mobile-detail\""));
@@ -400,6 +402,10 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("if (!preserveSelection) clearSelection()"));
     assert!(script.contains("renderCollections({ deferFocus })"));
     assert!(script.contains("if (deferFocus) resolveLibraryFocus()"));
+    assert!(script.contains("/api/collections/${focusId}/locate?${params}"));
+    assert!(script.contains("function presentOutOfQueryFocus"));
+    assert!(script.contains("await navigateToCollection(collection)"));
+    assert!(!script.contains("location.hash = \"library\""));
     assert!(script.contains("function confirmSelectionClear"));
     assert!(script.contains("這會清除目前"));
     assert!(script.contains("event.key === \"Escape\" && !ui.filterPanel.hidden"));
@@ -587,6 +593,9 @@ async fn collections_support_paging_safe_search_and_detail_over_loopback() {
         1,
         second_page.json["items"].as_array().expect("items").len()
     );
+    let locator_id = second_page.json["items"][0]["id"]
+        .as_i64()
+        .expect("second page collection ID");
 
     let clamped = server
         .request("GET", "/api/collections?page=0&per_page=999", &[])
@@ -618,6 +627,31 @@ async fn collections_support_paging_safe_search_and_detail_over_loopback() {
     let collection_id = metadata_search.json["items"][0]["id"]
         .as_i64()
         .expect("collection ID");
+
+    let located = server
+        .request(
+            "GET",
+            &format!("/api/collections/{locator_id}/locate?per_page=2"),
+            &[],
+        )
+        .await;
+    assert_eq!(200, located.status);
+    assert_eq!("in_query", located.json["status"]);
+    assert_eq!(3, located.json["position"]);
+    assert_eq!(2, located.json["page"]);
+    assert_eq!(locator_id, located.json["collection"]["id"]);
+
+    let outside_query = server
+        .request(
+            "GET",
+            &format!("/api/collections/{locator_id}/locate?q=no-such-title&per_page=2"),
+            &[],
+        )
+        .await;
+    assert_eq!(200, outside_query.status);
+    assert_eq!("not_in_query", outside_query.json["status"]);
+    assert_eq!(Value::Null, outside_query.json["position"]);
+    assert_eq!(Value::Null, outside_query.json["page"]);
 
     let filename_search = server
         .request("GET", "/api/collections?q=RJ123456", &[])
@@ -661,6 +695,15 @@ async fn collections_support_paging_safe_search_and_detail_over_loopback() {
     let missing = server.request("GET", "/api/collections/999", &[]).await;
     assert_eq!(404, missing.status);
     assert_eq!("collection_not_found", missing.json["error"]["code"]);
+
+    let missing_location = server
+        .request("GET", "/api/collections/999/locate", &[])
+        .await;
+    assert_eq!(404, missing_location.status);
+    assert_eq!(
+        "collection_not_found",
+        missing_location.json["error"]["code"]
+    );
     server.stop().await;
 }
 
