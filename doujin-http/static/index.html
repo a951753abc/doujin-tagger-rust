@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#f7f3ec">
   <title>私藏編目室</title>
   <link rel="stylesheet" href="/assets/app.css?v=36">
-  <script src="/assets/app.js?v=37" defer></script>
+  <script src="/assets/app.js?v=38" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -504,6 +504,14 @@
       <p class="dialog-intro">這份清單只儲存在目前瀏覽器，不會寫入收藏資料庫。</p>
       <ol class="recent-list" id="recent-list"></ol>
       <div class="dialog-footer"><button class="text-button danger-text" id="clear-recent" type="button">清除最近紀錄</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="focus-filter-dialog" aria-labelledby="focus-filter-dialog-heading">
+    <div class="dialog-shell">
+      <header><div><p class="eyebrow">FILTER / 篩選</p><h2 id="focus-filter-dialog-heading">收藏不在目前結果中</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉">×</button></header>
+      <p class="dialog-intro" id="focus-filter-message"></p>
+      <div class="dialog-footer"><button class="text-button" data-close-dialog type="button">保留目前篩選</button><button class="primary-button" id="clear-filters-and-focus" type="button">清除篩選並定位</button></div>
     </div>
   </dialog>
 

@@ -78,7 +78,7 @@
     libraryScrollY: 0,
     libraryRestorePage: 1,
     libraryFocusId: null,
-    pendingLibraryCollection: null,
+    outOfQueryCollection: null,
     restoreLibraryContext: false,
     leavingLibraryContextCaptured: false,
     selectedIds: new Set(),
@@ -206,6 +206,8 @@
       recentDialog: byId("recent-dialog"),
       recentList: byId("recent-list"),
       recentCount: byId("recent-count"),
+      focusFilterDialog: byId("focus-filter-dialog"),
+      focusFilterMessage: byId("focus-filter-message"),
       metadataDialog: byId("metadata-dialog"),
       metadataForm: byId("metadata-form"),
       metadataField: byId("metadata-field"),
@@ -346,6 +348,7 @@
     });
     initializeShelfScrollControls();
     byId("clear-recent").addEventListener("click", clearRecent);
+    byId("clear-filters-and-focus").addEventListener("click", clearFiltersAndFocus);
     ui.metadataField.addEventListener("change", syncMetadataEditor);
     ui.metadataForm.addEventListener("submit", saveMetadata);
     byId("clear-manual-button").addEventListener("click", clearManualMetadata);
@@ -406,10 +409,14 @@
     }
     let libraryNeedsLoad = false;
     let preserveLibrarySelection = false;
+    let libraryFocusChanged = false;
     if (nextRoute === "library") {
       const decoded = decodeLibraryParams(parsedRoute.params);
       const dataChanged = state.libraryDataKey !== decoded.dataKey;
-      libraryNeedsLoad = dataChanged || !state.libraryLoaded;
+      libraryFocusChanged = decoded.focusId !== state.libraryFocusId;
+      const focusOutsideLoaded = decoded.focusId && !state.items.some((item) => item.id === decoded.focusId);
+      if (focusOutsideLoaded && previousRoute === "library") rememberLibraryContext();
+      libraryNeedsLoad = dataChanged || !state.libraryLoaded || focusOutsideLoaded;
       preserveLibrarySelection = libraryNeedsLoad && !dataChanged;
       if (dataChanged && state.selectedIds.size > 0 && !confirmSelectionClear()) {
         const rollbackHash = previousRoute === "library" ? state.libraryRouteHash : `#${previousRoute}`;
@@ -451,8 +458,10 @@
         restoreThroughPage: state.libraryRestorePage,
       });
     } else if (state.route === "library") {
-      if (!applyLibraryFocus()) clearDetail();
+      const focused = applyLibraryFocus();
+      if (!focused) clearDetail();
       if (state.restoreLibraryContext) restoreLibraryWorkContext();
+      else if (focused && libraryFocusChanged) revealFocusedCollection();
       scheduleLibraryLoadCheck();
     }
     if (state.route === "workbench") loadWorkbench();
@@ -532,14 +541,14 @@
   }
 
   function navigateToCollection(collection) {
-    state.pendingLibraryCollection = collection;
     const hash = libraryHash(collection.id);
     if (location.hash !== hash) {
       history[state.route === "library" ? "replaceState" : "pushState"](null, "", hash);
     }
     return routeFromHash().then((navigated) => {
-      if (state.pendingLibraryCollection?.id === collection.id) state.pendingLibraryCollection = null;
-      return navigated && state.selected?.id === collection.id;
+      const opened = navigated && state.selected?.id === collection.id;
+      if (opened) revealFocusedCollection();
+      return opened;
     });
   }
 
@@ -567,8 +576,17 @@
     requestAnimationFrame(() => {
       window.scrollTo({ top: state.libraryScrollY, behavior: "auto" });
       if (!state.libraryFocusId) return;
-      document.querySelector(`[data-collection-id="${state.libraryFocusId}"]`)?.focus({ preventScroll: true });
+      revealFocusedCollection({ focus: true });
     });
+  }
+
+  function revealFocusedCollection({ focus = false } = {}) {
+    if (!state.libraryFocusId) return;
+    const button = document.querySelector(`[data-collection-id="${state.libraryFocusId}"]`);
+    if (!button) return;
+    if (focus) button.focus({ preventScroll: true });
+    button.scrollIntoView({ block: "nearest" });
+    if (mobileDetailMedia.matches) openMobileDetail(button);
   }
 
   function routeTitle(route) {
@@ -751,8 +769,7 @@
     try {
       const collection = await api(`/api/collections/${collectionId}`);
       setActivityPanelOpen(false);
-      const opened = await navigateToCollection(collection);
-      if (opened && mobileDetailMedia.matches) openMobileDetail();
+      await navigateToCollection(collection);
     } catch (error) {
       toast(`無法開啟這筆收藏：${error.message}`, true);
     }
@@ -895,13 +912,11 @@
     next.hidden = !canScrollRight;
   }
 
-  function openShelfBook(collection, filterName, filterValue) {
+  async function openShelfBook(collection, filterName, filterValue) {
     resetSearch(false);
     if (filterName && filterValue) ui.searchForm.elements[filterName].value = filterValue;
     readFilters();
-    state.selected = collection;
-    state.libraryFocusId = collection.id;
-    navigateLibrary();
+    await navigateToCollection(collection);
   }
 
   function showShelfFilter(name, value) {
@@ -1176,12 +1191,18 @@
       state.totalPages = data.pagination.total_pages;
       state.libraryLoaded = true;
       ui.loading.hidden = true;
-      const deferFocus = restoreThroughPage > 1;
+      const focusNeedsLocator = state.libraryFocusId && !state.items.some((item) => item.id === state.libraryFocusId);
+      const deferFocus = restoreThroughPage > 1 || focusNeedsLocator;
       renderCollections({ deferFocus });
+      if (preserveSelection) refreshLoadedSelectionRecords();
+      let targetPage = restoreThroughPage;
+      if (focusNeedsLocator) {
+        const location = await locateLibraryFocus(state.libraryFocusId, requestNumber);
+        if (location?.status === "in_query") targetPage = Math.max(targetPage, Number(location.page) || 1);
+      }
       state.libraryLoading = false;
       renderLibraryLoadState();
-      if (preserveSelection) refreshLoadedSelectionRecords();
-      await restoreLibraryLoadedWindow(restoreThroughPage);
+      await restoreLibraryLoadedWindow(targetPage);
       if (deferFocus) resolveLibraryFocus();
       if (state.route === "library" && state.restoreLibraryContext) restoreLibraryWorkContext();
       setServiceState("online", "本機服務正常");
@@ -1203,6 +1224,39 @@
         scheduleLibraryLoadCheck();
       }
     }
+  }
+
+  async function locateLibraryFocus(focusId, requestNumber) {
+    try {
+      const params = collectionPageParams(1);
+      const location = await api(`/api/collections/${focusId}/locate?${params}`);
+      if (requestNumber !== state.requestNumber || state.route !== "library" || state.libraryFocusId !== focusId) return null;
+      if (location.status === "not_in_query") presentOutOfQueryFocus(location.collection);
+      return location;
+    } catch (error) {
+      if (requestNumber !== state.requestNumber || state.route !== "library" || state.libraryFocusId !== focusId) return null;
+      state.libraryFocusId = null;
+      navigateLibrary({ replace: true });
+      toast(`無法定位這筆收藏：${error.message}`, true);
+      return null;
+    }
+  }
+
+  function presentOutOfQueryFocus(collection) {
+    state.outOfQueryCollection = collection;
+    state.libraryFocusId = null;
+    navigateLibrary({ replace: true });
+    ui.focusFilterMessage.textContent = `「${displayTitle(collection)}」不符合目前的搜尋或篩選。你可以保留目前結果，或清除條件後定位這筆收藏。`;
+    if (!ui.focusFilterDialog.open) ui.focusFilterDialog.showModal();
+  }
+
+  async function clearFiltersAndFocus() {
+    const collection = state.outOfQueryCollection;
+    if (!collection) return;
+    ui.focusFilterDialog.close();
+    state.outOfQueryCollection = null;
+    resetSearch(false);
+    await navigateToCollection(collection);
   }
 
   async function restoreLibraryLoadedWindow(targetPage) {
@@ -1392,18 +1446,15 @@
 
   function applyLibraryFocus() {
     if (!state.libraryFocusId) return false;
-    const pending = state.pendingLibraryCollection?.id === state.libraryFocusId
-      ? state.pendingLibraryCollection
-      : null;
-    const collection = state.items.find((item) => item.id === state.libraryFocusId) || pending;
-    state.pendingLibraryCollection = null;
-    if (collection) selectCollection(collection, { updateRoute: false });
-    else {
-      state.libraryFocusId = null;
-      document.querySelectorAll(".collection-item-button").forEach((button) => button.setAttribute("aria-current", "false"));
-      clearDetail();
+    const collection = state.items.find((item) => item.id === state.libraryFocusId);
+    if (collection) {
+      selectCollection(collection, { updateRoute: false });
+      return true;
     }
-    return true;
+    state.libraryFocusId = null;
+    document.querySelectorAll(".collection-item-button").forEach((button) => button.setAttribute("aria-current", "false"));
+    clearDetail();
+    return false;
   }
 
   function selectCollection(collection, { focus = false, updateRoute = true } = {}) {
@@ -1653,11 +1704,8 @@
   async function openRecent(id) {
     try {
       const collection = await api(`/api/collections/${id}`);
-      location.hash = "library";
-      selectCollection(collection);
       ui.recentDialog.close();
-      if (mobileDetailMedia.matches) openMobileDetail();
-      else ui.detailPane.scrollIntoView({ behavior: "smooth", block: "start" });
+      await navigateToCollection(collection);
     } catch (error) {
       toast(`無法載入這筆最近紀錄：${error.message}`, true);
     }

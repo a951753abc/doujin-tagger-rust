@@ -61,6 +61,13 @@ pub struct CollectionPage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionQueryLocation {
+    pub collection: CollectionSnapshot,
+    pub position: Option<i64>,
+    pub page: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CollectionRootSnapshot {
     pub id: i64,
     pub source: SourceKind,
@@ -208,6 +215,41 @@ impl CatalogRepository {
             .optional()?
             .ok_or(StorageError::CollectionNotFound(collection_id))?;
         decode_collection_row(row)
+    }
+
+    pub fn locate_collection(
+        &self,
+        collection_id: i64,
+        query: &CollectionQuery,
+    ) -> StorageResult<CollectionQueryLocation> {
+        let collection = self.collection(collection_id)?;
+        let per_page = query.per_page.clamp(1, 200);
+        let prepared = PreparedConditions::new(query);
+        let sql = format!(
+            "SELECT query_position FROM (
+                 SELECT collection.id,
+                        row_number() OVER (ORDER BY collection.id DESC) AS query_position
+                 {COLLECTION_FROM_SQL}
+                 WHERE collection.status = 'active'{}
+             ) AS filtered_collection
+             WHERE filtered_collection.id = ?",
+            prepared.clause
+        );
+        let mut parameters = prepared.parameters;
+        parameters.push(SqlValue::Integer(collection_id));
+        let position = self
+            .connection
+            .query_row(&sql, params_from_iter(parameters.iter()), |row| row.get(0))
+            .optional()?;
+        let page = position.map(|position: i64| {
+            let zero_based = position.saturating_sub(1);
+            ((zero_based / i64::from(per_page)) + 1).min(i64::from(u32::MAX)) as u32
+        });
+        Ok(CollectionQueryLocation {
+            collection,
+            position,
+            page,
+        })
     }
 }
 

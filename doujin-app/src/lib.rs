@@ -15,7 +15,9 @@ use doujin_files::{
     SystemCollectionLauncher, SystemRecycleBin,
 };
 use doujin_scanner::{ScanIssueKind, ScanRoot, SourceKind, scan_new_collections};
-use doujin_storage::collections::{CollectionPage, CollectionQuery, CollectionSnapshot};
+use doujin_storage::collections::{
+    CollectionPage, CollectionQuery, CollectionQueryLocation, CollectionSnapshot,
+};
 use doujin_storage::consolidation::{
     ConsolidationPreflight, ConsolidationResolution, ConsolidationSnapshot,
 };
@@ -542,6 +544,14 @@ impl<R: RecycleBin> ApplicationService<R> {
 
     pub fn collection(&self, collection_id: i64) -> ApplicationResult<CollectionSnapshot> {
         Ok(self.repository.collection(collection_id)?)
+    }
+
+    pub fn locate_collection(
+        &self,
+        collection_id: i64,
+        query: &CollectionQuery,
+    ) -> ApplicationResult<CollectionQueryLocation> {
+        Ok(self.repository.locate_collection(collection_id, query)?)
     }
 
     pub fn metadata_history(&self, collection_id: i64) -> ApplicationResult<MetadataHistory> {
