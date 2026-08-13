@@ -397,6 +397,8 @@ struct HealthResponse {
     status: &'static str,
     service: &'static str,
     api_version: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instance_id: Option<String>,
 }
 
 async fn health() -> Json<HealthResponse> {
@@ -404,6 +406,9 @@ async fn health() -> Json<HealthResponse> {
         status: "ok",
         service: "doujin-http",
         api_version: 1,
+        instance_id: std::env::var("DOUJIN_INSTANCE_ID")
+            .ok()
+            .filter(|value| !value.is_empty()),
     })
 }
 
@@ -580,6 +585,15 @@ where
         "" => None,
         value => Some(PathBuf::from(value)),
     };
+    if let Some(reader_path) = reader_path.as_deref()
+        && (!reader_path.is_absolute() || !reader_path.is_file())
+    {
+        let message = format!(
+            "閱讀器不存在或不是一般檔案：{}。若要使用系統預設程式，請將閱讀器欄位留空",
+            reader_path.display()
+        );
+        return Err(ApiError::bad_request("invalid_reader_path", &message));
+    }
     let outcome = tokio::task::spawn_blocking(move || {
         let mut application = match state.application.try_lock() {
             Ok(application) => application,
