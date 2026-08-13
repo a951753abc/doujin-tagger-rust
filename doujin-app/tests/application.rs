@@ -8,8 +8,9 @@ use doujin_app::external_search::{
     ExternalTagCandidate,
 };
 use doujin_app::{
-    ApplicationBatchOutcome, ApplicationError, ApplicationScanIssueKind, ApplicationScanStatus,
-    ApplicationService, ApplicationSettingsOverrides,
+    ApplicationBatchOutcome, ApplicationError, ApplicationScanIssueKind, ApplicationScanMode,
+    ApplicationScanOptions, ApplicationScanStatus, ApplicationService,
+    ApplicationSettingsOverrides,
 };
 use doujin_files::RecycleBin;
 use doujin_scanner::{ScanRoot, SourceKind};
@@ -271,6 +272,116 @@ fn successful_scan_is_idempotent_and_persists_each_run() {
             .repository()
             .scan_run_count()
             .expect("scan runs")
+    );
+}
+
+#[test]
+fn scan_preflight_is_read_only_and_reports_rename_diff() {
+    let tree = TestTree::new("preflight-read-only");
+    let original = tree.zip("%28C77%29%20%5Bcircle%5D%20title.zip");
+    let renamed = tree.library().join("(C77) [circle] title.zip");
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let application = ApplicationService::new(repository, NoopRecycleBin);
+
+    let preflight = application
+        .preflight_scan(&[tree.root()])
+        .expect("preflight scan");
+
+    assert_eq!(1, preflight.expectation.new_collections);
+    assert_eq!(1, preflight.expectation.planned_renames);
+    assert_eq!(original, preflight.renames[0].before);
+    assert_eq!(renamed, preflight.renames[0].after);
+    assert!(original.exists());
+    assert!(!renamed.exists());
+    assert_eq!(
+        0,
+        application
+            .repository()
+            .collection_count()
+            .expect("collection count")
+    );
+    assert_eq!(
+        0,
+        application
+            .repository()
+            .scan_run_count()
+            .expect("scan run count")
+    );
+}
+
+#[test]
+fn no_rename_scan_indexes_only_the_real_existing_path() {
+    let tree = TestTree::new("no-rename");
+    let original = tree.zip("%28C77%29%20%5Bcircle%5D%20title.zip");
+    let renamed = tree.library().join("(C77) [circle] title.zip");
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    let preflight = application
+        .preflight_scan(&[tree.root()])
+        .expect("preflight scan");
+
+    let report = application
+        .run_scan_with_options(
+            &[tree.root()],
+            ApplicationScanOptions {
+                mode: ApplicationScanMode::NoRename,
+                expected: Some(preflight.expectation),
+            },
+        )
+        .expect("no-rename scan");
+
+    assert_eq!(1, report.summary.added);
+    assert_eq!(0, report.summary.renamed);
+    assert!(report.summary.preflight_differences.is_empty());
+    assert!(original.exists());
+    assert!(!renamed.exists());
+    assert!(
+        application
+            .repository()
+            .collection_id_for_current_path(&original)
+            .expect("path lookup")
+            .is_some()
+    );
+    assert_eq!(
+        None,
+        application
+            .repository()
+            .collection_id_for_current_path(&renamed)
+            .expect("renamed path lookup")
+    );
+}
+
+#[test]
+fn apply_revalidates_collision_and_reports_preflight_drift() {
+    let tree = TestTree::new("preflight-toctou");
+    let original = tree.zip("%28C77%29%20%5Bcircle%5D%20title.zip");
+    let renamed = tree.library().join("(C77) [circle] title.zip");
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    let preflight = application
+        .preflight_scan(&[tree.root()])
+        .expect("preflight scan");
+    fs::write(&renamed, b"appeared after preflight").expect("create collision");
+
+    let report = application
+        .run_scan_with_options(
+            &[tree.root()],
+            ApplicationScanOptions {
+                mode: ApplicationScanMode::ApplySafeRenames,
+                expected: Some(preflight.expectation),
+            },
+        )
+        .expect("apply scan");
+
+    assert!(original.exists());
+    assert_eq!(0, report.summary.renamed);
+    assert_eq!(1, report.summary.normalization_warnings);
+    assert!(
+        report
+            .summary
+            .preflight_differences
+            .iter()
+            .any(|difference| difference.contains("實體改名"))
     );
 }
 

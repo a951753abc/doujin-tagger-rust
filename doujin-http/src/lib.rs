@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use axum::Json;
 use axum::Router;
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, RawQuery, Request, State};
 use axum::http::uri::Authority;
@@ -22,7 +22,8 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
 use doujin_app::{
-    ApplicationBatchOutcome, ApplicationBatchReport, ApplicationError, ApplicationScanReport,
+    ApplicationBatchOutcome, ApplicationBatchReport, ApplicationError, ApplicationScanExpectation,
+    ApplicationScanMode, ApplicationScanOptions, ApplicationScanPreflight, ApplicationScanReport,
     ApplicationService, ApplicationSettingsSnapshot,
 };
 use doujin_files::{
@@ -260,6 +261,7 @@ where
         .route("/api/file-actions/move", post(move_collections::<R>))
         .route("/api/file-actions/delete", post(delete_collections::<R>))
         .route("/api/scans", post(start_scan::<R>))
+        .route("/api/scans/preflight", post(preflight_scan::<R>))
         .route("/api/scans/latest", get(get_latest_scan::<R>))
         .route("/api/scans/{scan_run_id}", get(get_scan::<R>))
         .fallback(not_found)
@@ -3149,12 +3151,66 @@ async fn method_not_allowed() -> ApiError {
     )
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StartScanRequest {
+    mode: Option<String>,
+    expected: Option<ApplicationScanExpectation>,
+}
+
+async fn preflight_scan<R>(
+    State(state): State<HttpState<R>>,
+) -> Result<Json<ApplicationScanPreflight>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let result = tokio::task::spawn_blocking(move || {
+        let application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::conflict(
+                    "scan_already_running",
+                    "重新掃描正在執行",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        let roots = application
+            .repository()
+            .active_scan_roots()
+            .map_err(ApiError::from_storage)?;
+        application
+            .preflight_scan(&roots)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(result))
+}
+
 async fn start_scan<R>(
     State(state): State<HttpState<R>>,
+    payload: Bytes,
 ) -> Result<Json<ApplicationScanReport>, ApiError>
 where
     R: RecycleBin + Send + 'static,
 {
+    let request = if payload.is_empty() {
+        StartScanRequest::default()
+    } else {
+        serde_json::from_slice(&payload)
+            .map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?
+    };
+    let mode = match request.mode.as_deref().unwrap_or("apply_safe_renames") {
+        "apply_safe_renames" => ApplicationScanMode::ApplySafeRenames,
+        "no_rename" => ApplicationScanMode::NoRename,
+        _ => {
+            return Err(ApiError::bad_request(
+                "invalid_scan_mode",
+                "scan mode 必須是 apply_safe_renames 或 no_rename",
+            ));
+        }
+    };
     let result = tokio::task::spawn_blocking(move || {
         let mut application = match state.application.try_lock() {
             Ok(application) => application,
@@ -3171,7 +3227,13 @@ where
             .active_scan_roots()
             .map_err(ApiError::from_storage)?;
         application
-            .run_scan(&roots)
+            .run_scan_with_options(
+                &roots,
+                ApplicationScanOptions {
+                    mode,
+                    expected: request.expected,
+                },
+            )
             .map_err(ApiError::from_application)
     })
     .await

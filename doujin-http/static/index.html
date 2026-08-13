@@ -544,6 +544,37 @@
     </div>
   </dialog>
 
+  <dialog id="scan-preflight-dialog" aria-labelledby="scan-preflight-heading">
+    <form class="dialog-shell scan-preflight-shell" id="scan-preflight-form">
+      <header><div><p class="eyebrow">SCAN PREFLIGHT / 掃描預覽</p><h2 id="scan-preflight-heading">確認索引與檔名變更</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉掃描預覽">×</button></header>
+      <p class="dialog-intro" id="scan-preflight-summary">正在唯讀檢查資料夾來源…</p>
+      <div class="scan-preflight-mode">
+        <label><input type="radio" name="mode" value="apply_safe_renames" checked><span><strong>預覽並套用安全改名</strong><small>只改名通過解析、路徑與碰撞檢查的新 ZIP；執行時會重新驗證。</small></span></label>
+        <label><input type="radio" name="mode" value="no_rename"><span><strong>只建立索引，不修改檔名</strong><small>catalog 會保存磁碟上實際存在的原始路徑。</small></span></label>
+      </div>
+      <details class="scan-preflight-details" id="scan-preflight-details">
+        <summary>查看逐筆改名與警告</summary>
+        <div class="scan-preflight-section" id="scan-preflight-renames-section">
+          <h3>預計改名</h3>
+          <ol class="scan-change-list" id="scan-preflight-renames"></ol>
+        </div>
+        <div class="scan-preflight-section" id="scan-preflight-warnings-section">
+          <h3>跳過改名／預期問題</h3>
+          <ol class="scan-change-list" id="scan-preflight-warnings"></ol>
+        </div>
+        <div class="scan-preflight-section" id="scan-preflight-tombstones-section">
+          <h3>可能的身分候選</h3>
+          <ol class="scan-change-list" id="scan-preflight-tombstones"></ol>
+        </div>
+      </details>
+      <p class="long-task-warning"><strong>預覽不會修改 catalog 或檔案。</strong>正式執行會重新掃描，因此檔案若在兩階段間改變，最終掃描結果會列出差異。</p>
+      <div class="dialog-footer split-footer">
+        <button class="text-button" data-close-dialog type="button">取消</button>
+        <button class="primary-button" id="scan-preflight-confirm" type="submit">套用掃描</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="thumbnail-cache-preflight-dialog" aria-labelledby="thumbnail-cache-preflight-heading">
     <form class="dialog-shell thumbnail-cache-preflight-shell" id="thumbnail-cache-confirm-form">
       <header><div><p class="eyebrow">PREFLIGHT / 執行前確認</p><h2 id="thumbnail-cache-preflight-heading">確認快取縮圖範圍</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉快取縮圖確認">×</button></header>

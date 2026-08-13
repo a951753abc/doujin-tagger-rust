@@ -137,6 +137,8 @@
     batchRunning: null,
     activityTimer: null,
     activitySignature: null,
+    scanPreflight: null,
+    scanRequest: null,
   };
 
   if (!Array.isArray(state.recent)) state.recent = [];
@@ -289,6 +291,17 @@
       editRootDialog: byId("edit-root-dialog"),
       editRootForm: byId("edit-root-form"),
       scanButton: byId("scan-button"),
+      scanPreflightDialog: byId("scan-preflight-dialog"),
+      scanPreflightForm: byId("scan-preflight-form"),
+      scanPreflightSummary: byId("scan-preflight-summary"),
+      scanPreflightDetails: byId("scan-preflight-details"),
+      scanPreflightRenamesSection: byId("scan-preflight-renames-section"),
+      scanPreflightRenames: byId("scan-preflight-renames"),
+      scanPreflightWarningsSection: byId("scan-preflight-warnings-section"),
+      scanPreflightWarnings: byId("scan-preflight-warnings"),
+      scanPreflightTombstonesSection: byId("scan-preflight-tombstones-section"),
+      scanPreflightTombstones: byId("scan-preflight-tombstones"),
+      scanPreflightConfirm: byId("scan-preflight-confirm"),
       scanResultsDialog: byId("scan-results-dialog"),
       scanResultsSummary: byId("scan-results-summary"),
       scanIssueList: byId("scan-issue-list"),
@@ -435,6 +448,7 @@
     ui.rootForm.addEventListener("submit", registerRoot);
     ui.editRootForm.addEventListener("submit", saveEditedRoot);
     ui.scanButton.addEventListener("click", startScan);
+    ui.scanPreflightForm.addEventListener("submit", applyScanPreflight);
     ui.scanResultsRetry.addEventListener("click", () => {
       ui.scanResultsDialog.close();
       startScan();
@@ -967,10 +981,18 @@
 
   function renderScanResults(scan) {
     const issues = scan.issues || [];
+    const differences = scan.summary?.preflight_differences || [];
     const status = scan.status === "partial" ? "部分完成" : scan.status === "failed" ? "失敗" : "完成";
-    ui.scanResultsSummary.textContent = `掃描${scan.id ? ` #${scan.id}` : ""}${status}；共 ${formatNumber(issues.length)} 個逐筆問題。${scan.errorMessage ? ` ${scan.errorMessage}` : ""}`;
+    ui.scanResultsSummary.textContent = `掃描${scan.id ? ` #${scan.id}` : ""}${status}；共 ${formatNumber(issues.length)} 個逐筆問題${differences.length ? `，${formatNumber(differences.length)} 項與預覽不同` : ""}。${scan.errorMessage ? ` ${scan.errorMessage}` : ""}`;
     ui.scanIssueList.replaceChildren();
-    ui.scanResultsEmpty.hidden = issues.length !== 0;
+    ui.scanResultsEmpty.hidden = issues.length !== 0 || differences.length !== 0;
+    differences.forEach((difference) => {
+      const item = el("li", "scan-issue-item");
+      const heading = el("div", "scan-issue-heading");
+      heading.append(el("strong", "", "與預覽不同"), el("code", "", "preflight_drift"));
+      item.append(heading, el("p", "", difference));
+      ui.scanIssueList.append(item);
+    });
     issues.forEach((issue) => {
       const item = el("li", "scan-issue-item");
       const heading = el("div", "scan-issue-heading");
@@ -4178,39 +4200,106 @@
   }
 
   function startScan() {
-    return runScan(ui.scanButton, "掃描中…", false);
+    return previewScan(ui.scanButton, "預覽中…", false);
   }
 
   function scanEmptyLibrary() {
-    return runScan(ui.emptyPrimary, "首次掃描中…", true);
+    return previewScan(ui.emptyPrimary, "預覽首次掃描…", true);
   }
 
-  async function runScan(button, runningLabel, reloadLibrary) {
+  async function previewScan(button, runningLabel, reloadLibrary) {
     if (state.selectedIds.size > 0 && !confirmSelectionClear()) return;
     if (state.selectedIds.size > 0) clearSelection();
     const original = button.textContent;
     button.disabled = true;
     button.textContent = runningLabel;
+    state.scanRequest = { button, original, reloadLibrary };
+    try {
+      const preflight = await api("/api/scans/preflight", { method: "POST" });
+      state.scanPreflight = preflight;
+      renderScanPreflight(preflight);
+      ui.scanPreflightDialog.showModal();
+    } catch (error) {
+      state.scanRequest = null;
+      toast(error.message, true);
+    } finally {
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
+
+  function renderScanPreflight(preflight) {
+    const expectation = preflight.expectation || {};
+    const issueCount = (preflight.issues || []).length;
+    ui.scanPreflightSummary.textContent = `${formatNumber((preflight.roots || []).length)} 個來源 · 預計新增 ${formatNumber(expectation.new_collections || 0)} 本 · 已知 ${formatNumber(expectation.already_known || 0)} 本 · ${formatNumber(expectation.planned_renames || 0)} 本會改名 · ${formatNumber(expectation.normalization_warnings || 0)} 個改名警告 · ${formatNumber(expectation.possible_candidate_links || 0)} 組身分候選${issueCount ? ` · ${formatNumber(issueCount)} 個來源問題` : ""}`;
+    ui.scanPreflightRenames.replaceChildren();
+    ui.scanPreflightWarnings.replaceChildren();
+    ui.scanPreflightTombstones.replaceChildren();
+
+    (preflight.renames || []).forEach((rename) => {
+      const item = el("li", "scan-change-item");
+      const diff = el("div", "scan-rename-diff");
+      diff.append(el("code", "", rename.before || ""), el("span", "", "→"), el("code", "", rename.after || ""));
+      item.append(diff, el("small", "", "percent decode · parser 結構正規化"));
+      ui.scanPreflightRenames.append(item);
+    });
+    const warnings = [
+      ...(preflight.rename_warnings || []).map((warning) => ({ path: warning.path, message: warning.reason })),
+      ...(preflight.issues || []).map((issue) => ({ path: issue.path, message: issue.message })),
+    ];
+    warnings.forEach((warning) => {
+      const item = el("li", "scan-change-item");
+      item.append(el("code", "", warning.path || "未指定路徑"), el("small", "", warning.message || "無法預先判定"));
+      ui.scanPreflightWarnings.append(item);
+    });
+    (preflight.tombstone_candidates || []).forEach((candidate) => {
+      const item = el("li", "scan-change-item");
+      item.append(
+        el("code", "", candidate.tombstone_path || ""),
+        el("small", "", `可能與 ${candidate.candidate_path || "新收藏"} 形成同名候選`),
+      );
+      ui.scanPreflightTombstones.append(item);
+    });
+    ui.scanPreflightRenamesSection.hidden = !(preflight.renames || []).length;
+    ui.scanPreflightWarningsSection.hidden = !warnings.length;
+    ui.scanPreflightTombstonesSection.hidden = !(preflight.tombstone_candidates || []).length;
+    ui.scanPreflightDetails.hidden = !(preflight.renames || []).length && !warnings.length && !(preflight.tombstone_candidates || []).length;
+  }
+
+  async function applyScanPreflight(event) {
+    event.preventDefault();
+    if (!state.scanPreflight || !state.scanRequest) return;
+    const mode = new FormData(ui.scanPreflightForm).get("mode") || "apply_safe_renames";
+    const request = state.scanRequest;
+    ui.scanPreflightConfirm.disabled = true;
+    ui.scanPreflightConfirm.textContent = "掃描中…";
+    ui.scanPreflightDialog.close();
     state.activityScan = { id: null, status: "running", issues: [], message: "正在掃描資料夾來源", updatedAt: new Date().toISOString() };
     renderActivityCenter();
     try {
-      const report = await api("/api/scans", { method: "POST" });
+      const report = await api("/api/scans", {
+        method: "POST",
+        body: { mode, expected: state.scanPreflight.expectation },
+      });
       const summary = report.summary;
       const prefix = report.status === "partial" ? "掃描部分完成" : "掃描完成";
       state.activityScan = scanActivity(report);
       state.rootsNeedScan = false;
       ui.rootRescanNote.hidden = true;
-      toast(`${prefix}：新增 ${formatNumber(summary.added)}、略過 ${formatNumber(summary.skipped)}、問題 ${formatNumber(report.issues.length)}`, report.status === "partial");
+      const drift = summary.preflight_differences || [];
+      toast(`${prefix}：新增 ${formatNumber(summary.added)}、略過 ${formatNumber(summary.skipped)}、問題 ${formatNumber(report.issues.length)}${drift.length ? `；${formatNumber(drift.length)} 項與預覽不同` : ""}`, report.status === "partial" || drift.length > 0);
       invalidateDerivedData({ library: true });
       state.libraryFocusId = null;
       state.libraryDataKey = null;
-      if (reloadLibrary && state.route === "library") await loadCollections();
+      if (request.reloadLibrary && state.route === "library") await loadCollections();
     } catch (error) {
       state.activityScan = { id: null, status: "failed", issues: [], message: error.message, updatedAt: new Date().toISOString() };
       toast(error.message, true);
     } finally {
-      button.disabled = false;
-      button.textContent = original;
+      state.scanPreflight = null;
+      state.scanRequest = null;
+      ui.scanPreflightConfirm.disabled = false;
+      ui.scanPreflightConfirm.textContent = "套用掃描";
       renderActivityCenter();
     }
   }

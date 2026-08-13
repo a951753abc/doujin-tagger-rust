@@ -5,7 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use doujin_parser::PARSER_VERSION;
 use doujin_scanner::{
-    FilenameNormalization, ScanIssueKind, ScanRoot, SourceKind, scan_new_collections,
+    FilenameNormalization, ScanIssueKind, ScanMode, ScanRoot, SourceKind, scan_new_collections,
+    scan_new_collections_with_mode,
 };
 
 struct TestTree {
@@ -137,6 +138,7 @@ fn new_percent_encoded_zip_is_renamed_before_becoming_pending() {
     let output = scan_new_collections(&[tree.root(SourceKind::Archive)], &HashSet::new());
 
     assert_eq!(1, output.summary.renamed);
+    assert_eq!(1, output.summary.planned_renames);
     assert_eq!(decoded, output.pending[0].path);
     assert_eq!(Some("C77"), output.pending[0].parsed.event.as_deref());
     assert_eq!(
@@ -148,6 +150,52 @@ fn new_percent_encoded_zip_is_renamed_before_becoming_pending() {
     );
     assert!(!original.exists());
     assert!(decoded.exists());
+}
+
+#[test]
+fn dry_run_reports_rename_diff_without_changing_the_file() {
+    let tree = TestTree::new("dry-run-encoded");
+    let original = tree.zip("%28C77%29%20%5Bcircle%5D%20title.zip");
+    let decoded = tree.path.join("(C77) [circle] title.zip");
+
+    let output = scan_new_collections_with_mode(
+        &[tree.root(SourceKind::Archive)],
+        &HashSet::new(),
+        ScanMode::DryRun,
+    );
+
+    assert_eq!(0, output.summary.renamed);
+    assert_eq!(1, output.summary.planned_renames);
+    assert_eq!(original, output.pending[0].path);
+    assert_eq!(Some("C77"), output.pending[0].parsed.event.as_deref());
+    assert_eq!(
+        FilenameNormalization::PlannedRename {
+            original: original.clone(),
+            renamed: decoded.clone(),
+        },
+        output.pending[0].filename_normalization
+    );
+    assert!(original.exists());
+    assert!(!decoded.exists());
+}
+
+#[test]
+fn no_rename_uses_the_real_original_path_and_metadata_input() {
+    let tree = TestTree::new("no-rename-encoded");
+    let original = tree.zip("%28C77%29%20%5Bcircle%5D%20title.zip");
+    let decoded = tree.path.join("(C77) [circle] title.zip");
+
+    let output = scan_new_collections_with_mode(
+        &[tree.root(SourceKind::Archive)],
+        &HashSet::new(),
+        ScanMode::NoRename,
+    );
+
+    assert_eq!(original, output.pending[0].path);
+    assert_eq!(0, output.summary.renamed);
+    assert_eq!(1, output.summary.planned_renames);
+    assert!(original.exists());
+    assert!(!decoded.exists());
 }
 
 #[test]
