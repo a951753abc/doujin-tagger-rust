@@ -221,6 +221,10 @@ pub struct ApplicationSettingsSnapshot {
     pub thumbnail_width: u32,
     pub thumbnail_height: u32,
     pub thumbnail_quality: u8,
+    pub saved_reader_path: Option<PathBuf>,
+    pub saved_thumbnail_width: u32,
+    pub saved_thumbnail_height: u32,
+    pub saved_thumbnail_quality: u8,
     pub reader_overridden_by_environment: bool,
     pub thumbnail_size_overridden_by_environment: bool,
     pub thumbnail_quality_overridden_by_environment: bool,
@@ -708,6 +712,25 @@ impl<R: RecycleBin> ApplicationService<R> {
         Ok(self.repository.deactivate_library_root(root_id)?)
     }
 
+    pub fn update_library_root(
+        &mut self,
+        root_id: i64,
+        path: &Path,
+        source: SourceKind,
+        label: &str,
+    ) -> ApplicationResult<LibraryRootSnapshot> {
+        Ok(self
+            .repository
+            .update_library_root(root_id, path, source, label)?)
+    }
+
+    pub fn reactivate_library_root(
+        &mut self,
+        root_id: i64,
+    ) -> ApplicationResult<LibraryRootSnapshot> {
+        Ok(self.repository.reactivate_library_root(root_id)?)
+    }
+
     pub fn tombstone_candidates(&self) -> ApplicationResult<Vec<TombstoneCandidateSnapshot>> {
         Ok(self.repository.all_tombstone_candidates()?)
     }
@@ -762,11 +785,32 @@ impl<R: RecycleBin> ApplicationService<R> {
 
     pub fn application_settings(&self) -> ApplicationResult<ApplicationSettingsSnapshot> {
         let config = self.thumbnail_config()?;
+        let stored = self.repository.stored_application_settings()?;
+        let saved_reader_path = stored
+            .as_ref()
+            .map(|settings| settings.reader_path.clone())
+            .unwrap_or_else(|| self.reader_path.clone());
+        let saved_thumbnail_width = stored
+            .as_ref()
+            .map(|settings| settings.thumbnail_width)
+            .unwrap_or(config.width);
+        let saved_thumbnail_height = stored
+            .as_ref()
+            .map(|settings| settings.thumbnail_height)
+            .unwrap_or(config.height);
+        let saved_thumbnail_quality = stored
+            .as_ref()
+            .map(|settings| settings.thumbnail_quality)
+            .unwrap_or(config.quality);
         Ok(ApplicationSettingsSnapshot {
             reader_path: self.reader_path.clone(),
             thumbnail_width: config.width,
             thumbnail_height: config.height,
             thumbnail_quality: config.quality,
+            saved_reader_path,
+            saved_thumbnail_width,
+            saved_thumbnail_height,
+            saved_thumbnail_quality,
             reader_overridden_by_environment: self.settings_overrides.reader_path.is_some(),
             thumbnail_size_overridden_by_environment: self
                 .settings_overrides

@@ -199,6 +199,63 @@ fn library_roots_can_be_listed_deactivated_and_reactivated() {
 }
 
 #[test]
+fn library_roots_can_be_edited_without_changing_identity() {
+    let tree = TestTree::new("edit-library-root");
+    let original = tree.path.join("original");
+    let updated = tree.path.join("updated");
+    let other = tree.path.join("other");
+    fs::create_dir_all(&original).expect("create original root");
+    fs::create_dir_all(&updated).expect("create updated root");
+    fs::create_dir_all(&other).expect("create other root");
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let root_id = repository
+        .register_library_root(&original, SourceKind::Downloads, "下載區")
+        .expect("register root");
+    let other_id = repository
+        .register_library_root(&other, SourceKind::Archive, "其他")
+        .expect("register other root");
+
+    let edited = repository
+        .update_library_root(root_id, &updated, SourceKind::Archive, "  典藏區  ")
+        .expect("edit root");
+    assert_eq!(root_id, edited.id);
+    assert_eq!(updated, edited.path);
+    assert_eq!(SourceKind::Archive, edited.source);
+    assert_eq!("典藏區", edited.label);
+
+    let collision = repository
+        .update_library_root(root_id, &other, SourceKind::Archive, "衝突")
+        .expect_err("reject duplicate path");
+    assert!(matches!(
+        collision,
+        doujin_storage::StorageError::InvalidLibraryRoot(_)
+    ));
+    assert_eq!(
+        other_id,
+        repository.library_root(other_id).expect("other root").id
+    );
+
+    repository
+        .deactivate_library_root(root_id)
+        .expect("deactivate root");
+    fs::remove_dir_all(&updated).expect("remove updated root");
+    let missing = repository
+        .reactivate_library_root(root_id)
+        .expect_err("reject missing root");
+    assert!(matches!(
+        missing,
+        doujin_storage::StorageError::InvalidLibraryRoot(_)
+    ));
+    fs::create_dir_all(&updated).expect("restore updated root");
+    assert!(
+        repository
+            .reactivate_library_root(root_id)
+            .expect("reactivate root")
+            .active
+    );
+}
+
+#[test]
 fn external_search_jobs_deduplicate_persist_results_and_schedule_typed_retries() {
     let tree = TestTree::new("external-search-jobs");
     let first = tree.pending("[circle] first.zip");

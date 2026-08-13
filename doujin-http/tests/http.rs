@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use doujin_app::ApplicationService;
+use doujin_app::{ApplicationService, ApplicationSettingsOverrides};
 use doujin_files::{CollectionLauncher, RecycleBin};
 use doujin_http::{
     SharedApplication, bind_loopback, serve_shared_with_shutdown, share_application,
@@ -284,13 +284,17 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("src=\"/assets/app.js?v=43\" defer"));
+    assert!(document.contains("href=\"/assets/app.css?v=41\""));
+    assert!(document.contains("src=\"/assets/app.js?v=44\" defer"));
     assert!(document.contains("id=\"library-scroll-sentinel\""));
     assert!(document.contains("id=\"library-load-more\""));
     assert!(document.contains("id=\"library-load-announcer\""));
     assert!(document.contains("id=\"scan-results-dialog\""));
     assert!(document.contains("id=\"thumbnail-cache-preflight-dialog\""));
     assert!(document.contains("id=\"thumbnail-cache-retry-failures\""));
+    assert!(document.contains("id=\"edit-root-dialog\""));
+    assert!(document.contains("id=\"root-rescan-note\""));
+    assert!(document.contains("id=\"viewer-path-override\""));
     assert!(document.contains("全選已載入"));
     assert!(document.contains("新載入結果不會自動加入"));
     assert!(!document.contains("目前頁面選取"));
@@ -349,6 +353,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(stylesheet.contains("contain: layout paint style"));
     assert!(stylesheet.contains(".scan-issue-list"));
     assert!(stylesheet.contains(".long-task-warning"));
+    assert!(stylesheet.contains(".root-actions"));
+    assert!(stylesheet.contains(".field-override-note"));
     assert!(!stylesheet.contains("font-size: 0.6875rem;"));
     assert!(!stylesheet.contains("font-size: 0.625rem;"));
     assert!(!stylesheet.contains("font-size: 0.5625rem;"));
@@ -430,6 +436,9 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("function showScanResults"));
     assert!(script.contains("function openThumbnailCacheFailures"));
     assert!(script.contains("function retryThumbnailCacheFailures"));
+    assert!(script.contains("function saveEditedRoot"));
+    assert!(script.contains("function reactivateRoot"));
+    assert!(script.contains("settingsSnapshot.saved_thumb_size"));
     assert!(script.contains("/api/thumbnail-cache-jobs/preflight"));
     assert!(script.contains("/api/scans/latest"));
     assert!(script.contains("if (state.route === \"workbench\") renderWorkbenchSelection()"));
@@ -471,6 +480,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
 async fn library_roots_can_be_registered_listed_deactivated_and_reactivated() {
     let tree = TestTree::new("library-roots");
     fs::create_dir_all(tree.library()).expect("create library");
+    let edited_path = tree.path.join("edited-library");
+    fs::create_dir_all(&edited_path).expect("create edited library");
     let repository = CatalogRepository::open_in_memory().expect("open catalog");
     let application = ApplicationService::new(repository, NoopRecycleBin);
     let server = RunningServer::start(application).await;
@@ -500,6 +511,22 @@ async fn library_roots_can_be_registered_listed_deactivated_and_reactivated() {
     assert_eq!(1, listed.json["roots"].as_array().expect("roots").len());
     assert_eq!(root_id, listed.json["roots"][0]["id"]);
 
+    let edited = server
+        .request_json(
+            "PATCH",
+            &format!("/api/library-roots/{root_id}"),
+            &serde_json::json!({
+                "path": edited_path,
+                "source": "archive",
+                "label": "  編輯後典藏區  "
+            }),
+        )
+        .await;
+    assert_eq!(200, edited.status);
+    assert_eq!(root_id, edited.json["id"]);
+    assert_eq!("archive", edited.json["source"]);
+    assert_eq!("編輯後典藏區", edited.json["label"]);
+
     let deactivated = server
         .request("DELETE", &format!("/api/library-roots/{root_id}"), &[])
         .await;
@@ -512,19 +539,15 @@ async fn library_roots_can_be_registered_listed_deactivated_and_reactivated() {
     assert_eq!("no_roots", scan.json["issues"][0]["kind"]);
 
     let reactivated = server
-        .request_json(
+        .request(
             "POST",
-            "/api/library-roots",
-            &serde_json::json!({
-                "path": tree.library(),
-                "source": "archive",
-                "label": "歸檔區"
-            }),
+            &format!("/api/library-roots/{root_id}/activate"),
+            &[],
         )
         .await;
     assert_eq!(root_id, reactivated.json["id"]);
     assert_eq!("archive", reactivated.json["source"]);
-    assert_eq!("歸檔區", reactivated.json["label"]);
+    assert_eq!("編輯後典藏區", reactivated.json["label"]);
     assert_eq!(true, reactivated.json["active"]);
 
     let listed_again = server.request("GET", "/api/library-roots", &[]).await;
@@ -609,6 +632,23 @@ async fn invalid_library_root_requests_have_structured_json_errors() {
         .await;
     assert_eq!(404, unknown.status);
     assert_eq!("library_root_not_found", unknown.json["error"]["code"]);
+
+    let invalid_update = server
+        .request_json(
+            "PATCH",
+            "/api/library-roots/999",
+            &serde_json::json!({
+                "path": tree.path,
+                "source": "archive",
+                "label": "不存在"
+            }),
+        )
+        .await;
+    assert_eq!(404, invalid_update.status);
+    assert_eq!(
+        "library_root_not_found",
+        invalid_update.json["error"]["code"]
+    );
     server.stop().await;
 }
 
@@ -2244,6 +2284,61 @@ async fn settings_api_validates_persists_and_requeues_existing_thumbnail_state()
     let retained = server.request("GET", "/api/settings", &[]).await;
     assert_eq!("360x480", retained.json["thumb_size"]);
     assert_eq!(85, retained.json["thumb_quality"]);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn settings_api_identifies_each_environment_override_and_saved_fallback() {
+    let tree = TestTree::new("settings-api-overrides");
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let environment_reader = tree.root("environment-reader.exe");
+    let saved_reader = tree.root("saved-reader.exe");
+    let thumbnail_config =
+        ThumbnailConfig::new(tree.path.join("cache"), 500, 600, 90).expect("thumbnail config");
+    let launcher = RecordingLauncher::new(false);
+    let mut application = ApplicationService::with_launcher_thumbnails_and_overrides(
+        repository,
+        NoopRecycleBin,
+        launcher,
+        Some(environment_reader.clone()),
+        thumbnail_config,
+        ApplicationSettingsOverrides {
+            reader_path: Some(environment_reader.clone()),
+            thumbnail_size: Some((500, 600)),
+            thumbnail_quality: Some(90),
+        },
+    );
+    application
+        .save_application_settings(Some(saved_reader.clone()), 360, 480, 85)
+        .expect("save fallback settings");
+    let server = RunningServer::start(application).await;
+
+    let response = server.request("GET", "/api/settings", &[]).await;
+    assert_eq!(200, response.status);
+    assert_eq!(
+        environment_reader.to_string_lossy().as_ref(),
+        response.json["viewer_path"]
+    );
+    assert_eq!("500x600", response.json["thumb_size"]);
+    assert_eq!(90, response.json["thumb_quality"]);
+    assert_eq!(
+        saved_reader.to_string_lossy().as_ref(),
+        response.json["saved_viewer_path"]
+    );
+    assert_eq!("360x480", response.json["saved_thumb_size"]);
+    assert_eq!(85, response.json["saved_thumb_quality"]);
+    assert_eq!(
+        "DOUJIN_READER_PATH",
+        response.json["overrides"]["viewer_path"]
+    );
+    assert_eq!(
+        "DOUJIN_THUMB_SIZE",
+        response.json["overrides"]["thumb_size"]
+    );
+    assert_eq!(
+        "DOUJIN_THUMB_QUALITY",
+        response.json["overrides"]["thumb_quality"]
+    );
     server.stop().await;
 }
 
