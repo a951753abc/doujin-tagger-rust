@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>私藏編目室</title>
-  <link rel="stylesheet" href="/assets/app.css?v=45">
-  <script src="/assets/app.js?v=48" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=46">
+  <script src="/assets/app.js?v=49" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -45,6 +45,7 @@
         <nav class="primary-nav" aria-label="主要功能">
           <a href="#shelf" data-route="shelf" aria-current="page">書架</a>
           <a href="#library" data-route="library">全部藏書</a>
+          <a href="#review" data-route="review">品質審核 <b class="nav-count" id="review-count" hidden>0</b></a>
           <a href="#workbench" data-route="workbench">工作台 <b class="nav-count" id="workbench-count" hidden>0</b></a>
           <a href="#stats" data-route="stats">統計</a>
           <a href="#settings" data-route="settings">設定</a>
@@ -449,6 +450,81 @@
         </div>
       </section>
 
+      <section class="view review-view" id="review-view" data-view="review" aria-labelledby="review-heading" hidden>
+        <header class="page-heading review-page-heading">
+          <div>
+            <p class="eyebrow">DATA QUALITY / 品質審核</p>
+            <h1 id="review-heading">逐筆裁決，不離開編目桌</h1>
+          </div>
+          <p>Queue 只列出缺少主要 metadata 或仍有候選待裁決的收藏；每次決定都沿用既有來源、信心與優先序。</p>
+        </header>
+
+        <div class="review-toolbar">
+          <div class="review-count-copy" aria-live="polite">
+            <strong id="review-total">正在清點待審項目…</strong>
+            <span id="review-position"></span>
+          </div>
+          <label>只看
+            <select id="review-kind">
+              <option value="all">全部問題</option>
+              <option value="candidate">候選待裁決</option>
+              <option value="missing">缺少 metadata</option>
+            </select>
+          </label>
+          <button class="text-button" id="refresh-review" type="button">重新整理 Queue</button>
+        </div>
+
+        <div class="review-loading" id="review-loading" role="status" hidden><span class="loader" aria-hidden="true"></span> 正在整理待審證據…</div>
+        <div class="review-error" id="review-error" role="alert" hidden>
+          <strong>無法載入品質審核 Queue</strong>
+          <p id="review-error-message"></p>
+          <button class="secondary-button" id="retry-review" type="button">再試一次</button>
+        </div>
+        <div class="review-empty" id="review-empty" hidden>
+          <span aria-hidden="true">清</span>
+          <div><h2>目前沒有需要人工處理的資料</h2><p id="review-empty-message">缺少的主要欄位都已補齊，候選也都完成裁決。</p></div>
+          <button class="secondary-button" id="reset-review-skips" type="button" hidden>重新顯示本次略過項目</button>
+        </div>
+
+        <article class="review-desk" id="review-desk" hidden aria-live="polite">
+          <section class="review-book" aria-labelledby="review-title">
+            <div class="review-cover-stage">
+              <img id="review-cover" alt="" width="360" height="480">
+              <span id="review-source" class="source-ribbon"></span>
+            </div>
+            <p class="review-sequence" id="review-sequence"></p>
+            <h2 id="review-title"></h2>
+            <p class="filename" id="review-filename"></p>
+            <dl class="review-context" id="review-context"></dl>
+          </section>
+
+          <section class="review-evidence" aria-labelledby="review-problem-heading">
+            <header class="review-evidence-heading">
+              <div><p class="eyebrow">WHY THIS ITEM / 待審原因</p><h2 id="review-problem-heading">需要人工判斷</h2></div>
+              <div class="review-problem-badges" id="review-problems"></div>
+            </header>
+            <div class="review-decision" id="review-decision"></div>
+            <details class="review-more-evidence" id="review-more-evidence">
+              <summary>查看這本收藏的其他問題與候選</summary>
+              <div id="review-all-issues"></div>
+            </details>
+          </section>
+
+          <aside class="review-actions" aria-label="審核操作">
+            <p><span>KEYBOARD FIRST</span> 做完後依最新狀態重新核對 Queue。</p>
+            <button class="primary-button review-accept" id="review-accept" type="button"><kbd>A</kbd> 採用主要候選</button>
+            <button class="secondary-button" id="review-reject" type="button"><kbd>R</kbd> 拒絕主要候選</button>
+            <button class="secondary-button" id="review-edit" type="button"><kbd>E</kbd> 手動編輯</button>
+            <button class="text-button" id="review-skip" type="button"><kbd>S</kbd> 本次略過</button>
+            <button class="text-button" id="review-detail" type="button">打開完整 Detail <span aria-hidden="true">→</span></button>
+            <div class="review-navigation">
+              <button class="text-button" id="review-previous" type="button"><kbd>K</kbd> 上一筆</button>
+              <button class="text-button" id="review-next" type="button">下一筆 <kbd>J</kbd></button>
+            </div>
+          </aside>
+        </article>
+      </section>
+
       <section class="view" id="stats-view" data-view="stats" aria-labelledby="stats-heading" hidden>
         <h1 class="visually-hidden" id="stats-heading">收藏概況</h1>
         <p class="stats-intro">只計入目前有效的收藏，不包含已移除或被合併的紀錄。名稱皆可點擊，直接帶入藏書篩選。</p>
@@ -755,7 +831,7 @@
   <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-heading">
     <div class="dialog-shell compact-dialog">
       <header><h2 id="shortcuts-heading">鍵盤操作</h2><button class="icon-button" data-close-dialog type="button" aria-label="關閉">×</button></header>
-      <dl class="shortcut-list"><dt><kbd>/</kbd></dt><dd>跳到搜尋</dd><dt><kbd>J</kbd> / <kbd>K</kbd></dt><dd>移動目前查看收藏</dd><dt><kbd>Space</kbd></dt><dd>切換目前查看收藏的批次選取</dd><dt><kbd>?</kbd></dt><dd>顯示這份說明</dd><dt><kbd>Esc</kbd></dt><dd>關閉對話框</dd></dl>
+      <dl class="shortcut-list"><dt><kbd>/</kbd></dt><dd>跳到搜尋</dd><dt><kbd>J</kbd> / <kbd>K</kbd></dt><dd>移動目前查看收藏或審核項目</dd><dt><kbd>A</kbd> / <kbd>R</kbd></dt><dd>在品質審核採用／拒絕主要候選</dd><dt><kbd>E</kbd> / <kbd>S</kbd></dt><dd>在品質審核手動編輯／本次略過</dd><dt><kbd>Space</kbd></dt><dd>切換目前查看收藏的批次選取</dd><dt><kbd>?</kbd></dt><dd>顯示這份說明</dd><dt><kbd>Esc</kbd></dt><dd>關閉對話框</dd></dl>
     </div>
   </dialog>
 

@@ -115,6 +115,17 @@
     libraryLoadError: false,
     libraryEmptyContext: null,
     workbenchLoaded: false,
+    reviewLoaded: false,
+    reviewLoading: false,
+    reviewItems: [],
+    reviewTotal: 0,
+    reviewPage: 1,
+    reviewTotalPages: 0,
+    reviewPosition: 0,
+    reviewKind: "all",
+    reviewSkipped: new Set(),
+    reviewRequestNumber: 0,
+    reviewReturnId: null,
     candidates: [],
     preflight: null,
     preflightPair: null,
@@ -145,6 +156,7 @@
     activitySignature: null,
     scanPreflight: null,
     scanRequest: null,
+    metadataEditCollection: null,
   };
 
   if (!Array.isArray(state.recent)) state.recent = [];
@@ -334,6 +346,34 @@
       selectionCount: byId("selection-count"),
       selectionWorkbenchLink: byId("selection-workbench-link"),
       workbenchCount: byId("workbench-count"),
+      reviewCount: byId("review-count"),
+      reviewTotal: byId("review-total"),
+      reviewPosition: byId("review-position"),
+      reviewKind: byId("review-kind"),
+      reviewLoading: byId("review-loading"),
+      reviewError: byId("review-error"),
+      reviewErrorMessage: byId("review-error-message"),
+      reviewEmpty: byId("review-empty"),
+      reviewEmptyMessage: byId("review-empty-message"),
+      resetReviewSkips: byId("reset-review-skips"),
+      reviewDesk: byId("review-desk"),
+      reviewCover: byId("review-cover"),
+      reviewSource: byId("review-source"),
+      reviewSequence: byId("review-sequence"),
+      reviewTitle: byId("review-title"),
+      reviewFilename: byId("review-filename"),
+      reviewContext: byId("review-context"),
+      reviewProblems: byId("review-problems"),
+      reviewDecision: byId("review-decision"),
+      reviewMoreEvidence: byId("review-more-evidence"),
+      reviewAllIssues: byId("review-all-issues"),
+      reviewAccept: byId("review-accept"),
+      reviewReject: byId("review-reject"),
+      reviewEdit: byId("review-edit"),
+      reviewSkip: byId("review-skip"),
+      reviewDetail: byId("review-detail"),
+      reviewPrevious: byId("review-previous"),
+      reviewNext: byId("review-next"),
       workbenchSelectionSummary: byId("workbench-selection-summary"),
       selectedCollectionList: byId("selected-collection-list"),
       selectionEmpty: byId("selection-empty"),
@@ -501,6 +541,22 @@
     ui.deleteForm.addEventListener("input", syncDeleteMode);
     ui.deleteForm.addEventListener("submit", executeDelete);
     byId("refresh-candidates").addEventListener("click", loadTombstoneCandidates);
+    byId("refresh-review").addEventListener("click", () => loadReviewQueue({ preferredId: currentReviewItem()?.collection.id }));
+    byId("retry-review").addEventListener("click", () => loadReviewQueue({ preferredId: currentReviewItem()?.collection.id }));
+    ui.reviewKind.addEventListener("change", () => {
+      state.reviewKind = ui.reviewKind.value;
+      state.reviewPage = 1;
+      state.reviewPosition = 0;
+      loadReviewQueue();
+    });
+    ui.resetReviewSkips.addEventListener("click", resetReviewSkips);
+    ui.reviewAccept.addEventListener("click", () => decideReviewCandidate("select"));
+    ui.reviewReject.addEventListener("click", () => decideReviewCandidate("reject"));
+    ui.reviewEdit.addEventListener("click", openReviewEditor);
+    ui.reviewSkip.addEventListener("click", skipCurrentReviewItem);
+    ui.reviewDetail.addEventListener("click", openReviewDetail);
+    ui.reviewPrevious.addEventListener("click", () => moveReviewPosition(-1));
+    ui.reviewNext.addEventListener("click", () => moveReviewPosition(1));
     ui.consolidationForm.addEventListener("input", syncConsolidationConfirmation);
     ui.consolidationForm.addEventListener("change", syncConsolidationConfirmation);
     ui.consolidationForm.addEventListener("submit", executeConsolidation);
@@ -517,6 +573,7 @@
         if (event.target === dialog) dialog.close();
       });
     });
+    ui.metadataDialog.addEventListener("close", () => { state.metadataEditCollection = null; });
     document.addEventListener("keydown", handleKeyboard);
   }
 
@@ -552,7 +609,7 @@
     const previousRoute = state.route;
     const parsedRoute = parseRouteHash();
     const route = parsedRoute.route;
-    const nextRoute = ["shelf", "library", "workbench", "stats", "settings"].includes(route) ? route : "shelf";
+    const nextRoute = ["shelf", "library", "review", "workbench", "stats", "settings"].includes(route) ? route : "shelf";
     if (previousRoute === "library" && nextRoute !== "library") {
       if (!state.leavingLibraryContextCaptured) rememberLibraryContext();
       state.leavingLibraryContextCaptured = false;
@@ -623,6 +680,11 @@
       scheduleLibraryLoadCheck();
     }
     if (state.route === "workbench") loadWorkbench();
+    if (state.route === "review") {
+      const preferredId = state.reviewReturnId || currentReviewItem()?.collection.id;
+      state.reviewReturnId = null;
+      loadReviewQueue({ preferredId });
+    }
     if (state.route === "stats") loadStats();
     if (state.route === "settings") loadSettingsPage();
     if (state.route !== "library") window.scrollTo({ top: 0, behavior: "auto" });
@@ -776,7 +838,7 @@
   }
 
   function routeTitle(route) {
-    return { shelf: "書架", library: "全部藏書", workbench: "工作台", stats: "統計", settings: "設定" }[route];
+    return { shelf: "書架", library: "全部藏書", review: "品質審核", workbench: "工作台", stats: "統計", settings: "設定" }[route];
   }
 
   function startActivityMonitoring() {
@@ -2806,8 +2868,9 @@
     }
   }
 
-  function openMetadataDialog(field = null) {
-    if (!state.selected) return;
+  function openMetadataDialog(field = null, collection = state.selected) {
+    if (!collection) return;
+    state.metadataEditCollection = collection;
     const selectedField = field && METADATA_LABELS[field] ? field : "title";
     ui.metadataField.value = selectedField;
     syncMetadataEditor();
@@ -2828,7 +2891,7 @@
 
   function syncMetadataEditor() {
     const field = ui.metadataField.value;
-    const collection = state.selected;
+    const collection = state.metadataEditCollection || state.selected;
     const isClassification = field === "classification";
     const isBoolean = field === "is_dl";
     ui.metadataTextGroup.hidden = isClassification || isBoolean;
@@ -2851,7 +2914,8 @@
 
   async function saveMetadata(event) {
     event.preventDefault();
-    if (!state.selected) return;
+    const target = state.metadataEditCollection || state.selected;
+    if (!target) return;
     const field = ui.metadataField.value;
     let value;
     if (field === "classification") {
@@ -2873,15 +2937,22 @@
     const submit = ui.metadataForm.querySelector('[type="submit"]');
     submit.disabled = true;
     try {
-      const collection = await api(`/api/collections/${state.selected.id}/metadata/${field}`, {
+      const collection = await api(`/api/collections/${target.id}/metadata/${field}`, {
         method: "PUT",
         body: { value },
       });
-      replaceSelected(collection);
       invalidateDerivedData();
-      if (ui.metadataEvidence.open) loadMetadataEvidence(true);
       ui.metadataDialog.close();
-      toast(`已儲存${METADATA_LABELS[field]}的手動值`);
+      if (state.route === "review") {
+        invalidateDerivedData({ library: true });
+        await loadReviewQueue({ preferredId: target.id });
+        const remains = state.reviewItems.some((item) => item.collection.id === target.id);
+        toast(`已儲存${METADATA_LABELS[field]}的手動值${remains ? "；這本收藏仍有其他待審問題" : "；已前進下一筆"}`);
+      } else {
+        replaceSelected(collection);
+        if (ui.metadataEvidence.open) loadMetadataEvidence(true);
+        toast(`已儲存${METADATA_LABELS[field]}的手動值`);
+      }
     } catch (error) {
       toast(error.message, true);
     } finally {
@@ -2890,16 +2961,23 @@
   }
 
   async function clearManualMetadata() {
-    if (!state.selected) return;
+    const target = state.metadataEditCollection || state.selected;
+    if (!target) return;
     const field = ui.metadataField.value;
     if (!window.confirm(`清除${METADATA_LABELS[field]}的手動值？系統會改用下一順位的資料。`)) return;
     try {
-      const collection = await api(`/api/collections/${state.selected.id}/metadata/${field}`, { method: "DELETE" });
-      replaceSelected(collection);
+      const collection = await api(`/api/collections/${target.id}/metadata/${field}`, { method: "DELETE" });
       invalidateDerivedData();
-      if (ui.metadataEvidence.open) loadMetadataEvidence(true);
       ui.metadataDialog.close();
-      toast(`已清除${METADATA_LABELS[field]}的手動值`);
+      if (state.route === "review") {
+        invalidateDerivedData({ library: true });
+        await loadReviewQueue({ preferredId: target.id });
+        toast(`已清除${METADATA_LABELS[field]}的手動值；Queue 已依最新狀態更新`);
+      } else {
+        replaceSelected(collection);
+        if (ui.metadataEvidence.open) loadMetadataEvidence(true);
+        toast(`已清除${METADATA_LABELS[field]}的手動值`);
+      }
     } catch (error) {
       toast(error.message, true);
     }
@@ -3410,6 +3488,250 @@
     ui.workbenchCount.textContent = String(count);
     ui.workbenchCount.hidden = count === 0;
     ui.workbenchCount.title = `${state.selectedIds.size} 筆批次選取，${pending} 筆候選待裁決`;
+  }
+
+  async function loadReviewQueue({ preferredId = null } = {}) {
+    if (state.reviewLoading) return;
+    const requestNumber = ++state.reviewRequestNumber;
+    state.reviewLoading = true;
+    ui.reviewLoading.hidden = false;
+    ui.reviewError.hidden = true;
+    try {
+      const page = await api(`/api/review-queue?kind=${encodeURIComponent(state.reviewKind)}&page=${state.reviewPage}&per_page=100`);
+      if (requestNumber !== state.reviewRequestNumber) return;
+      state.reviewItems = page.items || [];
+      state.reviewTotal = page.pagination?.total || 0;
+      state.reviewTotalPages = page.pagination?.total_pages || 0;
+      if (!state.reviewItems.length && state.reviewPage > Math.max(1, state.reviewTotalPages)) {
+        state.reviewPage = Math.max(1, state.reviewTotalPages);
+        state.reviewLoading = false;
+        return loadReviewQueue({ preferredId });
+      }
+      const preferredIndex = preferredId == null ? -1 : state.reviewItems.findIndex((item) => item.collection.id === preferredId && !state.reviewSkipped.has(item.collection.id));
+      if (preferredIndex >= 0) state.reviewPosition = preferredIndex;
+      else state.reviewPosition = Math.min(state.reviewPosition, Math.max(0, state.reviewItems.length - 1));
+      const available = availableReviewIndices();
+      if (available.length && !available.includes(state.reviewPosition)) state.reviewPosition = available.find((index) => index >= state.reviewPosition) ?? available[available.length - 1];
+      state.reviewLoaded = true;
+      updateReviewBadge();
+      renderReviewQueue();
+    } catch (error) {
+      if (requestNumber !== state.reviewRequestNumber) return;
+      ui.reviewError.hidden = false;
+      ui.reviewErrorMessage.textContent = error.message;
+      ui.reviewDesk.hidden = true;
+      ui.reviewEmpty.hidden = true;
+    } finally {
+      if (requestNumber === state.reviewRequestNumber) {
+        state.reviewLoading = false;
+        ui.reviewLoading.hidden = true;
+      }
+    }
+  }
+
+  function updateReviewBadge() {
+    ui.reviewCount.textContent = String(state.reviewTotal);
+    ui.reviewCount.hidden = state.reviewTotal === 0;
+  }
+
+  function availableReviewIndices() {
+    const indices = [];
+    state.reviewItems.forEach((item, index) => {
+      if (!state.reviewSkipped.has(item.collection.id)) indices.push(index);
+    });
+    return indices;
+  }
+
+  function currentReviewItem() {
+    return state.reviewItems[state.reviewPosition] || null;
+  }
+
+  function reviewItemIssues(item) {
+    if (!item) return { candidates: [], missing: [] };
+    const candidates = (item.metadata?.fields || []).flatMap((field) =>
+      (field.assertions || []).filter((assertion) => assertion.status === "candidate").map((assertion) => ({ type: "candidate", field: field.field, assertion, history: field })),
+    );
+    const collection = item.collection;
+    const missing = [
+      ["title", !collection.title], ["event", !collection.event], ["circle", !collection.circle],
+      ["authors", !collection.authors?.length], ["parody", !collection.parody], ["classification", !collection.classification_top],
+    ].filter(([, isMissing]) => isMissing).map(([field]) => ({
+      type: "missing",
+      field,
+      history: (item.metadata?.fields || []).find((candidate) => candidate.field === field),
+    }));
+    return { candidates, missing };
+  }
+
+  function primaryReviewIssue(item) {
+    const issues = reviewItemIssues(item);
+    return issues.candidates[0] || issues.missing[0] || null;
+  }
+
+  function renderReviewQueue() {
+    const available = availableReviewIndices();
+    const skippedCount = state.reviewSkipped.size;
+    ui.reviewKind.value = state.reviewKind;
+    ui.reviewTotal.textContent = `${formatNumber(state.reviewTotal)} 本收藏需要人工處理`;
+    ui.reviewPosition.textContent = skippedCount ? `本次已略過 ${formatNumber(skippedCount)} 本` : "完成裁決或補值後，Queue 會依最新狀態更新";
+    ui.reviewEmpty.hidden = available.length > 0;
+    ui.reviewDesk.hidden = available.length === 0;
+    ui.resetReviewSkips.hidden = skippedCount === 0;
+    if (!available.length) {
+      ui.reviewEmptyMessage.textContent = state.reviewTotal > 0 ? "目前頁面的項目都在本次 session 略過清單中；重設略過後可再次處理。" : "缺少的主要欄位都已補齊，候選也都完成裁決。";
+      return;
+    }
+    if (!available.includes(state.reviewPosition)) state.reviewPosition = available[0];
+    const item = currentReviewItem();
+    const collection = item.collection;
+    const issues = reviewItemIssues(item);
+    const primary = primaryReviewIssue(item);
+    bindThumbnail(ui.reviewCover, collection.id);
+    ui.reviewCover.alt = `${displayTitle(collection)}封面`;
+    ui.reviewSource.textContent = collection.root?.source === "downloads" ? "新收藏" : "典藏庫";
+    const globalPosition = (state.reviewPage - 1) * 100 + state.reviewPosition + 1;
+    ui.reviewSequence.textContent = `REVIEW ${String(globalPosition).padStart(3, "0")} / ${String(state.reviewTotal).padStart(3, "0")}`;
+    ui.reviewTitle.textContent = displayTitle(collection);
+    ui.reviewFilename.textContent = collection.filename;
+    ui.reviewContext.replaceChildren();
+    [["場次", collection.event], ["社團", collection.circle], ["作者", collection.authors?.join("、")], ["原作", collection.parody || collection.parody_raw]].forEach(([label, value]) => {
+      ui.reviewContext.append(el("dt", "", label), el("dd", value ? "" : "metadata-missing", value || "未設定"));
+    });
+    ui.reviewProblems.replaceChildren();
+    issues.candidates.forEach((issue) => ui.reviewProblems.append(el("span", "review-problem candidate", `${METADATA_LABELS[issue.field]}候選`)));
+    issues.missing.forEach((issue) => ui.reviewProblems.append(el("span", "review-problem missing", `缺${METADATA_LABELS[issue.field]}`)));
+    renderReviewDecision(primary);
+    renderReviewAllIssues(issues, primary);
+    const hasCandidate = primary?.type === "candidate";
+    ui.reviewAccept.disabled = !hasCandidate;
+    ui.reviewReject.disabled = !hasCandidate;
+    ui.reviewEdit.disabled = !primary;
+    ui.reviewPrevious.disabled = state.reviewPage === 1 && state.reviewPosition === available[0];
+    ui.reviewNext.disabled = state.reviewPage >= state.reviewTotalPages && state.reviewPosition === available[available.length - 1];
+  }
+
+  function renderReviewDecision(issue) {
+    ui.reviewDecision.replaceChildren();
+    if (!issue) return;
+    const heading = el("header", "review-decision-heading");
+    heading.append(el("span", "review-field-index", METADATA_LABELS[issue.field] || issue.field), el("h3", "", issue.type === "candidate" ? "是否採用這筆候選？" : `補齊${METADATA_LABELS[issue.field]}`));
+    ui.reviewDecision.append(heading);
+    if (issue.type === "missing") {
+      const empty = el("div", "review-missing-callout");
+      empty.append(el("strong", "", "目前值：未設定"), el("p", "", "這個主要欄位沒有有效 selection。使用手動編輯寫入後，原有 assertion 與來源歷史仍會保留。"));
+      ui.reviewDecision.append(empty);
+      return;
+    }
+    const selected = (issue.history.assertions || []).find((assertion) => assertion.selected);
+    const comparison = el("div", "review-comparison");
+    comparison.append(reviewEvidenceColumn("CURRENT / 目前採用", selected, issue.history.selection), reviewEvidenceColumn("CANDIDATE / 待裁決", issue.assertion, null, true));
+    ui.reviewDecision.append(comparison);
+  }
+
+  function reviewEvidenceColumn(label, assertion, selection = null, candidate = false) {
+    const column = el("section", `review-evidence-column${candidate ? " candidate" : ""}`);
+    column.append(el("p", "review-column-label", label));
+    if (!assertion) {
+      column.append(el("strong", "metadata-missing", "未設定"), el("small", "", "沒有目前 selection"));
+      return column;
+    }
+    const badges = el("div", "assertion-badges");
+    badges.append(el("span", `evidence-badge source-${assertion.source}`, METADATA_SOURCE_LABELS[assertion.source] || assertion.source), el("span", `evidence-badge status-${assertion.status}`, ASSERTION_STATUS_LABELS[assertion.status] || assertion.status));
+    column.append(badges, el("strong", "review-evidence-value", formatEvidenceValue(assertion.value)));
+    column.append(el("p", "assertion-reference", assertion.source_reference || (assertion.parser_run_id ? `parser run #${assertion.parser_run_id}` : "沒有額外來源參照")));
+    if (selection) column.append(el("small", "review-selection-kind", `selection：${SELECTION_KIND_LABELS[selection.selected_by] || selection.selected_by}`));
+    if (assertion.reason) column.append(el("p", "assertion-reason", assertion.reason));
+    if (assertion.confidence_total != null) column.append(confidenceEvidence(assertion.confidence_total, assertion.confidence));
+    return column;
+  }
+
+  function renderReviewAllIssues(issues, primary) {
+    ui.reviewAllIssues.replaceChildren();
+    const all = [...issues.candidates, ...issues.missing].filter((issue) => issue !== primary);
+    ui.reviewMoreEvidence.hidden = all.length === 0;
+    if (!all.length) return;
+    const list = el("ol", "review-issue-list");
+    all.forEach((issue) => {
+      const item = el("li", "review-issue-row");
+      item.append(el("strong", "", issue.type === "candidate" ? `${METADATA_LABELS[issue.field]}候選` : `缺${METADATA_LABELS[issue.field]}`));
+      if (issue.type === "candidate") {
+        item.append(el("span", "", formatEvidenceValue(issue.assertion.value)), el("small", "", `${METADATA_SOURCE_LABELS[issue.assertion.source] || issue.assertion.source}${issue.assertion.confidence_total == null ? "" : ` · 信心 ${formatPercent(issue.assertion.confidence_total)}`}`));
+        if (issue.assertion.reason) item.append(el("p", "", issue.assertion.reason));
+      } else item.append(el("span", "metadata-missing", "目前未設定"));
+      list.append(item);
+    });
+    ui.reviewAllIssues.append(list);
+  }
+
+  async function decideReviewCandidate(decision) {
+    const item = currentReviewItem();
+    const issue = primaryReviewIssue(item);
+    if (!item || issue?.type !== "candidate") return;
+    if (decision === "reject" && !window.confirm("拒絕後仍會保留證據，但這筆 assertion 不能再次選取。確定拒絕？")) return;
+    [ui.reviewAccept, ui.reviewReject, ui.reviewEdit, ui.reviewSkip].forEach((button) => { button.disabled = true; });
+    try {
+      await api(`/api/collections/${item.collection.id}/metadata/${issue.field}/assertions/${issue.assertion.id}`, { method: "PATCH", body: { decision } });
+      invalidateDerivedData({ library: true });
+      await loadReviewQueue({ preferredId: item.collection.id });
+      const remains = state.reviewItems.some((candidate) => candidate.collection.id === item.collection.id);
+      toast(`${decision === "select" ? "已採用" : "已拒絕"} assertion #${issue.assertion.id}${remains ? "；這本收藏仍有其他待審問題" : "；已前進下一筆"}`);
+    } catch (error) {
+      toast(`${decision === "select" ? "無法採用" : "無法拒絕"} assertion #${issue.assertion.id}：${error.message}`, true);
+      renderReviewQueue();
+    }
+  }
+
+  function openReviewEditor() {
+    const item = currentReviewItem();
+    const issue = primaryReviewIssue(item);
+    if (item && issue) openMetadataDialog(issue.field, item.collection);
+  }
+
+  function skipCurrentReviewItem() {
+    const item = currentReviewItem();
+    if (!item) return;
+    state.reviewSkipped.add(item.collection.id);
+    const next = availableReviewIndices().find((index) => index > state.reviewPosition);
+    if (next != null) {
+      state.reviewPosition = next;
+      renderReviewQueue();
+    } else if (state.reviewPage < state.reviewTotalPages) {
+      state.reviewPage += 1;
+      state.reviewPosition = 0;
+      loadReviewQueue();
+    } else renderReviewQueue();
+  }
+
+  function resetReviewSkips() {
+    state.reviewSkipped.clear();
+    state.reviewPage = 1;
+    state.reviewPosition = 0;
+    loadReviewQueue();
+  }
+
+  function openReviewDetail() {
+    const item = currentReviewItem();
+    if (!item) return;
+    state.reviewReturnId = item.collection.id;
+    navigateToCollection(item.collection);
+  }
+
+  function moveReviewPosition(direction) {
+    const available = availableReviewIndices();
+    const next = available.indexOf(state.reviewPosition) + direction;
+    if (next >= 0 && next < available.length) {
+      state.reviewPosition = available[next];
+      renderReviewQueue();
+      ui.reviewDesk.scrollIntoView({ block: "start", behavior: "smooth" });
+    } else if (direction > 0 && state.reviewPage < state.reviewTotalPages) {
+      state.reviewPage += 1;
+      state.reviewPosition = 0;
+      loadReviewQueue();
+    } else if (direction < 0 && state.reviewPage > 1) {
+      state.reviewPage -= 1;
+      state.reviewPosition = 99;
+      loadReviewQueue();
+    }
   }
 
   function loadWorkbench() {
@@ -4678,6 +5000,19 @@
     if (event.key === "?" && !isTyping && !isDialogOpen()) {
       event.preventDefault();
       byId("shortcuts-dialog").showModal();
+      return;
+    }
+    if (state.route === "review" && !isTyping && !isDialogOpen() && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      const key = event.key.toLowerCase();
+      if (["a", "r", "e", "s", "j", "k"].includes(key)) {
+        event.preventDefault();
+        if (key === "a" && !ui.reviewAccept.disabled) decideReviewCandidate("select");
+        else if (key === "r" && !ui.reviewReject.disabled) decideReviewCandidate("reject");
+        else if (key === "e" && !ui.reviewEdit.disabled) openReviewEditor();
+        else if (key === "s" && !ui.reviewSkip.disabled) skipCurrentReviewItem();
+        else if (key === "j") moveReviewPosition(1);
+        else if (key === "k") moveReviewPosition(-1);
+      }
       return;
     }
     if (state.route !== "library" || isTyping || isDialogOpen()) return;

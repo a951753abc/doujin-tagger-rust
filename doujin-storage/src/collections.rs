@@ -6,6 +6,7 @@ use doujin_scanner::SourceKind;
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{OptionalExtension, params, params_from_iter};
 
+use crate::metadata::MetadataHistory;
 use crate::{CatalogRepository, StorageError, StorageResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +78,45 @@ pub struct CollectionPage {
     pub page: u32,
     pub per_page: u32,
     pub total: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewQueueQuery {
+    pub page: u32,
+    pub per_page: u32,
+    pub kind: ReviewQueueKind,
+}
+
+impl Default for ReviewQueueQuery {
+    fn default() -> Self {
+        Self {
+            page: 1,
+            per_page: 100,
+            kind: ReviewQueueKind::All,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReviewQueueKind {
+    #[default]
+    All,
+    Missing,
+    Candidate,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReviewQueuePage {
+    pub items: Vec<ReviewQueueItem>,
+    pub page: u32,
+    pub per_page: u32,
+    pub total: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReviewQueueItem {
+    pub collection: CollectionSnapshot,
+    pub metadata: MetadataHistory,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,6 +264,53 @@ impl CatalogRepository {
         })
     }
 
+    pub fn review_queue(&self, query: &ReviewQueueQuery) -> StorageResult<ReviewQueuePage> {
+        let page = query.page.max(1);
+        let per_page = query.per_page.clamp(1, 100);
+        let condition = review_queue_condition(query.kind);
+        let total_sql = format!(
+            "SELECT count(*) {COLLECTION_FROM_SQL}
+             WHERE collection.status = 'active' AND ({condition})"
+        );
+        let total = self
+            .connection
+            .query_row(&total_sql, [], |row| row.get(0))?;
+
+        let offset = i64::from(page - 1) * i64::from(per_page);
+        let query_sql = format!(
+            "{COLLECTION_SELECT_SQL} {COLLECTION_FROM_SQL}
+             WHERE collection.status = 'active' AND ({condition})
+             ORDER BY CASE WHEN {REVIEW_CANDIDATE_CONDITION} THEN 0 ELSE 1 END,
+                      metadata.updated_at ASC, collection.id ASC
+             LIMIT ?1 OFFSET ?2"
+        );
+        let collections = {
+            let mut statement = self.connection.prepare(&query_sql)?;
+            statement
+                .query_map(params![i64::from(per_page), offset], map_collection_row)?
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .map(decode_collection_row)
+                .collect::<StorageResult<Vec<_>>>()?
+        };
+        let items = collections
+            .into_iter()
+            .map(|collection| {
+                let metadata = self.metadata_history(collection.id)?;
+                Ok(ReviewQueueItem {
+                    collection,
+                    metadata,
+                })
+            })
+            .collect::<StorageResult<Vec<_>>>()?;
+        Ok(ReviewQueuePage {
+            items,
+            page,
+            per_page,
+            total,
+        })
+    }
+
     pub fn collection(&self, collection_id: i64) -> StorageResult<CollectionSnapshot> {
         let sql = format!(
             "{COLLECTION_SELECT_SQL} {COLLECTION_FROM_SQL}
@@ -271,6 +358,32 @@ impl CatalogRepository {
             position,
             page,
         })
+    }
+}
+
+const REVIEW_MISSING_CONDITION: &str = "(
+    metadata.title IS NULL OR trim(metadata.title) = ''
+    OR metadata.event IS NULL OR trim(metadata.event) = ''
+    OR metadata.circle IS NULL OR trim(metadata.circle) = ''
+    OR json_array_length(metadata.authors_json) = 0
+    OR metadata.parody IS NULL OR trim(metadata.parody) = ''
+    OR metadata.classification_top IS NULL OR trim(metadata.classification_top) = ''
+)";
+
+const REVIEW_CANDIDATE_CONDITION: &str = "EXISTS (
+    SELECT 1
+    FROM metadata_assertions AS review_assertion
+    WHERE review_assertion.collection_id = collection.id
+      AND review_assertion.status = 'candidate'
+)";
+
+fn review_queue_condition(kind: ReviewQueueKind) -> String {
+    match kind {
+        ReviewQueueKind::All => {
+            format!("{REVIEW_MISSING_CONDITION} OR {REVIEW_CANDIDATE_CONDITION}")
+        }
+        ReviewQueueKind::Missing => REVIEW_MISSING_CONDITION.to_owned(),
+        ReviewQueueKind::Candidate => REVIEW_CANDIDATE_CONDITION.to_owned(),
     }
 }
 
