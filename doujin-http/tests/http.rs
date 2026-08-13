@@ -2606,6 +2606,71 @@ async fn health_and_scan_endpoints_work_over_a_real_loopback_socket() {
 }
 
 #[tokio::test]
+async fn scan_preflight_and_no_rename_share_a_read_only_contract() {
+    let tree = TestTree::new("scan-preflight");
+    let original_name = "%28C77%29%20%5Bcircle%5D%20title.zip";
+    tree.zip(original_name);
+    let original = tree.library().join(original_name);
+    let renamed = tree.library().join("(C77) [circle] title.zip");
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    repository
+        .register_library_root(&tree.library(), SourceKind::Downloads, "下載區")
+        .expect("register root");
+    let application = ApplicationService::new(repository, NoopRecycleBin);
+    let server = RunningServer::start(application).await;
+
+    let preflight = server.request("POST", "/api/scans/preflight", &[]).await;
+    assert_eq!(200, preflight.status);
+    assert_eq!(1, preflight.json["expectation"]["new_collections"]);
+    assert_eq!(0, preflight.json["expectation"]["already_known"]);
+    assert_eq!(1, preflight.json["expectation"]["planned_renames"]);
+    assert_eq!(
+        Some(original.to_string_lossy().as_ref()),
+        preflight.json["renames"][0]["before"].as_str()
+    );
+    assert_eq!(
+        Some(renamed.to_string_lossy().as_ref()),
+        preflight.json["renames"][0]["after"].as_str()
+    );
+    assert!(original.exists());
+    assert!(!renamed.exists());
+    let latest = server.request("GET", "/api/scans/latest", &[]).await;
+    assert!(latest.json["scan"].is_null());
+
+    let scan = server
+        .request_json(
+            "POST",
+            "/api/scans",
+            &serde_json::json!({
+                "mode": "no_rename",
+                "expected": preflight.json["expectation"].clone(),
+            }),
+        )
+        .await;
+    assert_eq!(200, scan.status);
+    assert_eq!(1, scan.json["summary"]["added"]);
+    assert_eq!(0, scan.json["summary"]["renamed"]);
+    assert_eq!(1, scan.json["summary"]["planned_renames"]);
+    assert_eq!(
+        serde_json::json!([]),
+        scan.json["summary"]["preflight_differences"]
+    );
+    assert!(original.exists());
+    assert!(!renamed.exists());
+
+    let invalid = server
+        .request_json(
+            "POST",
+            "/api/scans",
+            &serde_json::json!({ "mode": "unsafe" }),
+        )
+        .await;
+    assert_eq!(400, invalid.status);
+    assert_eq!("invalid_scan_mode", invalid.json["error"]["code"]);
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn missing_configured_root_returns_a_persisted_partial_scan() {
     let tree = TestTree::new("missing-root");
     fs::create_dir_all(tree.library()).expect("create library");

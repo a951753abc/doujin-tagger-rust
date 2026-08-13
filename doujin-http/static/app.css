@@ -3969,6 +3969,106 @@ dialog::backdrop {
 #scan-results-dialog {
   width: min(760px, calc(100% - 24px));
 }
+#scan-preflight-dialog {
+  width: min(840px, calc(100% - 24px));
+}
+.scan-preflight-shell {
+  display: grid;
+  gap: 16px;
+}
+.scan-preflight-shell .dialog-intro,
+.scan-preflight-shell .long-task-warning {
+  margin: 0;
+}
+.scan-preflight-mode {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-block: 1px solid var(--line);
+}
+.scan-preflight-mode label {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  padding: 14px 16px 14px 2px;
+  cursor: pointer;
+}
+.scan-preflight-mode label + label {
+  padding-inline-start: 16px;
+  border-inline-start: 1px solid var(--line);
+}
+.scan-preflight-mode input {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+.scan-preflight-mode span {
+  display: grid;
+  gap: 4px;
+}
+.scan-preflight-mode strong {
+  color: var(--accent-dark);
+  font-size: 0.875rem;
+}
+.scan-preflight-mode small,
+.scan-change-item small {
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+.scan-preflight-details summary {
+  width: fit-content;
+  color: var(--accent);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.scan-preflight-details[open] summary {
+  margin-bottom: 14px;
+}
+.scan-preflight-section + .scan-preflight-section {
+  margin-top: 18px;
+}
+.scan-preflight-section h3 {
+  margin: 0 0 8px;
+  color: var(--ink-soft);
+  font-family: var(--sans);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+}
+.scan-change-list {
+  max-height: 220px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  border-block: 1px solid var(--line);
+  list-style: none;
+}
+.scan-change-item {
+  display: grid;
+  gap: 5px;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--line);
+}
+.scan-change-item:last-child {
+  border-bottom: 0;
+}
+.scan-change-item code,
+.scan-rename-diff code {
+  overflow-wrap: anywhere;
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+}
+.scan-rename-diff {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+.scan-rename-diff span {
+  color: var(--accent);
+  font-weight: 700;
+}
 .scan-issue-list,
 .thumbnail-cache-preflight-roots {
   margin: 0;
@@ -4054,6 +4154,25 @@ dialog::backdrop {
   color: var(--ink-soft);
   font-size: 0.8125rem;
   line-height: 1.6;
+}
+
+@media (max-width: 640px) {
+  .scan-preflight-mode {
+    grid-template-columns: 1fr;
+  }
+  .scan-preflight-mode label + label {
+    padding-inline-start: 2px;
+    border-block-start: 1px solid var(--line);
+    border-inline-start: 0;
+  }
+  .scan-rename-diff {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+  .scan-rename-diff span {
+    transform: rotate(90deg);
+    transform-origin: left center;
+  }
 }
 .long-task-warning strong {
   color: var(--ink);

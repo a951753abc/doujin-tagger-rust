@@ -14,7 +14,10 @@ use doujin_files::{
     FileServiceError, LaunchError, LaunchReceipt, MoveRequest, RecycleBin,
     SystemCollectionLauncher, SystemRecycleBin,
 };
-use doujin_scanner::{ScanIssueKind, ScanRoot, SourceKind, scan_new_collections};
+use doujin_scanner::{
+    FilenameNormalization, ScanIssueKind, ScanMode, ScanRoot, SourceKind,
+    scan_new_collections_with_mode,
+};
 use doujin_storage::collections::{
     CollectionPage, CollectionQuery, CollectionQueryLocation, CollectionSnapshot,
 };
@@ -37,7 +40,7 @@ use doujin_thumbnails::{
     ThumbnailConfig, ThumbnailError, ThumbnailGenerationRequest, ThumbnailGenerationSuccess,
     source_fingerprint,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
 pub enum ApplicationError {
@@ -190,6 +193,7 @@ pub struct ApplicationScanSummary {
     pub skipped: usize,
     pub ingest_failed: usize,
     pub renamed: usize,
+    pub planned_renames: usize,
     pub normalization_warnings: usize,
     pub parse_complete: usize,
     pub parse_partial: usize,
@@ -198,6 +202,7 @@ pub struct ApplicationScanSummary {
     pub candidate_links_created: usize,
     pub scan_elapsed_ms: u128,
     pub elapsed_ms: u128,
+    pub preflight_differences: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -205,6 +210,68 @@ pub struct ApplicationScanReport {
     pub scan_run_id: i64,
     pub status: ApplicationScanStatus,
     pub summary: ApplicationScanSummary,
+    pub issues: Vec<ApplicationScanIssue>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ApplicationScanMode {
+    #[default]
+    ApplySafeRenames,
+    NoRename,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApplicationScanExpectation {
+    pub discovered: usize,
+    pub new_collections: usize,
+    pub already_known: usize,
+    pub planned_renames: usize,
+    pub normalization_warnings: usize,
+    pub possible_tombstones: usize,
+    pub possible_candidate_links: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ApplicationScanOptions {
+    pub mode: ApplicationScanMode,
+    pub expected: Option<ApplicationScanExpectation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ApplicationScanRootScope {
+    pub path: PathBuf,
+    pub label: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ApplicationPlannedRename {
+    pub before: PathBuf,
+    pub after: PathBuf,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ApplicationRenameWarning {
+    pub path: PathBuf,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ApplicationTombstonePreflightCandidate {
+    pub tombstone_collection_id: i64,
+    pub tombstone_path: PathBuf,
+    pub candidate_collection_id: Option<i64>,
+    pub candidate_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ApplicationScanPreflight {
+    pub roots: Vec<ApplicationScanRootScope>,
+    pub expectation: ApplicationScanExpectation,
+    pub renames: Vec<ApplicationPlannedRename>,
+    pub rename_warnings: Vec<ApplicationRenameWarning>,
+    pub tombstone_candidates: Vec<ApplicationTombstonePreflightCandidate>,
     pub issues: Vec<ApplicationScanIssue>,
 }
 
@@ -372,7 +439,137 @@ impl<R: RecycleBin> ApplicationService<R> {
         }
     }
 
+    pub fn preflight_scan(
+        &self,
+        roots: &[ScanRoot],
+    ) -> ApplicationResult<ApplicationScanPreflight> {
+        let existing_paths = self.repository.current_paths()?;
+        let locations = self.repository.active_collection_locations()?;
+        let scan_output = scan_new_collections_with_mode(roots, &existing_paths, ScanMode::DryRun);
+        let safe_root_paths = safely_scanned_root_paths(roots, &scan_output.issues);
+        let mut renames = Vec::new();
+        let mut rename_warnings = Vec::new();
+        for pending in &scan_output.pending {
+            match &pending.filename_normalization {
+                FilenameNormalization::PlannedRename { original, renamed } => {
+                    renames.push(ApplicationPlannedRename {
+                        before: original.clone(),
+                        after: renamed.clone(),
+                        reason: "percent_decode_and_structural_parse".to_owned(),
+                    });
+                }
+                FilenameNormalization::KeptOriginal { reason } => {
+                    rename_warnings.push(ApplicationRenameWarning {
+                        path: pending.path.clone(),
+                        reason: reason.clone(),
+                    });
+                }
+                FilenameNormalization::Unchanged | FilenameNormalization::Renamed { .. } => {}
+            }
+        }
+
+        let anticipated_paths = scan_output
+            .pending
+            .iter()
+            .map(|pending| match &pending.filename_normalization {
+                FilenameNormalization::PlannedRename { renamed, .. } => renamed.clone(),
+                _ => pending.path.clone(),
+            })
+            .collect::<Vec<_>>();
+        let mut tombstone_candidates = Vec::new();
+        for missing in &locations {
+            if !safe_root_paths.contains(&missing.root_path)
+                || !missing.root_path.is_dir()
+                || missing.path.exists()
+            {
+                continue;
+            }
+            let Some(filename) = missing.path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            for candidate in &locations {
+                if candidate.collection_id == missing.collection_id
+                    || !candidate.path.is_file()
+                    || !same_filename(&candidate.path, filename)
+                {
+                    continue;
+                }
+                tombstone_candidates.push(ApplicationTombstonePreflightCandidate {
+                    tombstone_collection_id: missing.collection_id,
+                    tombstone_path: missing.path.clone(),
+                    candidate_collection_id: Some(candidate.collection_id),
+                    candidate_path: candidate.path.clone(),
+                });
+            }
+            for candidate_path in &anticipated_paths {
+                if !same_filename(candidate_path, filename) {
+                    continue;
+                }
+                tombstone_candidates.push(ApplicationTombstonePreflightCandidate {
+                    tombstone_collection_id: missing.collection_id,
+                    tombstone_path: missing.path.clone(),
+                    candidate_collection_id: None,
+                    candidate_path: candidate_path.clone(),
+                });
+            }
+        }
+        tombstone_candidates.sort_by(|left, right| {
+            left.tombstone_path
+                .cmp(&right.tombstone_path)
+                .then_with(|| left.candidate_path.cmp(&right.candidate_path))
+        });
+        let possible_tombstones = tombstone_candidates
+            .iter()
+            .map(|candidate| candidate.tombstone_collection_id)
+            .collect::<HashSet<_>>()
+            .len();
+        let expectation = ApplicationScanExpectation {
+            discovered: scan_output.summary.discovered,
+            new_collections: scan_output.summary.pending,
+            already_known: scan_output.summary.skipped_existing,
+            planned_renames: scan_output.summary.planned_renames,
+            normalization_warnings: scan_output.summary.normalization_warnings,
+            possible_tombstones,
+            possible_candidate_links: tombstone_candidates.len(),
+        };
+        Ok(ApplicationScanPreflight {
+            roots: roots
+                .iter()
+                .map(|root| ApplicationScanRootScope {
+                    path: root.path.clone(),
+                    label: root.label.clone(),
+                    source: match root.source {
+                        SourceKind::Archive => "archive",
+                        SourceKind::Downloads => "downloads",
+                    }
+                    .to_owned(),
+                })
+                .collect(),
+            expectation,
+            renames,
+            rename_warnings,
+            tombstone_candidates,
+            issues: scan_output
+                .issues
+                .into_iter()
+                .map(|issue| ApplicationScanIssue {
+                    path: issue.path,
+                    kind: issue.kind.into(),
+                    message: issue.message,
+                })
+                .collect(),
+        })
+    }
+
     pub fn run_scan(&mut self, roots: &[ScanRoot]) -> ApplicationResult<ApplicationScanReport> {
+        self.run_scan_with_options(roots, ApplicationScanOptions::default())
+    }
+
+    pub fn run_scan_with_options(
+        &mut self,
+        roots: &[ScanRoot],
+        options: ApplicationScanOptions,
+    ) -> ApplicationResult<ApplicationScanReport> {
         let started = Instant::now();
         let scan_run_id = self.repository.begin_scan_run()?;
         let existing_paths = match self.repository.current_paths() {
@@ -398,7 +595,14 @@ impl<R: RecycleBin> ApplicationService<R> {
             }
         };
 
-        let scan_output = scan_new_collections(roots, &existing_paths);
+        let scan_output = scan_new_collections_with_mode(
+            roots,
+            &existing_paths,
+            match options.mode {
+                ApplicationScanMode::ApplySafeRenames => ScanMode::ApplyRenames,
+                ApplicationScanMode::NoRename => ScanMode::NoRename,
+            },
+        );
         let safe_root_paths = safely_scanned_root_paths(roots, &scan_output.issues);
         let scanner_summary = scan_output.summary;
         let mut issues = scan_output
@@ -480,7 +684,7 @@ impl<R: RecycleBin> ApplicationService<R> {
             }
         };
 
-        let summary = ApplicationScanSummary {
+        let mut summary = ApplicationScanSummary {
             roots: scanner_summary.roots,
             missing_roots: scanner_summary.missing_roots,
             discovered: scanner_summary.discovered,
@@ -489,6 +693,7 @@ impl<R: RecycleBin> ApplicationService<R> {
             skipped: scanner_summary.skipped_existing + repository_skipped,
             ingest_failed,
             renamed: scanner_summary.renamed,
+            planned_renames: scanner_summary.planned_renames,
             normalization_warnings: scanner_summary.normalization_warnings,
             parse_complete: scanner_summary.parse_complete,
             parse_partial: scanner_summary.parse_partial,
@@ -497,7 +702,56 @@ impl<R: RecycleBin> ApplicationService<R> {
             candidate_links_created,
             scan_elapsed_ms: scanner_summary.elapsed_ms,
             elapsed_ms: started.elapsed().as_millis(),
+            preflight_differences: Vec::new(),
         };
+        if let Some(expected) = options.expected {
+            record_preflight_difference(
+                &mut summary.preflight_differences,
+                "發現項目",
+                expected.discovered,
+                summary.discovered,
+            );
+            record_preflight_difference(
+                &mut summary.preflight_differences,
+                "預計新增",
+                expected.new_collections,
+                summary.pending,
+            );
+            record_preflight_difference(
+                &mut summary.preflight_differences,
+                "已知／略過",
+                expected.already_known,
+                summary.skipped,
+            );
+            let expected_renames = match options.mode {
+                ApplicationScanMode::ApplySafeRenames => expected.planned_renames,
+                ApplicationScanMode::NoRename => 0,
+            };
+            record_preflight_difference(
+                &mut summary.preflight_differences,
+                "實體改名",
+                expected_renames,
+                summary.renamed,
+            );
+            record_preflight_difference(
+                &mut summary.preflight_differences,
+                "改名警告",
+                expected.normalization_warnings,
+                summary.normalization_warnings,
+            );
+            record_preflight_difference(
+                &mut summary.preflight_differences,
+                "tombstone",
+                expected.possible_tombstones,
+                summary.tombstoned,
+            );
+            record_preflight_difference(
+                &mut summary.preflight_differences,
+                "身分候選",
+                expected.possible_candidate_links,
+                summary.candidate_links_created,
+            );
+        }
         let status = if issues.is_empty() {
             ApplicationScanStatus::Succeeded
         } else {
@@ -1232,4 +1486,23 @@ fn has_existing_same_filename_candidate(
                 .and_then(|value| value.to_str())
                 .is_some_and(|value| value.eq_ignore_ascii_case(filename))
     })
+}
+
+fn same_filename(path: &Path, filename: &str) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case(filename))
+}
+
+fn record_preflight_difference(
+    differences: &mut Vec<String>,
+    label: &str,
+    expected: usize,
+    actual: usize,
+) {
+    if expected != actual {
+        differences.push(format!(
+            "{label}在預覽後發生變化：預覽 {expected}，實際 {actual}"
+        ));
+    }
 }

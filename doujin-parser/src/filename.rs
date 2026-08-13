@@ -141,6 +141,33 @@ pub fn normalize_new_collection_zip(
     path: &Path,
     parody_evidence: Vec<ParodyEvidence>,
 ) -> Result<RenameOutcome, RenameError> {
+    let outcome = plan_new_collection_zip(path, parody_evidence)?;
+    let RenameOutcome::Renamed { original, renamed } = outcome else {
+        return Ok(outcome);
+    };
+
+    // The preflight result is deliberately not an authorization snapshot. The
+    // filesystem operation below still performs an atomic create-if-absent and
+    // reports a collision if the target appeared after planning.
+    match fs::hard_link(&original, &renamed) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            return Err(RenameError::TargetExists(renamed));
+        }
+        Err(error) => return Err(RenameError::Filesystem(error)),
+    }
+    if let Err(source) = fs::remove_file(&original) {
+        let rollback = fs::remove_file(&renamed).err();
+        return Err(RenameError::SourceRemoval { source, rollback });
+    }
+    Ok(RenameOutcome::Renamed { original, renamed })
+}
+
+/// Evaluates the existing safe rename rules without modifying the filesystem.
+pub fn plan_new_collection_zip(
+    path: &Path,
+    parody_evidence: Vec<ParodyEvidence>,
+) -> Result<RenameOutcome, RenameError> {
     let original_filename = path.file_name().ok_or(RenameError::MissingFilename)?;
     let original_filename = original_filename
         .to_str()
@@ -171,17 +198,6 @@ pub fn normalize_new_collection_zip(
         return Err(RenameError::TargetExists(target));
     }
 
-    match fs::hard_link(path, &target) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            return Err(RenameError::TargetExists(target));
-        }
-        Err(error) => return Err(RenameError::Filesystem(error)),
-    }
-    if let Err(source) = fs::remove_file(path) {
-        let rollback = fs::remove_file(&target).err();
-        return Err(RenameError::SourceRemoval { source, rollback });
-    }
     Ok(RenameOutcome::Renamed {
         original: path.to_owned(),
         renamed: target,
@@ -219,6 +235,7 @@ mod tests {
 
     use super::{
         RenameError, RenameOutcome, decode_percent_encoded_filename, normalize_new_collection_zip,
+        plan_new_collection_zip,
     };
 
     #[test]
@@ -262,6 +279,29 @@ mod tests {
 
         fs::remove_file(renamed).expect("remove test file");
         fs::remove_dir(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn rename_plan_is_read_only() {
+        let directory = test_directory("rename-plan");
+        fs::create_dir(&directory).expect("create test directory");
+        let original = directory.join("%28C77%29%20%5Bcircle%5D%20title.zip");
+        fs::write(&original, b"zip placeholder").expect("create source file");
+
+        let outcome = plan_new_collection_zip(&original, Vec::new()).expect("plan rename");
+        let renamed = directory.join("(C77) [circle] title.zip");
+
+        assert_eq!(
+            RenameOutcome::Renamed {
+                original: original.clone(),
+                renamed: renamed.clone(),
+            },
+            outcome
+        );
+        assert!(original.exists());
+        assert!(!renamed.exists());
+
+        fs::remove_dir_all(directory).expect("remove test directory");
     }
 
     #[test]

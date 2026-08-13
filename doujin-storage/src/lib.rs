@@ -2837,9 +2837,9 @@ fn ingest_one(
 
     let raw_filename_path = match &pending.filename_normalization {
         FilenameNormalization::Renamed { original, .. } => original,
-        FilenameNormalization::Unchanged | FilenameNormalization::KeptOriginal { .. } => {
-            &pending.path
-        }
+        FilenameNormalization::Unchanged
+        | FilenameNormalization::PlannedRename { .. }
+        | FilenameNormalization::KeptOriginal { .. } => &pending.path,
     };
     let raw_filename = raw_filename_path
         .file_name()

@@ -7,6 +7,7 @@ use doujin_parser::PARSER_VERSION;
 use doujin_parser::domain::{ParseInput, ParseResult, ParseStatus};
 use doujin_parser::filename::{
     RenameOutcome, decode_percent_encoded_filename, normalize_new_collection_zip,
+    plan_new_collection_zip,
 };
 use doujin_parser::parser::parse_filename;
 
@@ -33,10 +34,19 @@ pub struct ScanRoot {
     pub label: String,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ScanMode {
+    #[default]
+    ApplyRenames,
+    DryRun,
+    NoRename,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FilenameNormalization {
     Unchanged,
     Renamed { original: PathBuf, renamed: PathBuf },
+    PlannedRename { original: PathBuf, renamed: PathBuf },
     KeptOriginal { reason: String },
 }
 
@@ -76,6 +86,7 @@ pub struct ScanSummary {
     pub pending: usize,
     pub skipped_existing: usize,
     pub renamed: usize,
+    pub planned_renames: usize,
     pub normalization_warnings: usize,
     pub parse_complete: usize,
     pub parse_partial: usize,
@@ -91,6 +102,14 @@ pub struct ScanOutput {
 }
 
 pub fn scan_new_collections(roots: &[ScanRoot], existing_paths: &HashSet<PathBuf>) -> ScanOutput {
+    scan_new_collections_with_mode(roots, existing_paths, ScanMode::ApplyRenames)
+}
+
+pub fn scan_new_collections_with_mode(
+    roots: &[ScanRoot],
+    existing_paths: &HashSet<PathBuf>,
+    mode: ScanMode,
+) -> ScanOutput {
     let started = Instant::now();
     let mut output = ScanOutput {
         pending: Vec::new(),
@@ -121,7 +140,7 @@ pub fn scan_new_collections(roots: &[ScanRoot], existing_paths: &HashSet<PathBuf
             });
             continue;
         }
-        scan_directory(root, &root.path, existing_paths, &mut output);
+        scan_directory(root, &root.path, existing_paths, mode, &mut output);
     }
 
     output
@@ -139,6 +158,7 @@ fn scan_directory(
     root: &ScanRoot,
     directory: &Path,
     existing_paths: &HashSet<PathBuf>,
+    mode: ScanMode,
     output: &mut ScanOutput,
 ) {
     let entries = match fs::read_dir(directory) {
@@ -182,10 +202,10 @@ fn scan_directory(
 
         if file_type.is_dir() {
             if !is_excluded_directory(&entry.file_name()) {
-                scan_directory(root, &entry.path(), existing_paths, output);
+                scan_directory(root, &entry.path(), existing_paths, mode, output);
             }
         } else if file_type.is_file() && is_zip(&path) {
-            process_zip(root, path, existing_paths, output);
+            process_zip(root, path, existing_paths, mode, output);
         }
     }
 }
@@ -194,6 +214,7 @@ fn process_zip(
     root: &ScanRoot,
     original_path: PathBuf,
     existing_paths: &HashSet<PathBuf>,
+    mode: ScanMode,
     output: &mut ScanOutput,
 ) {
     output.summary.discovered += 1;
@@ -203,32 +224,59 @@ fn process_zip(
     }
 
     let indexed_target = indexed_decoded_target(&original_path, existing_paths);
-    let (path, filename_normalization) = if let Some(target) = indexed_target {
+    let (path, parse_path, filename_normalization) = if let Some(target) = indexed_target {
         (
+            original_path.clone(),
             original_path,
             FilenameNormalization::KeptOriginal {
                 reason: format!("解碼後路徑已存在於收藏索引：{}", target.display()),
             },
         )
     } else {
-        match normalize_new_collection_zip(&original_path, Vec::new()) {
-            Ok(RenameOutcome::NotPercentEncoded) => {
-                (original_path, FilenameNormalization::Unchanged)
+        let outcome = match mode {
+            ScanMode::ApplyRenames => normalize_new_collection_zip(&original_path, Vec::new()),
+            ScanMode::DryRun | ScanMode::NoRename => {
+                plan_new_collection_zip(&original_path, Vec::new())
             }
+        };
+        match outcome {
+            Ok(RenameOutcome::NotPercentEncoded) => (
+                original_path.clone(),
+                original_path,
+                FilenameNormalization::Unchanged,
+            ),
             Ok(RenameOutcome::NotStructurallyParsed { decoded_filename }) => (
+                original_path.clone(),
                 original_path,
                 FilenameNormalization::KeptOriginal {
                     reason: format!("解碼後未解析出收藏結構：{decoded_filename}"),
                 },
             ),
             Ok(RenameOutcome::Renamed { original, renamed }) => {
-                output.summary.renamed += 1;
-                (
-                    renamed.clone(),
-                    FilenameNormalization::Renamed { original, renamed },
-                )
+                output.summary.planned_renames += 1;
+                match mode {
+                    ScanMode::ApplyRenames => {
+                        output.summary.renamed += 1;
+                        (
+                            renamed.clone(),
+                            renamed.clone(),
+                            FilenameNormalization::Renamed { original, renamed },
+                        )
+                    }
+                    ScanMode::DryRun => (
+                        original.clone(),
+                        renamed.clone(),
+                        FilenameNormalization::PlannedRename { original, renamed },
+                    ),
+                    ScanMode::NoRename => (
+                        original.clone(),
+                        original.clone(),
+                        FilenameNormalization::PlannedRename { original, renamed },
+                    ),
+                }
             }
             Err(error) => (
+                original_path.clone(),
                 original_path,
                 FilenameNormalization::KeptOriginal {
                     reason: error.to_string(),
@@ -244,7 +292,10 @@ fn process_zip(
         output.summary.normalization_warnings += 1;
     }
 
-    let Some(filename) = path.file_name().and_then(|filename| filename.to_str()) else {
+    let Some(filename) = parse_path
+        .file_name()
+        .and_then(|filename| filename.to_str())
+    else {
         output.issues.push(ScanIssue {
             path,
             kind: ScanIssueKind::NonUnicodeFilename,
