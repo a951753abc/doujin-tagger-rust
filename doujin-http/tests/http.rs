@@ -284,10 +284,13 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("src=\"/assets/app.js?v=35\" defer"));
+    assert!(document.contains("src=\"/assets/app.js?v=36\" defer"));
     assert!(document.contains("id=\"library-scroll-sentinel\""));
     assert!(document.contains("id=\"library-load-more\""));
     assert!(document.contains("全選已載入"));
+    assert!(document.contains("新載入結果不會自動加入"));
+    assert!(!document.contains("目前頁面選取"));
+    assert!(!document.contains("全選本頁"));
     assert!(!document.contains("id=\"previous-page\""));
     assert!(!document.contains("id=\"next-page\""));
     assert!(document.contains("id=\"close-filter-panel\""));
@@ -376,6 +379,9 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("setFilterPanelOpen(false, { restoreFocus: true })"));
     assert!(script.contains("updateSelectionCheckbox(selection"));
     assert!(script.contains("從批次選取移除"));
+    assert!(script.contains("已選 ${formatNumber(state.selectedIds.size)} / 已載入 ${formatNumber(state.items.length)} / 符合 ${formatNumber(state.total)}"));
+    assert!(script.contains("function selectionImpactSummary"));
+    assert!(script.contains("其餘 ${formatNumber(unaffectedCount)} 筆不受影響"));
     assert!(script.contains("const isCollectionButton"));
     assert!(script.contains("openMobileDetail(button, scrollPosition)"));
     assert!(script.contains("finishMobileDetailClose"));
