@@ -34,6 +34,12 @@ use crate::{
 
 const WORKER_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const THUMBNAIL_WORKER_COUNT: usize = 2;
+const EXTERNAL_WORKER_ABORTED: &str = "external search worker 非預期中止";
+const THUMBNAIL_WORKER_ABORTED: &str = "thumbnail worker 非預期中止";
+const DUPLICATE_WORKER_ABORTED: &str = "duplicate fingerprint worker 非預期中止";
+
+/// 已啟動的背景 worker 與它非預期中止時要回報的說明。
+type Workers = Vec<(&'static str, thread::JoinHandle<()>)>;
 
 /// 啟動一次服務所需的顯式參數；CLI、環境變數與工作目錄的解析都留在呼叫端。
 pub struct ServiceOptions {
@@ -53,7 +59,9 @@ pub struct ServiceOptions {
 /// - 這是 async fn，內部**不**建立 runtime；呼叫端必須提供 tokio runtime（`#[tokio::main]`、
 ///   `Runtime::block_on` 或 `tokio::spawn` 皆可）。
 /// - `on_ready` 在實際綁定完成之後、開始接受請求之前呼叫一次，參數是實際綁定的位址
-///   （`port` 為 0 時就是作業系統挑到的 port）。
+///   （`port` 為 0 時就是作業系統挑到的 port）。所有可能失敗的初始化都在它之前完成，
+///   因此 `on_ready` 一旦被呼叫，服務必定進入 serve；反過來說，`on_ready` 沒被呼叫就
+///   回傳，代表啟動失敗。
 /// - 背景 worker 執行緒由本函式建立；`shutdown` 完成後會先要求 worker 停止，等 HTTP
 ///   graceful shutdown 與所有 worker join 完成才回傳。回傳 `Ok(())` 表示正常收工，
 ///   `Err` 表示啟動失敗、serve 失敗或 worker 非預期中止。
@@ -135,41 +143,23 @@ where
     if let Some(instance) = instance.as_ref() {
         instance.publish(&database, local_address)?;
     }
-    on_ready(local_address);
-
-    let application = share_application(application);
-    let stopping = Arc::new(AtomicBool::new(false));
-    let worker_application = Arc::clone(&application);
-    let worker_stopping = Arc::clone(&stopping);
     // reqwest's blocking client owns a small internal runtime. Building it on
     // Tokio's async worker can panic when that runtime is dropped, so create it
     // on the same kind of blocking thread that will ultimately own it.
     let primary = tokio::task::spawn_blocking(EhentaiProvider::production).await??;
     let fallback = tokio::task::spawn_blocking(DlsiteExactProvider::production).await??;
     let provider = MetadataProviderChain { primary, fallback };
-    let external_worker = thread::Builder::new()
-        .name("external-search-worker".to_owned())
-        .spawn(move || run_external_search_worker(worker_application, provider, worker_stopping))?;
-    let mut thumbnail_workers = Vec::with_capacity(THUMBNAIL_WORKER_COUNT);
-    for worker_index in 0..THUMBNAIL_WORKER_COUNT {
-        let thumbnail_application = Arc::clone(&application);
-        let thumbnail_stopping = Arc::clone(&stopping);
-        thumbnail_workers.push(
-            thread::Builder::new()
-                .name(format!("thumbnail-worker-{}", worker_index + 1))
-                .spawn(move || run_thumbnail_worker(thumbnail_application, thumbnail_stopping))?,
-        );
+
+    let application = share_application(application);
+    let stopping = Arc::new(AtomicBool::new(false));
+    // worker spawn 是最後一個可能失敗的步驟；中途失敗要先停掉已啟動的 worker，
+    // 不能留下 detached 執行緒，也不能讓 on_ready 在啟動失敗時被呼叫。
+    let mut workers = Workers::new();
+    if let Err(error) = spawn_workers(&application, &stopping, provider, &mut workers) {
+        let _ = stop_workers(&stopping, workers);
+        return Err(error);
     }
-    let mut duplicate_workers = Vec::with_capacity(DUPLICATE_WORKER_COUNT);
-    for worker_index in 0..DUPLICATE_WORKER_COUNT {
-        let duplicate_application = Arc::clone(&application);
-        let duplicate_stopping = Arc::clone(&stopping);
-        duplicate_workers.push(
-            thread::Builder::new()
-                .name(format!("duplicate-worker-{}", worker_index + 1))
-                .spawn(move || run_duplicate_worker(duplicate_application, duplicate_stopping))?,
-        );
-    }
+    on_ready(local_address);
 
     let shutdown_stopping = Arc::clone(&stopping);
     let serve_result = serve_shared_with_shutdown_and_instance(
@@ -182,22 +172,71 @@ where
         },
     )
     .await;
-    stopping.store(true, Ordering::Release);
-    if external_worker.join().is_err() {
-        return Err("external search worker 非預期中止".into());
-    }
-    for thumbnail_worker in thumbnail_workers {
-        if thumbnail_worker.join().is_err() {
-            return Err("thumbnail worker 非預期中止".into());
-        }
-    }
-    for duplicate_worker in duplicate_workers {
-        if duplicate_worker.join().is_err() {
-            return Err("duplicate fingerprint worker 非預期中止".into());
-        }
-    }
+    stop_workers(&stopping, workers)?;
     serve_result?;
     Ok(())
+}
+
+/// 啟動所有背景 worker；任何一個 spawn 失敗就直接回報，已啟動的留在 `workers` 交給呼叫端收尾。
+fn spawn_workers<R, P>(
+    application: &SharedApplication<R>,
+    stopping: &Arc<AtomicBool>,
+    provider: P,
+    workers: &mut Workers,
+) -> Result<(), Box<dyn Error + Send + Sync>>
+where
+    R: RecycleBin + Send + 'static,
+    P: ExternalMetadataProvider + Send + 'static,
+{
+    let worker_application = Arc::clone(application);
+    let worker_stopping = Arc::clone(stopping);
+    workers.push((
+        EXTERNAL_WORKER_ABORTED,
+        thread::Builder::new()
+            .name("external-search-worker".to_owned())
+            .spawn(move || {
+                run_external_search_worker(worker_application, provider, worker_stopping)
+            })?,
+    ));
+    for worker_index in 0..THUMBNAIL_WORKER_COUNT {
+        let thumbnail_application = Arc::clone(application);
+        let thumbnail_stopping = Arc::clone(stopping);
+        workers.push((
+            THUMBNAIL_WORKER_ABORTED,
+            thread::Builder::new()
+                .name(format!("thumbnail-worker-{}", worker_index + 1))
+                .spawn(move || run_thumbnail_worker(thumbnail_application, thumbnail_stopping))?,
+        ));
+    }
+    for worker_index in 0..DUPLICATE_WORKER_COUNT {
+        let duplicate_application = Arc::clone(application);
+        let duplicate_stopping = Arc::clone(stopping);
+        workers.push((
+            DUPLICATE_WORKER_ABORTED,
+            thread::Builder::new()
+                .name(format!("duplicate-worker-{}", worker_index + 1))
+                .spawn(move || run_duplicate_worker(duplicate_application, duplicate_stopping))?,
+        ));
+    }
+    Ok(())
+}
+
+/// 要求所有 worker 停止並等它們收工；回報第一個非預期中止的 worker。
+fn stop_workers(
+    stopping: &AtomicBool,
+    workers: Workers,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    stopping.store(true, Ordering::Release);
+    let mut aborted = None;
+    for (description, worker) in workers {
+        if worker.join().is_err() {
+            aborted = aborted.or(Some(description));
+        }
+    }
+    match aborted {
+        Some(description) => Err(description.into()),
+        None => Ok(()),
+    }
 }
 
 struct MetadataProviderChain<P, F> {
