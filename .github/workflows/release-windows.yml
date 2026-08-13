@@ -16,6 +16,18 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Verify version consistency
+        shell: pwsh
+        run: |
+          $tagVersion = '${{ github.ref_name }}' -replace '^v', ''
+          $confVersion = (Get-Content -Raw 'doujin-desktop/tauri.conf.json' | ConvertFrom-Json).version
+          Write-Host "Tag version: $tagVersion"
+          Write-Host "tauri.conf.json version: $confVersion"
+          if ($tagVersion -ne $confVersion) {
+            Write-Error "Version mismatch: tag=$tagVersion tauri.conf.json=$confVersion"
+            exit 1
+          }
+
       - name: Install Rust toolchain
         shell: pwsh
         run: |
@@ -52,6 +64,29 @@ jobs:
           "archive=$archivePath" >> $env:GITHUB_OUTPUT
           "checksum=$checksumPath" >> $env:GITHUB_OUTPUT
 
+      - name: Build NSIS installer
+        shell: pwsh
+        working-directory: doujin-desktop
+        run: npx --yes @tauri-apps/cli@2.11.4 build
+
+      - name: Package NSIS installer
+        id: installer
+        shell: pwsh
+        run: |
+          $installerPath = Get-ChildItem -Path 'target/release/bundle/nsis/*-setup.exe' |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $installerPath) {
+            Write-Error "NSIS installer not found under target/release/bundle/nsis"
+            exit 1
+          }
+          $installerName = Split-Path -Leaf $installerPath
+          $checksumPath = "$installerPath.sha256"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installerPath).Hash.ToLowerInvariant()
+          "$hash  $installerName" | Set-Content -LiteralPath $checksumPath -Encoding ascii
+
+          "installer=$installerPath" >> $env:GITHUB_OUTPUT
+          "checksum=$checksumPath" >> $env:GITHUB_OUTPUT
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -59,6 +94,8 @@ jobs:
           path: |
             ${{ steps.package.outputs.archive }}
             ${{ steps.package.outputs.checksum }}
+            ${{ steps.installer.outputs.installer }}
+            ${{ steps.installer.outputs.checksum }}
           if-no-files-found: error
 
       - name: Publish GitHub Release
@@ -67,7 +104,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $notes = @"
-          ## Windows 使用方式
+          ## Windows 使用方式（推薦：安裝檔）
+
+          1. 下載 `*-setup.exe` 安裝檔。
+          2. 雙擊安裝（僅安裝到目前使用者帳號，不需要系統管理員權限）。
+          3. 從開始功能表或桌面捷徑開啟「私藏編目室」。
+
+          原生視窗版，關閉視窗即完全結束程式，不需要另外操作終端機或瀏覽器。
+
+          ## 免安裝版（Portable zip）
 
           1. 下載 `Doujin-Tagger-${{ github.ref_name }}-Windows-x64.zip`。
           2. 解壓縮到一般資料夾。
@@ -75,11 +120,15 @@ jobs:
 
           第一次啟動會引導建立或選擇 catalog、設定收藏來源與閱讀器，之後會自動開啟瀏覽器。一般使用不需要輸入指令。
 
-          此版本尚未進行程式碼簽章；Windows SmartScreen 若顯示警告，請先核對下載來源與 SHA-256。
+          ## 注意事項
+
+          此版本尚未進行程式碼簽章。Windows SmartScreen 與部分防毒軟體（如卡巴斯基）可能將安裝檔或執行檔誤判為風險項目，請先核對下載來源與 SHA-256 再執行。
           "@
           gh release create '${{ github.ref_name }}' `
             '${{ steps.package.outputs.archive }}' `
             '${{ steps.package.outputs.checksum }}' `
+            '${{ steps.installer.outputs.installer }}' `
+            '${{ steps.installer.outputs.checksum }}' `
             --verify-tag `
             --title 'Doujin Tagger ${{ github.ref_name }}' `
             --notes $notes
