@@ -46,7 +46,7 @@ use doujin_storage::metadata::{
 };
 use doujin_storage::roots::LibraryRootSnapshot;
 use doujin_storage::scan::{ScanIssueSnapshot, ScanRunSnapshot};
-use doujin_storage::statistics::{CollectionStatistics, NamedCount};
+use doujin_storage::statistics::{CollectionFacet, CollectionStatistics, NamedCount};
 use doujin_storage::thumbnails::{
     DEFAULT_THUMBNAIL_PRIORITY, MAX_THUMBNAIL_PRIORITY, ThumbnailStateSnapshot, ThumbnailStatus,
 };
@@ -152,6 +152,7 @@ where
             get(get_settings::<R>).put(update_settings::<R>),
         )
         .route("/api/stats", get(get_statistics::<R>))
+        .route("/api/facets", get(get_facets::<R>))
         .route("/api/collections", get(list_collections::<R>))
         .route("/api/collections/{collection_id}", get(get_collection::<R>))
         .route(
@@ -527,6 +528,32 @@ where
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(statistics.into()))
+}
+
+#[derive(Debug, Serialize)]
+struct FacetResponse {
+    items: Vec<NamedCountResponse>,
+}
+
+async fn get_facets<R>(
+    State(state): State<HttpState<R>>,
+    RawQuery(raw_query): RawQuery,
+) -> Result<Json<FacetResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let (facet, search, limit) = parse_facet_query(raw_query.as_deref())?;
+    let items = tokio::task::spawn_blocking(move || {
+        let application = lock_interactive_application(&state.application)?;
+        application
+            .collection_facets(facet, &search, limit)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(FacetResponse {
+        items: items.into_iter().map(Into::into).collect(),
+    }))
 }
 
 #[derive(Debug, Serialize)]
@@ -1904,6 +1931,50 @@ fn positive_u32_or(value: Option<i64>, fallback: u32) -> u32 {
 
 fn clamped_per_page(value: Option<i64>) -> u32 {
     value.map(|value| value.clamp(1, 200) as u32).unwrap_or(50)
+}
+
+fn parse_facet_query(raw_query: Option<&str>) -> Result<(CollectionFacet, String, u32), ApiError> {
+    let mut field = None;
+    let mut search = String::new();
+    let mut limit = 20;
+    let mut scalar_keys = HashSet::new();
+    for (key, value) in form_urlencoded::parse(raw_query.unwrap_or_default().as_bytes()) {
+        let key = key.as_ref();
+        let value = value.as_ref();
+        match key {
+            "field" => {
+                ensure_single_parameter(&mut scalar_keys, key)?;
+                field = Some(match value {
+                    "event" => CollectionFacet::Event,
+                    "circle" => CollectionFacet::Circle,
+                    "author" => CollectionFacet::Author,
+                    "parody" => CollectionFacet::Parody,
+                    "tag" => CollectionFacet::Tag,
+                    _ => {
+                        return Err(ApiError::bad_request(
+                            "invalid_facet_field",
+                            "field 必須是 event、circle、author、parody 或 tag",
+                        ));
+                    }
+                });
+            }
+            "q" => {
+                ensure_single_parameter(&mut scalar_keys, key)?;
+                search = value.trim().to_owned();
+            }
+            "limit" => {
+                ensure_single_parameter(&mut scalar_keys, key)?;
+                let parsed = value.parse::<i64>().map_err(|_| {
+                    ApiError::bad_request("invalid_facet_limit", "limit 必須是整數")
+                })?;
+                limit = parsed.clamp(1, 50) as u32;
+            }
+            _ => {}
+        }
+    }
+    let field = field
+        .ok_or_else(|| ApiError::bad_request("missing_facet_field", "facet 查詢必須指定 field"))?;
+    Ok((field, search, limit))
 }
 
 fn parse_collection_query(raw_query: Option<&str>) -> Result<CollectionQuery, ApiError> {

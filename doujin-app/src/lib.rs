@@ -25,7 +25,7 @@ use doujin_storage::metadata::{
 };
 use doujin_storage::roots::LibraryRootSnapshot;
 use doujin_storage::scan::{ScanCompletion, ScanCompletionStatus, ScanIssueRecord};
-use doujin_storage::statistics::CollectionStatistics;
+use doujin_storage::statistics::{CollectionFacet, CollectionStatistics, NamedCount};
 use doujin_storage::thumbnails::{
     BACKGROUND_THUMBNAIL_PRIORITY, DEFAULT_THUMBNAIL_PRIORITY, ThumbnailRequestOutcome,
     ThumbnailStateSnapshot, ThumbnailStatus,
@@ -748,6 +748,15 @@ impl<R: RecycleBin> ApplicationService<R> {
 
     pub fn collection_statistics(&self) -> ApplicationResult<CollectionStatistics> {
         Ok(self.repository.collection_statistics()?)
+    }
+
+    pub fn collection_facets(
+        &self,
+        facet: CollectionFacet,
+        search: &str,
+        limit: u32,
+    ) -> ApplicationResult<Vec<NamedCount>> {
+        Ok(self.repository.collection_facets(facet, search, limit)?)
     }
 
     pub fn request_thumbnail(

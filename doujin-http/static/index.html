@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>私藏編目室</title>
-  <link rel="stylesheet" href="/assets/app.css?v=26">
-  <script src="/assets/app.js?v=26" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=34">
+  <script src="/assets/app.js?v=34" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -31,6 +31,12 @@
                  placeholder="搜尋標題、社團、作者、原作或檔名…">
           <button type="submit" form="search-form" aria-label="搜尋"><span aria-hidden="true">⌕</span></button>
         </label>
+
+        <button class="activity-trigger is-checking" id="activity-trigger" type="button" aria-expanded="false" aria-controls="activity-panel">
+          <i aria-hidden="true"></i>
+          <span id="activity-summary">狀態檢查中</span>
+          <b id="activity-count" hidden>0</b>
+        </button>
 
         <nav class="primary-nav" aria-label="主要功能">
           <a href="#shelf" data-route="shelf" aria-current="page">書架</a>
@@ -65,16 +71,24 @@
               <div><h1 id="recent-shelf-heading">最近加入</h1><span id="recent-shelf-count"></span></div>
               <button type="button" class="shelf-link" data-shelf-target="recent">檢視全部 <span aria-hidden="true">→</span></button>
             </header>
-            <ol class="shelf-books" id="recent-shelf-books"></ol>
+            <div class="shelf-scroll-shell">
+              <button class="shelf-scroll-button previous" data-shelf-scroll="previous" type="button" aria-label="向左捲動最近加入" hidden>‹</button>
+              <ol class="shelf-books" id="recent-shelf-books" tabindex="0" aria-label="最近加入收藏"></ol>
+              <button class="shelf-scroll-button next" data-shelf-scroll="next" type="button" aria-label="向右捲動最近加入" hidden>›</button>
+            </div>
           </section>
 
           <section class="featured-shelf" id="featured-shelf" aria-labelledby="featured-shelf-heading">
             <header class="featured-heading">
-              <span>本週特輯</span>
+              <span>最大原作書架</span>
               <h2 id="featured-shelf-heading">收藏選輯</h2>
               <small id="featured-shelf-count"></small>
             </header>
-            <ol class="shelf-books" id="featured-shelf-books"></ol>
+            <div class="shelf-scroll-shell">
+              <button class="shelf-scroll-button previous" data-shelf-scroll="previous" type="button" aria-label="向左捲動最大原作書架" hidden>‹</button>
+              <ol class="shelf-books" id="featured-shelf-books" tabindex="0" aria-label="最大原作書架收藏"></ol>
+              <button class="shelf-scroll-button next" data-shelf-scroll="next" type="button" aria-label="向右捲動最大原作書架" hidden>›</button>
+            </div>
           </section>
 
           <section class="book-shelf event-shelf" aria-labelledby="event-shelf-heading">
@@ -82,7 +96,11 @@
               <div><h2 id="event-shelf-heading">場次書架</h2><span id="event-shelf-count"></span></div>
               <button type="button" class="shelf-link" data-shelf-target="event">檢視全部 <span aria-hidden="true">→</span></button>
             </header>
-            <ol class="shelf-books" id="event-shelf-books"></ol>
+            <div class="shelf-scroll-shell">
+              <button class="shelf-scroll-button previous" data-shelf-scroll="previous" type="button" aria-label="向左捲動場次書架" hidden>‹</button>
+              <ol class="shelf-books" id="event-shelf-books" tabindex="0" aria-label="場次書架收藏"></ol>
+              <button class="shelf-scroll-button next" data-shelf-scroll="next" type="button" aria-label="向右捲動場次書架" hidden>›</button>
+            </div>
           </section>
 
           <footer class="shelf-footer">
@@ -136,13 +154,50 @@
                 <option value="event">缺少場次</option>
               </select>
             </label>
-            <label>場次<input name="event" type="text" autocomplete="off"></label>
-            <label>社團<input name="circle" type="text" autocomplete="off"></label>
-            <label>作者<input name="author" type="text" autocomplete="off"></label>
-            <label>原作<input name="parody" type="text" autocomplete="off"></label>
+            <div class="facet-field" data-facet-field="event">
+              <label for="filter-event">場次</label>
+              <div class="facet-combobox">
+                <input id="filter-event" name="event" type="text" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="facet-event-options">
+                <ul class="facet-options" id="facet-event-options" role="listbox" hidden></ul>
+              </div>
+            </div>
+            <div class="facet-field" data-facet-field="circle">
+              <label for="filter-circle">社團</label>
+              <div class="facet-combobox">
+                <input id="filter-circle" name="circle" type="text" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="facet-circle-options">
+                <ul class="facet-options" id="facet-circle-options" role="listbox" hidden></ul>
+              </div>
+            </div>
+            <div class="facet-field" data-facet-field="author">
+              <label for="filter-author">作者</label>
+              <div class="facet-combobox">
+                <input id="filter-author" name="author" type="text" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="facet-author-options">
+                <ul class="facet-options" id="facet-author-options" role="listbox" hidden></ul>
+              </div>
+            </div>
+            <div class="facet-field" data-facet-field="parody">
+              <label for="filter-parody">原作</label>
+              <div class="facet-combobox">
+                <input id="filter-parody" name="parody" type="text" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="facet-parody-options">
+                <ul class="facet-options" id="facet-parody-options" role="listbox" hidden></ul>
+              </div>
+            </div>
             <label>子分類<input name="subcategory" type="text" autocomplete="off"></label>
-            <label>標籤<input name="tag" type="text" autocomplete="off"></label>
-            <input name="untagged" type="hidden" value="">
+            <div class="facet-field tag-facet-field" data-facet-field="tag">
+              <label for="filter-tag">標籤（AND）</label>
+              <div class="filter-tag-chips" id="filter-tag-chips" aria-label="已選標籤篩選"></div>
+              <div class="facet-combobox">
+                <input id="filter-tag" name="tag-query" type="text" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="facet-tag-options" aria-describedby="filter-tag-note" placeholder="輸入後選取，可加入多個">
+                <ul class="facet-options" id="facet-tag-options" role="listbox" hidden></ul>
+              </div>
+              <small class="field-note" id="filter-tag-note">結果需同時具有全部已選標籤。</small>
+            </div>
+            <label>標籤狀態
+              <select name="untagged">
+                <option value="">不限制</option>
+                <option value="1">尚無標籤</option>
+              </select>
+            </label>
             <div class="filter-actions">
               <button class="text-button" id="clear-filters" type="button">清除篩選</button>
               <button class="secondary-button" type="submit">套用篩選</button>
@@ -212,12 +267,30 @@
 
                 <dl class="metadata-list" id="metadata-list"></dl>
 
-                <details class="metadata-evidence" id="metadata-evidence">
+                <section class="tag-editor" aria-labelledby="tags-heading">
+                  <h3 id="tags-heading">標籤</h3>
+                  <div class="tag-list" id="detail-tags"></div>
+                  <form id="tag-form">
+                    <label class="visually-hidden" for="tag-input">新增標籤</label>
+                    <input id="tag-input" name="tag" type="text" placeholder="新增標籤" autocomplete="off">
+                    <button class="secondary-button" type="submit">加入</button>
+                  </form>
+                </section>
+
+                <p class="path-note" id="detail-path"></p>
+
+                <details class="metadata-evidence data-governance" id="metadata-evidence">
                   <summary>
-                    <span><strong>證據與裁決</strong><small>檢視採用來源、候選與外部搜尋紀錄</small></span>
-                    <b class="evidence-summary-count" id="evidence-summary-count">尚未載入</b>
+                    <span><strong>資料品質與來源</strong><small id="data-quality-summary">正在檢查編目資料…</small></span>
+                    <b class="evidence-summary-count" id="evidence-summary-count">檢查中</b>
                   </summary>
                   <div class="metadata-evidence-body">
+                    <div class="detail-actions governance-actions" aria-label="資料治理動作">
+                      <button class="text-button" id="edit-metadata-button" type="button">修正 metadata</button>
+                      <button class="text-button" id="external-search-button" type="button">搜尋外部資料</button>
+                      <button class="text-button" id="rebuild-thumbnail-button" type="button">重建縮圖</button>
+                    </div>
+
                     <div class="evidence-toolbar">
                       <p>目前值依「手動修改 › 外部 metadata › 檔名解析 › 推斷結果」選擇。</p>
                       <button class="text-button" id="refresh-metadata-evidence" type="button">重新整理證據</button>
@@ -236,23 +309,6 @@
                     <div class="evidence-fields" id="evidence-fields"></div>
                   </div>
                 </details>
-
-                <section class="tag-editor" aria-labelledby="tags-heading">
-                  <h3 id="tags-heading">標籤</h3>
-                  <div class="tag-list" id="detail-tags"></div>
-                  <form id="tag-form">
-                    <label class="visually-hidden" for="tag-input">新增標籤</label>
-                    <input id="tag-input" name="tag" type="text" placeholder="新增標籤" autocomplete="off">
-                    <button class="secondary-button" type="submit">加入</button>
-                  </form>
-                </section>
-
-                <div class="detail-actions">
-                  <button class="text-button" id="edit-metadata-button" type="button">修正 metadata</button>
-                  <button class="text-button" id="external-search-button" type="button">搜尋外部資料</button>
-                  <button class="text-button" id="rebuild-thumbnail-button" type="button">重建縮圖</button>
-                </div>
-                <p class="path-note" id="detail-path"></p>
               </div>
             </article>
           </aside>
@@ -388,6 +444,34 @@
       </section>
     </main>
   </div>
+
+  <aside class="activity-panel" id="activity-panel" aria-labelledby="activity-heading" hidden>
+    <header>
+      <div><p class="eyebrow">LOCAL ACTIVITY / 本機工作</p><h2 id="activity-heading">系統狀態</h2></div>
+      <button class="icon-button" id="close-activity" type="button" aria-label="關閉系統狀態">×</button>
+    </header>
+    <section class="activity-service" id="activity-service">
+      <i aria-hidden="true"></i>
+      <div><strong id="activity-service-label">正在確認本機服務…</strong><p id="activity-service-advice"></p></div>
+    </section>
+    <ol class="activity-list" id="activity-list"></ol>
+    <p class="activity-empty" id="activity-empty">目前沒有背景工作或需要處理的項目。</p>
+    <footer><button class="text-button" id="refresh-activity" type="button">重新整理狀態</button></footer>
+  </aside>
+  <p class="visually-hidden" id="activity-announcer" role="status" aria-live="polite" aria-atomic="true"></p>
+
+  <dialog class="mobile-detail-dialog" id="mobile-detail-dialog" aria-labelledby="detail-title">
+    <div class="mobile-detail-sheet">
+      <header class="mobile-detail-header">
+        <div>
+          <p class="eyebrow">COLLECTION / 收藏</p>
+          <p>收藏詳情</p>
+        </div>
+        <button class="icon-button" id="close-mobile-detail" data-close-dialog type="button" aria-label="關閉收藏詳情">×</button>
+      </header>
+      <div class="mobile-detail-content" id="mobile-detail-content"></div>
+    </div>
+  </dialog>
 
   <dialog id="recent-dialog" aria-labelledby="recent-heading">
     <div class="dialog-shell">
