@@ -284,7 +284,7 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("src=\"/assets/app.js?v=41\" defer"));
+    assert!(document.contains("src=\"/assets/app.js?v=42\" defer"));
     assert!(document.contains("id=\"library-scroll-sentinel\""));
     assert!(document.contains("id=\"library-load-more\""));
     assert!(document.contains("id=\"library-load-announcer\""));
@@ -342,6 +342,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(stylesheet.contains("outline: 3px solid var(--focus);"));
     assert!(stylesheet.contains(".filter-draft-status"));
     assert!(stylesheet.contains(".batch-progress"));
+    assert!(stylesheet.contains(".collection-window-spacer"));
+    assert!(stylesheet.contains("contain: layout paint style"));
     assert!(!stylesheet.contains("font-size: 0.6875rem;"));
     assert!(!stylesheet.contains("font-size: 0.625rem;"));
     assert!(!stylesheet.contains("font-size: 0.5625rem;"));
@@ -416,6 +418,12 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("function applyHeaderSearch"));
     assert!(script.contains("function runBatchOperation"));
     assert!(script.contains("const BATCH_REQUEST_SIZE = 100"));
+    assert!(script.contains("const COLLECTION_WINDOW_SIZE = 384"));
+    assert!(script.contains("function renderCollectionWindow"));
+    assert!(script.contains("function collectionWindowRange"));
+    assert!(script.contains("function ensureCollectionMounted"));
+    assert!(script.contains("if (state.route === \"workbench\") renderWorkbenchSelection()"));
+    assert!(!script.contains("document.querySelectorAll(\".collection-item-button\")"));
     assert!(!script.contains("function runSelectedRequests"));
     assert!(script.contains("/api/batch/tags"));
     assert!(script.contains("/api/batch/metadata/${field}"));

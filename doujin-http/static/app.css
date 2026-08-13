@@ -2586,6 +2586,15 @@ dialog select {
   border-bottom: 1px solid var(--line);
   min-width: 0;
   border: 0;
+  contain: layout paint style;
+}
+.collection-window-spacer {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  pointer-events: none;
 }
 .collection-item-button {
   grid-template-columns: 56px 1fr auto;
