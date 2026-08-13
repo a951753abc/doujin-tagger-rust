@@ -284,8 +284,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("href=\"/assets/app.css?v=48\""));
-    assert!(document.contains("src=\"/assets/app.js?v=51\" defer"));
+    assert!(document.contains("href=\"/assets/app.css?v=49\""));
+    assert!(document.contains("src=\"/assets/app.js?v=52\" defer"));
     assert!(document.contains("id=\"review-view\""));
     assert!(document.contains("data-route=\"review\""));
     assert!(document.contains("id=\"review-desk\""));
@@ -355,6 +355,12 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("id=\"detail-tag-options\""));
     assert!(document.contains("id=\"batch-tag-options\""));
     assert!(document.contains("id=\"selection-workbench-link\""));
+    assert!(document.contains("id=\"work-basket-count\""));
+    assert!(document.contains("id=\"detail-basket-toggle\""));
+    assert!(document.contains("id=\"selection-basket-add\""));
+    assert!(document.contains("id=\"basket-view\""));
+    assert!(document.contains("id=\"work-basket-list\""));
+    assert!(document.contains("勾選只決定這次送往工作台的範圍"));
     assert!(document.contains("移動目前查看收藏"));
     assert!(document.contains("切換目前查看收藏的批次選取"));
     assert!(!document.contains(">加標籤</a>"));
@@ -395,6 +401,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(stylesheet.contains(".review-desk"));
     assert!(stylesheet.contains(".vocabulary-group"));
     assert!(stylesheet.contains(".vocabulary-preflight-facts"));
+    assert!(stylesheet.contains(".basket-list"));
+    assert!(stylesheet.contains(".basket-toggle"));
     assert!(!stylesheet.contains("font-size: 0.6875rem;"));
     assert!(!stylesheet.contains("font-size: 0.625rem;"));
     assert!(!stylesheet.contains("font-size: 0.5625rem;"));
@@ -546,6 +554,13 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(!script.contains("location.hash = \"library\""));
     assert!(script.contains("function confirmSelectionClear"));
     assert!(script.contains("這會清除目前"));
+    assert!(script.contains("/api/work-baskets/1"));
+    assert!(script.contains("function addSelectionToWorkBasket"));
+    assert!(script.contains("function toggleSelectedWorkBasketMembership"));
+    assert!(script.contains("function renderWorkBasket"));
+    assert!(script.contains("state.workBasketSelectedIds"));
+    assert!(script.contains("state.selectionContext = \"work_basket\""));
+    assert!(script.contains("後續操作仍使用既有確認、進度與後端安全驗證"));
     assert!(script.contains("event.key === \"Escape\" && !ui.filterPanel.hidden"));
     assert!(script.contains("永久刪除 ${state.selectedIds.size} 筆"));
 
@@ -917,6 +932,122 @@ async fn collections_support_paging_safe_search_and_detail_over_loopback() {
         "collection_not_found",
         missing_location.json["error"]["code"]
     );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn work_basket_api_is_explicit_idempotent_and_returns_collection_snapshots() {
+    let tree = TestTree::new("work-basket-api");
+    for index in 0..105 {
+        tree.zip(&format!("[Circle {index:03}] Story {index:03}.zip"));
+    }
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    repository
+        .register_library_root(&tree.library(), SourceKind::Archive, "歸檔區")
+        .expect("register root");
+    let server = RunningServer::start(ApplicationService::new(repository, NoopRecycleBin)).await;
+    assert_eq!(200, server.request("POST", "/api/scans", &[]).await.status);
+    let library = server
+        .request("GET", "/api/collections?per_page=200", &[])
+        .await;
+    let ids = library.json["items"]
+        .as_array()
+        .expect("collection items")
+        .iter()
+        .map(|item| item["id"].as_i64().expect("collection ID"))
+        .collect::<Vec<_>>();
+
+    let listed = server.request("GET", "/api/work-baskets", &[]).await;
+    assert_eq!(200, listed.status);
+    assert_eq!(1, listed.json["baskets"][0]["id"]);
+    assert_eq!(0, listed.json["baskets"][0]["count"]);
+
+    let added = server
+        .request_json(
+            "POST",
+            "/api/work-baskets/1/collections",
+            &serde_json::json!({ "collection_ids": ids }),
+        )
+        .await;
+    assert_eq!(200, added.status);
+    assert_eq!(105, added.json["count"]);
+    assert!(added.json["items"][0]["collection"]["title"].is_string());
+
+    let repeated = server
+        .request_json(
+            "POST",
+            "/api/work-baskets/1/collections",
+            &serde_json::json!({ "collection_ids": ids }),
+        )
+        .await;
+    assert_eq!(105, repeated.json["count"]);
+
+    let removed = server
+        .request(
+            "DELETE",
+            &format!("/api/work-baskets/1/collections/{}", ids[0]),
+            &[],
+        )
+        .await;
+    assert_eq!(200, removed.status);
+    assert_eq!(104, removed.json["count"]);
+
+    let cleared = server
+        .request("DELETE", "/api/work-baskets/1/collections", &[])
+        .await;
+    assert_eq!(200, cleared.status);
+    assert_eq!(0, cleared.json["count"]);
+
+    let empty = server
+        .request_json(
+            "POST",
+            "/api/work-baskets/1/collections",
+            &serde_json::json!({ "collection_ids": [] }),
+        )
+        .await;
+    assert_eq!(400, empty.status);
+    assert_eq!("invalid_batch_collection_ids", empty.json["error"]["code"]);
+    let non_positive = server
+        .request_json(
+            "POST",
+            "/api/work-baskets/1/collections",
+            &serde_json::json!({ "collection_ids": [-1] }),
+        )
+        .await;
+    assert_eq!(400, non_positive.status);
+    assert_eq!(
+        "invalid_batch_collection_ids",
+        non_positive.json["error"]["code"]
+    );
+    let unknown_collection = server
+        .request_json(
+            "POST",
+            "/api/work-baskets/1/collections",
+            &serde_json::json!({ "collection_ids": [999999] }),
+        )
+        .await;
+    assert_eq!(404, unknown_collection.status);
+    assert_eq!(
+        "collection_not_found",
+        unknown_collection.json["error"]["code"]
+    );
+    let malformed = server
+        .request_with_body(
+            "POST",
+            "/api/work-baskets/1/collections",
+            &[("Content-Type", "application/json")],
+            "{",
+        )
+        .await;
+    assert_eq!(400, malformed.status);
+    assert_eq!("invalid_json", malformed.json["error"]["code"]);
+
+    let invalid = server.request("GET", "/api/work-baskets/nope", &[]).await;
+    assert_eq!(400, invalid.status);
+    assert_eq!("invalid_work_basket_id", invalid.json["error"]["code"]);
+    let missing = server.request("GET", "/api/work-baskets/999", &[]).await;
+    assert_eq!(404, missing.status);
+    assert_eq!("work_basket_not_found", missing.json["error"]["code"]);
     server.stop().await;
 }
 

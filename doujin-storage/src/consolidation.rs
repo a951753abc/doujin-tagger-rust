@@ -171,6 +171,11 @@ impl CatalogRepository {
             tombstone_collection_id,
             candidate_collection_id,
         )?;
+        crate::work_baskets::transfer_work_basket_memberships(
+            &transaction,
+            tombstone_collection_id,
+            candidate_collection_id,
+        )?;
 
         for field in MetadataField::ALL {
             reselect_by_priority(&transaction, tombstone_collection_id, field, false)?;

@@ -40,6 +40,7 @@ use doujin_storage::thumbnails::{
 use doujin_storage::vocabulary::{
     VocabularyCandidateGroup, VocabularyField, VocabularyMergePreflight, VocabularyMergeResult,
 };
+use doujin_storage::work_baskets::{WorkBasketSnapshot, WorkBasketSummary};
 use doujin_storage::{CatalogRepository, IngestOutcome, StorageError};
 use doujin_thumbnails::{
     ThumbnailConfig, ThumbnailError, ThumbnailGenerationRequest, ThumbnailGenerationSuccess,
@@ -838,6 +839,39 @@ impl<R: RecycleBin> ApplicationService<R> {
 
     pub fn review_queue(&self, query: &ReviewQueueQuery) -> ApplicationResult<ReviewQueuePage> {
         Ok(self.repository.review_queue(query)?)
+    }
+
+    pub fn work_baskets(&self) -> ApplicationResult<Vec<WorkBasketSummary>> {
+        Ok(self.repository.work_baskets()?)
+    }
+
+    pub fn work_basket(&self, basket_id: i64) -> ApplicationResult<WorkBasketSnapshot> {
+        Ok(self.repository.work_basket(basket_id)?)
+    }
+
+    pub fn add_to_work_basket(
+        &mut self,
+        basket_id: i64,
+        collection_ids: &[i64],
+    ) -> ApplicationResult<WorkBasketSnapshot> {
+        Ok(self
+            .repository
+            .add_to_work_basket(basket_id, collection_ids)?)
+    }
+
+    pub fn remove_from_work_basket(
+        &mut self,
+        basket_id: i64,
+        collection_id: i64,
+    ) -> ApplicationResult<WorkBasketSnapshot> {
+        self.repository
+            .remove_from_work_basket(basket_id, collection_id)?;
+        Ok(self.repository.work_basket(basket_id)?)
+    }
+
+    pub fn clear_work_basket(&mut self, basket_id: i64) -> ApplicationResult<WorkBasketSnapshot> {
+        self.repository.clear_work_basket(basket_id)?;
+        Ok(self.repository.work_basket(basket_id)?)
     }
 
     pub fn saved_views(&self) -> ApplicationResult<Vec<SavedViewWithCount>> {
