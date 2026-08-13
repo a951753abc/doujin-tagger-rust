@@ -1,5 +1,6 @@
 use std::fs;
 use std::io;
+use std::io::Write as _;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -20,9 +21,11 @@ use doujin_storage::thumbnails::{ThumbnailErrorKind, ThumbnailStatus};
 use doujin_thumbnails::{
     ThumbnailConfig, ThumbnailError, ThumbnailGenerationSuccess, transparent_placeholder_webp,
 };
+use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot;
+use zip::write::SimpleFileOptions;
 
 #[derive(Debug, Clone, Copy)]
 struct NoopRecycleBin;
@@ -140,6 +143,26 @@ impl TestTree {
         let path = self.root(root).join(filename);
         fs::create_dir_all(path.parent().expect("zip parent")).expect("create library");
         fs::write(path, b"zip placeholder").expect("create zip");
+    }
+
+    fn image_zip(&self, filename: &str, entries: &[(&str, [u8; 4])]) {
+        let path = self.library().join(filename);
+        fs::create_dir_all(path.parent().expect("zip parent")).expect("create library");
+        let mut archive = zip::ZipWriter::new(fs::File::create(path).expect("create image ZIP"));
+        for (entry, color) in entries {
+            archive
+                .start_file(*entry, SimpleFileOptions::default())
+                .expect("start image entry");
+            let image = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(24, 32, Rgba(*color)));
+            let mut encoded = io::Cursor::new(Vec::new());
+            image
+                .write_to(&mut encoded, ImageFormat::Png)
+                .expect("encode image entry");
+            archive
+                .write_all(&encoded.into_inner())
+                .expect("write image entry");
+        }
+        archive.finish().expect("finish image ZIP");
     }
 }
 
@@ -403,6 +426,7 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(stylesheet.contains(".vocabulary-preflight-facts"));
     assert!(stylesheet.contains(".basket-list"));
     assert!(stylesheet.contains(".basket-toggle"));
+    assert!(stylesheet.contains(".cover-candidate-gallery"));
     assert!(!stylesheet.contains("font-size: 0.6875rem;"));
     assert!(!stylesheet.contains("font-size: 0.625rem;"));
     assert!(!stylesheet.contains("font-size: 0.5625rem;"));
@@ -474,6 +498,11 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("const readyUrl = await blobAsDataUrl(thumbnail)"));
     assert!(script.contains("x-thumbnail-next-retry-at"));
     assert!(script.contains("restartThumbnailCollection"));
+    assert!(script.contains("function openCoverSelection"));
+    assert!(script.contains("preview.loading = \"lazy\""));
+    assert!(script.contains("aria-pressed"));
+    assert!(script.contains("function clearCoverSelection"));
+    assert!(script.contains("cover-candidates/preview?entry="));
     assert!(script.contains("requestFilterPanelClose({ restoreFocus: true })"));
     assert!(script.contains("updateSelectionCheckbox(selection"));
     assert!(script.contains("從批次選取移除"));
@@ -2389,6 +2418,177 @@ fn thumbnail_application(tree: &TestTree) -> (ApplicationService<NoopRecycleBin>
         .expect("collection query")
         .expect("collection ID");
     (application, collection_id)
+}
+
+fn cover_application(tree: &TestTree) -> (ApplicationService<NoopRecycleBin>, i64) {
+    let entries = (0..26)
+        .map(|index| {
+            (
+                format!("page{index:02}.png"),
+                [u8::try_from(index).expect("color"), 20, 40, 255],
+            )
+        })
+        .collect::<Vec<_>>();
+    let references = entries
+        .iter()
+        .map(|(name, color)| (name.as_str(), *color))
+        .collect::<Vec<_>>();
+    tree.image_zip("[circle] cover candidates.zip", &references);
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let config = ThumbnailConfig::new(tree.path.join("thumbnail-cache"), 300, 400, 80)
+        .expect("thumbnail config");
+    let mut application = ApplicationService::with_thumbnails(repository, NoopRecycleBin, config);
+    application
+        .run_scan(&[ScanRoot {
+            path: tree.library(),
+            source: SourceKind::Archive,
+            label: "歸檔區".to_owned(),
+        }])
+        .expect("scan cover collection");
+    let collection_id = application
+        .repository()
+        .first_collection_id()
+        .expect("collection query")
+        .expect("collection ID");
+    (application, collection_id)
+}
+
+#[tokio::test]
+async fn cover_selection_api_lists_bounded_candidates_previews_and_persists_invalid_state() {
+    let tree = TestTree::new("cover-selection-api");
+    let (application, collection_id) = cover_application(&tree);
+    let server = RunningServer::start(application).await;
+
+    let bounded = server
+        .request(
+            "GET",
+            &format!("/api/collections/{collection_id}/cover-candidates?limit=100"),
+            &[],
+        )
+        .await;
+    assert_eq!(200, bounded.status);
+    assert_eq!(24, bounded.json["items"].as_array().expect("items").len());
+    assert_eq!(Value::Null, bounded.json["selection"]);
+    let source_fingerprint = bounded.json["source_fingerprint"]
+        .as_str()
+        .expect("source fingerprint")
+        .to_owned();
+    let single = server
+        .request(
+            "GET",
+            &format!("/api/collections/{collection_id}/cover-candidates?limit=0"),
+            &[],
+        )
+        .await;
+    assert_eq!(
+        1,
+        single.json["items"].as_array().expect("single item").len()
+    );
+
+    let preview = server
+        .request(
+            "GET",
+            &format!("/api/collections/{collection_id}/cover-candidates/preview?entry=page02.png"),
+            &[],
+        )
+        .await;
+    assert_eq!(200, preview.status);
+    assert_eq!(Some("image/webp"), preview.header("content-type"));
+    image::load_from_memory(&preview.body).expect("decode bounded WebP preview");
+    let traversal = server
+        .request(
+            "GET",
+            &format!(
+                "/api/collections/{collection_id}/cover-candidates/preview?entry=..%2Fescape.png"
+            ),
+            &[],
+        )
+        .await;
+    assert_eq!(400, traversal.status);
+    assert_eq!("invalid_cover_candidate", traversal.json["error"]["code"]);
+    let missing_entry = server
+        .request(
+            "GET",
+            &format!("/api/collections/{collection_id}/cover-candidates/preview"),
+            &[],
+        )
+        .await;
+    assert_eq!(400, missing_entry.status);
+    assert_eq!("invalid_cover_entry", missing_entry.json["error"]["code"]);
+
+    let extra_field = server
+        .request_json(
+            "PUT",
+            &format!("/api/collections/{collection_id}/cover-selection"),
+            &serde_json::json!({
+                "entry_path": "page02.png",
+                "source_fingerprint": source_fingerprint,
+                "index": 2
+            }),
+        )
+        .await;
+    assert_eq!(
+        422, extra_field.status,
+        "selection body must be allowlisted"
+    );
+    let stale_source = server
+        .request_json(
+            "PUT",
+            &format!("/api/collections/{collection_id}/cover-selection"),
+            &serde_json::json!({
+                "entry_path": "page02.png",
+                "source_fingerprint": "stale"
+            }),
+        )
+        .await;
+    assert_eq!(409, stale_source.status);
+    assert_eq!("cover_source_changed", stale_source.json["error"]["code"]);
+    let selected = server
+        .request_json(
+            "PUT",
+            &format!("/api/collections/{collection_id}/cover-selection"),
+            &serde_json::json!({
+                "entry_path": "page02.png",
+                "source_fingerprint": bounded.json["source_fingerprint"]
+            }),
+        )
+        .await;
+    assert_eq!(200, selected.status);
+    assert_eq!("page02.png", selected.json["entry_path"]);
+    assert_eq!("valid", selected.json["status"]);
+
+    tree.image_zip(
+        "[circle] cover candidates.zip",
+        &[("page00.png", [0, 20, 40, 255])],
+    );
+    let invalid = server
+        .request(
+            "GET",
+            &format!("/api/collections/{collection_id}/cover-candidates"),
+            &[],
+        )
+        .await;
+    assert_eq!(200, invalid.status);
+    assert_eq!("missing", invalid.json["selection"]["status"]);
+    assert_eq!("page02.png", invalid.json["selection"]["entry_path"]);
+
+    let cleared = server
+        .request(
+            "DELETE",
+            &format!("/api/collections/{collection_id}/cover-selection"),
+            &[],
+        )
+        .await;
+    assert_eq!(204, cleared.status);
+    let automatic = server
+        .request(
+            "GET",
+            &format!("/api/collections/{collection_id}/cover-candidates"),
+            &[],
+        )
+        .await;
+    assert_eq!(Value::Null, automatic.json["selection"]);
+    server.stop().await;
 }
 
 #[tokio::test]

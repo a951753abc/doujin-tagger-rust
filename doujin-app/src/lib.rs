@@ -25,6 +25,7 @@ use doujin_storage::collections::{
 use doujin_storage::consolidation::{
     ConsolidationPreflight, ConsolidationResolution, ConsolidationSnapshot,
 };
+use doujin_storage::covers::{CoverSelectionSnapshot, CoverSelectionStatus};
 use doujin_storage::lifecycle::{CandidateDecision, TombstoneCandidateSnapshot};
 use doujin_storage::metadata::{
     MetadataAssertionDecision, MetadataField, MetadataHistory, MetadataValue,
@@ -35,7 +36,8 @@ use doujin_storage::scan::{ScanCompletion, ScanCompletionStatus, ScanIssueRecord
 use doujin_storage::statistics::{CollectionFacet, CollectionStatistics, NamedCount};
 use doujin_storage::thumbnails::{
     BACKGROUND_THUMBNAIL_PRIORITY, BATCH_THUMBNAIL_PRIORITY, DEFAULT_THUMBNAIL_PRIORITY,
-    ThumbnailRequestOutcome, ThumbnailStateSnapshot, ThumbnailStatus, ThumbnailStatusCounts,
+    ThumbnailErrorKind, ThumbnailRequestOutcome, ThumbnailStateSnapshot, ThumbnailStatus,
+    ThumbnailStatusCounts,
 };
 use doujin_storage::vocabulary::{
     VocabularyCandidateGroup, VocabularyField, VocabularyMergePreflight, VocabularyMergeResult,
@@ -43,8 +45,9 @@ use doujin_storage::vocabulary::{
 use doujin_storage::work_baskets::{WorkBasketSnapshot, WorkBasketSummary};
 use doujin_storage::{CatalogRepository, IngestOutcome, StorageError};
 use doujin_thumbnails::{
-    ThumbnailConfig, ThumbnailError, ThumbnailGenerationRequest, ThumbnailGenerationSuccess,
-    source_fingerprint,
+    CoverCandidate, ThumbnailConfig, ThumbnailError, ThumbnailGenerationRequest,
+    ThumbnailGenerationSuccess, cover_candidate_preview, cover_candidates,
+    cover_source_fingerprint, source_fingerprint, validate_cover_candidate,
 };
 use serde::{Deserialize, Serialize};
 
@@ -313,6 +316,55 @@ pub struct ApplicationSettingsSnapshot {
 pub struct SaveSettingsOutcome {
     pub settings: ApplicationSettingsSnapshot,
     pub thumbnails_requeued: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ApplicationCoverSelection {
+    pub entry_path: String,
+    pub source_fingerprint: String,
+    pub status: String,
+    pub error: Option<String>,
+    pub selected_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ApplicationCoverCandidate {
+    pub entry_path: String,
+    pub filename: String,
+    pub page_order: usize,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ApplicationCoverCandidates {
+    pub source_fingerprint: String,
+    pub selection: Option<ApplicationCoverSelection>,
+    pub items: Vec<ApplicationCoverCandidate>,
+}
+
+impl From<CoverSelectionSnapshot> for ApplicationCoverSelection {
+    fn from(selection: CoverSelectionSnapshot) -> Self {
+        Self {
+            entry_path: selection.entry_path,
+            source_fingerprint: selection.source_fingerprint,
+            status: selection.validation_status.as_str().to_owned(),
+            error: selection.validation_error,
+            selected_at: selection.selected_at,
+        }
+    }
+}
+
+impl From<CoverCandidate> for ApplicationCoverCandidate {
+    fn from(candidate: CoverCandidate) -> Self {
+        Self {
+            entry_path: candidate.entry_path,
+            filename: candidate.filename,
+            page_order: candidate.page_order,
+            width: candidate.width,
+            height: candidate.height,
+        }
+    }
 }
 
 pub struct ApplicationService<R> {
@@ -1278,6 +1330,88 @@ impl<R: RecycleBin> ApplicationService<R> {
             .reject_vocabulary_group(field, values, reason, removed)?)
     }
 
+    pub fn cover_candidates(
+        &mut self,
+        collection_id: i64,
+        limit: usize,
+    ) -> ApplicationResult<ApplicationCoverCandidates> {
+        self.repository.collection(collection_id)?;
+        let source_path = self.repository.active_collection_file_path(collection_id)?;
+        let current_source = source_fingerprint(&source_path)?;
+        let mut selection = self.repository.cover_selection(collection_id)?;
+        if let Some(saved) = selection.as_ref() {
+            let validation = validate_cover_candidate(&source_path, &saved.entry_path);
+            let (status, error) = match validation {
+                Ok(_) if saved.source_fingerprint == current_source => {
+                    (CoverSelectionStatus::Valid, None)
+                }
+                Ok(_) => (
+                    CoverSelectionStatus::SourceChanged,
+                    Some("收藏來源自選擇封面後已變更；仍找到同名 entry，請確認封面".to_owned()),
+                ),
+                Err(error) => (CoverSelectionStatus::Missing, Some(error.message)),
+            };
+            if saved.validation_status != status || saved.validation_error != error {
+                selection = self.repository.update_cover_selection_validation(
+                    collection_id,
+                    status,
+                    error.as_deref(),
+                )?;
+            }
+        }
+        Ok(ApplicationCoverCandidates {
+            source_fingerprint: current_source,
+            selection: selection.map(Into::into),
+            items: cover_candidates(&source_path, limit)?
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        })
+    }
+
+    pub fn cover_candidate_preview(
+        &self,
+        collection_id: i64,
+        entry_path: &str,
+    ) -> ApplicationResult<Vec<u8>> {
+        self.repository.collection(collection_id)?;
+        let source_path = self.repository.active_collection_file_path(collection_id)?;
+        Ok(cover_candidate_preview(&source_path, entry_path, 240, 320)?)
+    }
+
+    pub fn select_cover(
+        &mut self,
+        collection_id: i64,
+        entry_path: &str,
+        expected_source_fingerprint: &str,
+    ) -> ApplicationResult<ApplicationCoverSelection> {
+        self.repository.collection(collection_id)?;
+        let source_path = self.repository.active_collection_file_path(collection_id)?;
+        let current_source = source_fingerprint(&source_path)?;
+        if current_source != expected_source_fingerprint {
+            return Err(ApplicationError::InvalidSettings(
+                "收藏來源已在載入候選後變更，請重新整理候選封面".to_owned(),
+            ));
+        }
+        let candidate = validate_cover_candidate(&source_path, entry_path)?;
+        let selection = self.repository.save_cover_selection(
+            collection_id,
+            &candidate.entry_path,
+            &current_source,
+        )?;
+        self.rebuild_thumbnail(collection_id)?;
+        Ok(selection.into())
+    }
+
+    pub fn clear_cover_selection(
+        &mut self,
+        collection_id: i64,
+    ) -> ApplicationResult<Option<ApplicationCoverSelection>> {
+        self.repository.clear_cover_selection(collection_id)?;
+        self.rebuild_thumbnail(collection_id)?;
+        Ok(None)
+    }
+
     pub fn request_thumbnail(
         &mut self,
         collection_id: i64,
@@ -1293,7 +1427,13 @@ impl<R: RecycleBin> ApplicationService<R> {
         self.repository.collection(collection_id)?;
         let config = self.thumbnail_config()?;
         let source_path = self.repository.active_collection_file_path(collection_id)?;
-        let source_fingerprint = source_fingerprint(&source_path)?;
+        let selection = self.repository.cover_selection(collection_id)?;
+        let source_fingerprint = cover_source_fingerprint(
+            &source_path,
+            selection
+                .as_ref()
+                .map(|selection| selection.entry_path.as_str()),
+        )?;
         let cache_path = config.cache_path(collection_id);
         Ok(self.repository.request_thumbnail_with_priority(
             collection_id,
@@ -1352,6 +1492,10 @@ impl<R: RecycleBin> ApplicationService<R> {
             width: config.width,
             height: config.height,
             quality: config.quality,
+            selected_entry: self
+                .repository
+                .cover_selection(collection_id)?
+                .map(|selection| selection.entry_path),
         })
     }
 
@@ -1370,6 +1514,15 @@ impl<R: RecycleBin> ApplicationService<R> {
                     .complete_thumbnail(collection_id, success.width, success.height)?
             }
             Err(error) => {
+                if error.kind == ThumbnailErrorKind::NoSupportedImage
+                    && self.repository.cover_selection(collection_id)?.is_some()
+                {
+                    self.repository.update_cover_selection_validation(
+                        collection_id,
+                        CoverSelectionStatus::Missing,
+                        Some(&error.message),
+                    )?;
+                }
                 self.repository
                     .fail_thumbnail(collection_id, error.kind, &error.message)?
             }
@@ -1387,7 +1540,13 @@ impl<R: RecycleBin> ApplicationService<R> {
         self.repository.collection(collection_id)?;
         let config = self.thumbnail_config()?.clone();
         let source_path = self.repository.active_collection_file_path(collection_id)?;
-        let source_fingerprint = source_fingerprint(&source_path)?;
+        let selection = self.repository.cover_selection(collection_id)?;
+        let source_fingerprint = cover_source_fingerprint(
+            &source_path,
+            selection
+                .as_ref()
+                .map(|selection| selection.entry_path.as_str()),
+        )?;
         remove_cache_if_present(&config.cache_path(collection_id))?;
         Ok(self.repository.reset_thumbnail(
             collection_id,
@@ -1469,7 +1628,15 @@ impl<R: RecycleBin> ApplicationService<R> {
                 else {
                     return false;
                 };
-                let Ok(current_source_fingerprint) = source_fingerprint(&source_path) else {
+                let Ok(selection) = self.repository.cover_selection(**collection_id) else {
+                    return false;
+                };
+                let Ok(current_source_fingerprint) = cover_source_fingerprint(
+                    &source_path,
+                    selection
+                        .as_ref()
+                        .map(|selection| selection.entry_path.as_str()),
+                ) else {
                     return false;
                 };
                 let expected_cache_path = config.cache_path(**collection_id);

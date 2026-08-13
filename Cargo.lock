@@ -347,9 +347,11 @@ dependencies = [
  "doujin-scanner",
  "doujin-storage",
  "doujin-thumbnails",
+ "image",
  "rusqlite",
  "serde",
  "serde_json",
+ "zip",
 ]
 
 [[package]]
@@ -378,9 +380,11 @@ dependencies = [
  "doujin-storage",
  "doujin-thumbnails",
  "form_urlencoded",
+ "image",
  "serde",
  "serde_json",
  "tokio",
+ "zip",
 ]
 
 [[package]]

@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,6 +16,7 @@ use doujin_app::{
 use doujin_files::RecycleBin;
 use doujin_scanner::{ScanRoot, SourceKind};
 use doujin_storage::collections::{ReviewQueueKind, ReviewQueueQuery};
+use doujin_storage::covers::CoverSelectionStatus;
 use doujin_storage::external_search_batches::ExternalSearchBatchStrategy;
 use doujin_storage::jobs::{ExternalSearchErrorKind, ExternalSearchJobStatus};
 use doujin_storage::lifecycle::{CandidateDecision, CollectionStatus};
@@ -25,8 +27,10 @@ use doujin_storage::thumbnails::{
     ThumbnailStatus,
 };
 use doujin_storage::{CatalogRepository, StorageError};
-use doujin_thumbnails::{ThumbnailConfig, ThumbnailGenerationSuccess};
+use doujin_thumbnails::{ThumbnailConfig, ThumbnailGenerationSuccess, generate_thumbnail};
+use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
 use rusqlite::Connection;
+use zip::write::SimpleFileOptions;
 
 #[derive(Debug, Clone, Copy)]
 struct NoopRecycleBin;
@@ -235,6 +239,27 @@ impl TestTree {
         let path = self.library().join(filename);
         fs::create_dir_all(path.parent().expect("zip parent")).expect("create library");
         fs::write(&path, b"zip placeholder").expect("create zip");
+        path
+    }
+
+    fn image_zip(&self, filename: &str, entries: &[(&str, [u8; 4])]) -> PathBuf {
+        let path = self.library().join(filename);
+        fs::create_dir_all(path.parent().expect("zip parent")).expect("create library");
+        let mut archive = zip::ZipWriter::new(fs::File::create(&path).expect("create image ZIP"));
+        for (entry, color) in entries {
+            archive
+                .start_file(*entry, SimpleFileOptions::default())
+                .expect("start image entry");
+            let image = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(24, 32, Rgba(*color)));
+            let mut encoded = Cursor::new(Vec::new());
+            image
+                .write_to(&mut encoded, ImageFormat::Png)
+                .expect("encode image entry");
+            archive
+                .write_all(&encoded.into_inner())
+                .expect("write image entry");
+        }
+        archive.finish().expect("finish image ZIP");
         path
     }
 
@@ -1151,6 +1176,126 @@ fn stale_thumbnail_result_is_ignored_after_settings_requeue() {
     assert_eq!("480x640-q100-webp-v1", state.settings_fingerprint);
     assert_eq!(None, state.generated_width);
     assert_eq!(None, state.generated_height);
+}
+
+#[test]
+fn manual_cover_persists_invalidates_cache_survives_settings_and_reports_missing_until_clear() {
+    let tree = TestTree::new("manual-cover-lifecycle");
+    let source = tree.image_zip(
+        "[circle] manual cover.zip",
+        &[
+            ("page1.png", [255, 0, 0, 255]),
+            ("pages/page2.png", [0, 0, 255, 255]),
+        ],
+    );
+    let database = tree.database();
+    let cache_dir = tree.path.join("cache");
+    let repository = CatalogRepository::open(&database).expect("open catalog");
+    let config = ThumbnailConfig::new(cache_dir.clone(), 300, 400, 80).expect("config");
+    let mut application =
+        ApplicationService::with_thumbnails(repository, NoopRecycleBin, config.clone());
+    application.run_scan(&[tree.root()]).expect("scan");
+    let collection_id = application
+        .repository()
+        .collection_id_for_current_path(&source)
+        .expect("collection lookup")
+        .expect("collection ID");
+
+    application
+        .request_thumbnail(collection_id)
+        .expect("request auto thumbnail");
+    let auto_request = application
+        .start_thumbnail_generation(collection_id)
+        .expect("start auto thumbnail");
+    assert_eq!(None, auto_request.selected_entry);
+    let auto_result = generate_thumbnail(&auto_request);
+    application
+        .finish_thumbnail_generation(collection_id, auto_result)
+        .expect("finish auto thumbnail");
+    assert!(config.cache_path(collection_id).is_file());
+    let auto_fingerprint = application
+        .repository()
+        .thumbnail_state(collection_id)
+        .expect("auto state")
+        .source_fingerprint;
+
+    let candidates = application
+        .cover_candidates(collection_id, 24)
+        .expect("cover candidates");
+    assert_eq!(2, candidates.items.len());
+    application
+        .select_cover(
+            collection_id,
+            "pages/page2.png",
+            &candidates.source_fingerprint,
+        )
+        .expect("select manual cover");
+    assert!(!config.cache_path(collection_id).exists());
+    let selected_state = application
+        .repository()
+        .thumbnail_state(collection_id)
+        .expect("selected state");
+    assert_eq!(ThumbnailStatus::Pending, selected_state.status);
+    assert_ne!(auto_fingerprint, selected_state.source_fingerprint);
+    assert!(selected_state.source_fingerprint.contains("cover:manual"));
+
+    let settings = application
+        .save_application_settings(None, 480, 640, 92)
+        .expect("change thumbnail settings");
+    assert_eq!(1, settings.thumbnails_requeued);
+    let selected_request = application
+        .start_thumbnail_generation(collection_id)
+        .expect("start selected thumbnail after settings");
+    assert_eq!(
+        Some("pages/page2.png"),
+        selected_request.selected_entry.as_deref()
+    );
+    drop(application);
+
+    let repository = CatalogRepository::open(&database).expect("reopen catalog");
+    let restarted_config = ThumbnailConfig::new(cache_dir, 480, 640, 92).expect("restarted config");
+    let mut restarted =
+        ApplicationService::with_thumbnails(repository, NoopRecycleBin, restarted_config);
+    let persisted = restarted
+        .cover_candidates(collection_id, 24)
+        .expect("persistent cover selection")
+        .selection
+        .expect("saved selection");
+    assert_eq!("pages/page2.png", persisted.entry_path);
+    assert_eq!("valid", persisted.status);
+
+    tree.image_zip(
+        "[circle] manual cover.zip",
+        &[("page1.png", [255, 0, 0, 255])],
+    );
+    let changed = restarted
+        .cover_candidates(collection_id, 24)
+        .expect("changed source candidates")
+        .selection
+        .expect("invalid selection remains");
+    assert_eq!("missing", changed.status);
+    let stored = restarted
+        .repository()
+        .cover_selection(collection_id)
+        .expect("read stored selection")
+        .expect("selection retained");
+    assert_eq!(CoverSelectionStatus::Missing, stored.validation_status);
+    assert_eq!("pages/page2.png", stored.entry_path);
+
+    restarted
+        .clear_cover_selection(collection_id)
+        .expect("restore automatic cover");
+    assert!(
+        restarted
+            .repository()
+            .cover_selection(collection_id)
+            .expect("selection after clear")
+            .is_none()
+    );
+    let auto_request = restarted
+        .start_thumbnail_generation(collection_id)
+        .expect("start restored automatic thumbnail");
+    assert_eq!(None, auto_request.selected_entry);
 }
 
 #[test]

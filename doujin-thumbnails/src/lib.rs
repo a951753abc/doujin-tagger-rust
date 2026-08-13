@@ -1,6 +1,7 @@
 //! Bounded cover extraction and WebP thumbnail generation.
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::fs::{self, File};
@@ -19,6 +20,10 @@ const MAX_SOURCE_IMAGE_BYTES: u64 = 100 * 1024 * 1024;
 const MAX_IMAGE_DIMENSION: u32 = 20_000;
 const MAX_IMAGE_ALLOC_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_DIRECTORY_DEPTH: usize = 32;
+const MAX_SOURCE_ENTRIES: usize = 10_000;
+const MAX_CANDIDATE_SCAN_ENTRIES: usize = 96;
+const MAX_CANDIDATE_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+pub const MAX_COVER_CANDIDATES: usize = 24;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThumbnailConfig {
@@ -77,6 +82,16 @@ pub struct ThumbnailGenerationRequest {
     pub width: u32,
     pub height: u32,
     pub quality: u8,
+    pub selected_entry: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoverCandidate {
+    pub entry_path: String,
+    pub filename: String,
+    pub page_order: usize,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +154,141 @@ pub fn source_fingerprint(source_path: &Path) -> Result<String, ThumbnailError> 
     Ok(fingerprint)
 }
 
+pub fn cover_source_fingerprint(
+    source_path: &Path,
+    selected_entry: Option<&str>,
+) -> Result<String, ThumbnailError> {
+    let mut fingerprint = source_fingerprint(source_path)?;
+    match selected_entry {
+        None => fingerprint.push_str(":cover:auto"),
+        Some(entry_path) => {
+            let normalized = normalize_entry_path(entry_path).ok_or_else(|| {
+                ThumbnailError::new(
+                    ThumbnailErrorKind::Unsupported,
+                    "指定封面 entry path 不安全",
+                )
+            })?;
+            fingerprint.push_str(&format!(":cover:manual:{}:{normalized}", normalized.len()));
+            if source_path.is_dir() {
+                let image_path = find_directory_entry(source_path, &normalized)?;
+                let metadata = fs::metadata(image_path).map_err(source_io)?;
+                let modified = metadata
+                    .modified()
+                    .map_err(source_io)?
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default();
+                fingerprint.push_str(&format!(
+                    ":{}:{}:{}",
+                    metadata.len(),
+                    modified.as_secs(),
+                    modified.subsec_nanos()
+                ));
+            }
+        }
+    }
+    Ok(fingerprint)
+}
+
+pub fn cover_candidates(
+    source_path: &Path,
+    limit: usize,
+) -> Result<Vec<CoverCandidate>, ThumbnailError> {
+    let limit = limit.clamp(1, MAX_COVER_CANDIDATES);
+    let entries = source_entries(source_path)?;
+    let mut candidates = Vec::with_capacity(limit);
+    let mut total_bytes = 0u64;
+    for (page_order, entry_path) in entries
+        .into_iter()
+        .take(MAX_CANDIDATE_SCAN_ENTRIES)
+        .enumerate()
+    {
+        if candidates.len() == limit {
+            break;
+        }
+        let Ok(bytes) = read_source_entry(source_path, &entry_path) else {
+            continue;
+        };
+        total_bytes = total_bytes.saturating_add(bytes.len() as u64);
+        if total_bytes > MAX_CANDIDATE_TOTAL_BYTES {
+            return Err(ThumbnailError::new(
+                ThumbnailErrorKind::ResourceLimit,
+                "候選封面累計解壓資料超過 256 MiB 限制",
+            ));
+        }
+        let Ok(image) = decode_image(bytes) else {
+            continue;
+        };
+        candidates.push(CoverCandidate {
+            filename: entry_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&entry_path)
+                .to_owned(),
+            entry_path,
+            page_order: page_order + 1,
+            width: image.width(),
+            height: image.height(),
+        });
+    }
+    Ok(candidates)
+}
+
+pub fn validate_cover_candidate(
+    source_path: &Path,
+    entry_path: &str,
+) -> Result<CoverCandidate, ThumbnailError> {
+    let normalized = normalize_entry_path(entry_path).ok_or_else(|| {
+        ThumbnailError::new(
+            ThumbnailErrorKind::Unsupported,
+            "指定封面 entry path 不安全",
+        )
+    })?;
+    let entries = source_entries(source_path)?;
+    let page_order = entries
+        .iter()
+        .position(|entry| entry == &normalized)
+        .ok_or_else(|| {
+            ThumbnailError::new(
+                ThumbnailErrorKind::NoSupportedImage,
+                format!("指定封面 entry 已不存在：{normalized}"),
+            )
+        })?;
+    let image = read_source_entry(source_path, &normalized).and_then(decode_image)?;
+    Ok(CoverCandidate {
+        filename: normalized
+            .rsplit('/')
+            .next()
+            .unwrap_or(&normalized)
+            .to_owned(),
+        entry_path: normalized,
+        page_order: page_order + 1,
+        width: image.width(),
+        height: image.height(),
+    })
+}
+
+pub fn cover_candidate_preview(
+    source_path: &Path,
+    entry_path: &str,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, ThumbnailError> {
+    if width == 0 || height == 0 || width > 1024 || height > 1024 {
+        return Err(ThumbnailError::new(
+            ThumbnailErrorKind::ResourceLimit,
+            "候選封面預覽尺寸必須介於 1 到 1024 像素",
+        ));
+    }
+    let normalized = validate_cover_candidate(source_path, entry_path)?.entry_path;
+    let image = read_source_entry(source_path, &normalized).and_then(decode_image)?;
+    let resized =
+        DynamicImage::ImageRgba8(image.resize(width, height, FilterType::Lanczos3).to_rgba8());
+    Ok(webp::Encoder::from_image(&resized)
+        .map_err(|message| ThumbnailError::new(ThumbnailErrorKind::Unsupported, message))?
+        .encode(76.0)
+        .to_vec())
+}
+
 pub fn generate_thumbnail(
     request: &ThumbnailGenerationRequest,
 ) -> Result<ThumbnailGenerationSuccess, ThumbnailError> {
@@ -149,7 +299,9 @@ pub fn generate_thumbnail(
         ));
     }
     let source_metadata = fs::metadata(&request.source_path).map_err(source_io)?;
-    let source_image = if source_metadata.is_dir() {
+    let source_image = if let Some(entry_path) = request.selected_entry.as_deref() {
+        read_source_entry(&request.source_path, entry_path)?
+    } else if source_metadata.is_dir() {
         read_first_directory_image(&request.source_path)?
     } else if source_metadata.is_file() {
         read_first_zip_image(&request.source_path)?
@@ -183,15 +335,54 @@ pub fn transparent_placeholder_webp() -> &'static [u8] {
         .as_slice()
 }
 
-fn read_first_zip_image(path: &Path) -> Result<Vec<u8>, ThumbnailError> {
-    let file = File::open(path).map_err(source_io)?;
+fn normalize_entry_path(value: &str) -> Option<String> {
+    let value = value.replace('\\', "/");
+    if value.is_empty() || value.starts_with('/') || value.contains('\0') {
+        return None;
+    }
+    let mut normalized = Vec::new();
+    for component in value.split('/') {
+        if component.is_empty() || component == "." {
+            continue;
+        }
+        if component == ".." || component.contains(':') {
+            return None;
+        }
+        normalized.push(component);
+    }
+    (!normalized.is_empty()).then(|| normalized.join("/"))
+}
+
+fn source_entries(source_path: &Path) -> Result<Vec<String>, ThumbnailError> {
+    if source_path.is_dir() {
+        let mut paths = Vec::new();
+        collect_directory_images(source_path, source_path, 0, &mut paths)?;
+        let mut entries = paths
+            .into_iter()
+            .filter_map(|path| {
+                path.strip_prefix(source_path)
+                    .ok()
+                    .and_then(|relative| normalize_entry_path(&relative.to_string_lossy()))
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| natural_cmp(left, right));
+        return Ok(entries);
+    }
+    let file = File::open(source_path).map_err(source_io)?;
     let mut archive = ZipArchive::new(file).map_err(|error| {
         ThumbnailError::new(
             ThumbnailErrorKind::InvalidArchive,
             format!("無法讀取 ZIP：{error}"),
         )
     })?;
-    let mut candidates = Vec::new();
+    if archive.len() > MAX_SOURCE_ENTRIES {
+        return Err(ThumbnailError::new(
+            ThumbnailErrorKind::ResourceLimit,
+            format!("ZIP entry 數超過 {MAX_SOURCE_ENTRIES} 筆限制"),
+        ));
+    }
+    let mut entries = Vec::new();
+    let mut counts = HashMap::new();
     for index in 0..archive.len() {
         let entry = archive.by_index(index).map_err(|error| {
             ThumbnailError::new(
@@ -199,26 +390,86 @@ fn read_first_zip_image(path: &Path) -> Result<Vec<u8>, ThumbnailError> {
                 format!("無法讀取 ZIP entry：{error}"),
             )
         })?;
-        let name = entry.name().replace('\\', "/");
+        let Some(name) = normalize_entry_path(entry.name()) else {
+            continue;
+        };
+        if entry.is_dir()
+            || entry.is_symlink()
+            || name.split('/').any(|part| part == "__MACOSX")
+            || !is_supported_image(Path::new(&name))
+        {
+            continue;
+        }
+        *counts.entry(name.clone()).or_insert(0usize) += 1;
+        entries.push(name);
+    }
+    entries.retain(|name| counts.get(name) == Some(&1));
+    entries.sort_by(|left, right| natural_cmp(left, right));
+    Ok(entries)
+}
+
+fn read_source_entry(source_path: &Path, entry_path: &str) -> Result<Vec<u8>, ThumbnailError> {
+    let normalized = normalize_entry_path(entry_path).ok_or_else(|| {
+        ThumbnailError::new(
+            ThumbnailErrorKind::Unsupported,
+            "指定封面 entry path 不安全",
+        )
+    })?;
+    if source_path.is_dir() {
+        let path = find_directory_entry(source_path, &normalized)?;
+        let metadata = fs::metadata(&path).map_err(source_io)?;
+        if metadata.len() > MAX_SOURCE_IMAGE_BYTES {
+            return Err(ThumbnailError::new(
+                ThumbnailErrorKind::ResourceLimit,
+                format!("封面圖片 {normalized} 超過 100 MiB 限制"),
+            ));
+        }
+        return fs::read(path).map_err(source_io);
+    }
+    let file = File::open(source_path).map_err(source_io)?;
+    let mut archive = ZipArchive::new(file).map_err(|error| {
+        ThumbnailError::new(
+            ThumbnailErrorKind::InvalidArchive,
+            format!("無法讀取 ZIP：{error}"),
+        )
+    })?;
+    if archive.len() > MAX_SOURCE_ENTRIES {
+        return Err(ThumbnailError::new(
+            ThumbnailErrorKind::ResourceLimit,
+            format!("ZIP entry 數超過 {MAX_SOURCE_ENTRIES} 筆限制"),
+        ));
+    }
+    let mut matched_index = None;
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index).map_err(|error| {
+            ThumbnailError::new(
+                ThumbnailErrorKind::InvalidArchive,
+                format!("無法讀取 ZIP entry：{error}"),
+            )
+        })?;
         if !entry.is_dir()
             && !entry.is_symlink()
-            && !name.split('/').any(|part| part == "__MACOSX")
-            && is_supported_image(Path::new(&name))
+            && normalize_entry_path(entry.name()).as_deref() == Some(&normalized)
         {
-            candidates.push((name, index, entry.size()));
+            if matched_index.is_some() {
+                return Err(ThumbnailError::new(
+                    ThumbnailErrorKind::InvalidArchive,
+                    format!("ZIP 包含重複的封面 entry identity：{normalized}"),
+                ));
+            }
+            matched_index = Some((index, entry.size()));
         }
     }
-    candidates.sort_by(|left, right| natural_cmp(&left.0, &right.0));
-    let Some((name, index, size)) = candidates.into_iter().next() else {
+    let Some((index, size)) = matched_index else {
         return Err(ThumbnailError::new(
             ThumbnailErrorKind::NoSupportedImage,
-            "ZIP 內沒有支援的圖片",
+            format!("指定封面 entry 已不存在：{normalized}"),
         ));
     };
     if size > MAX_SOURCE_IMAGE_BYTES {
         return Err(ThumbnailError::new(
             ThumbnailErrorKind::ResourceLimit,
-            format!("封面圖片 {name} 超過 100 MiB 限制"),
+            format!("封面圖片 {normalized} 超過 100 MiB 限制"),
         ));
     }
     let entry = archive.by_index(index).map_err(|error| {
@@ -235,10 +486,33 @@ fn read_first_zip_image(path: &Path) -> Result<Vec<u8>, ThumbnailError> {
     if bytes.len() as u64 > MAX_SOURCE_IMAGE_BYTES {
         return Err(ThumbnailError::new(
             ThumbnailErrorKind::ResourceLimit,
-            format!("封面圖片 {name} 解壓後超過 100 MiB 限制"),
+            format!("封面圖片 {normalized} 解壓後超過 100 MiB 限制"),
         ));
     }
     Ok(bytes)
+}
+
+fn find_directory_entry(root: &Path, entry_path: &str) -> Result<PathBuf, ThumbnailError> {
+    let entries = source_entries(root)?;
+    if !entries.iter().any(|entry| entry == entry_path) {
+        return Err(ThumbnailError::new(
+            ThumbnailErrorKind::NoSupportedImage,
+            format!("指定封面 entry 已不存在：{entry_path}"),
+        ));
+    }
+    Ok(entry_path
+        .split('/')
+        .fold(root.to_path_buf(), |path, component| path.join(component)))
+}
+
+fn read_first_zip_image(path: &Path) -> Result<Vec<u8>, ThumbnailError> {
+    let Some(entry_path) = source_entries(path)?.into_iter().next() else {
+        return Err(ThumbnailError::new(
+            ThumbnailErrorKind::NoSupportedImage,
+            "ZIP 內沒有支援的圖片",
+        ));
+    };
+    read_source_entry(path, &entry_path)
 }
 
 fn read_first_directory_image(path: &Path) -> Result<Vec<u8>, ThumbnailError> {
@@ -298,6 +572,12 @@ fn collect_directory_images(
             }
         } else if file_type.is_file() && is_supported_image(&path) {
             output.push(path);
+            if output.len() > MAX_SOURCE_ENTRIES {
+                return Err(ThumbnailError::new(
+                    ThumbnailErrorKind::ResourceLimit,
+                    format!("圖片 entry 數超過 {MAX_SOURCE_ENTRIES} 筆限制"),
+                ));
+            }
         }
     }
     Ok(())
@@ -517,6 +797,7 @@ mod tests {
             width: 300,
             height: 400,
             quality: 80,
+            selected_entry: None,
         })
         .expect("generate thumbnail");
 
@@ -542,6 +823,7 @@ mod tests {
             width: 100,
             height: 100,
             quality: 80,
+            selected_entry: None,
         })
         .expect("generate directory thumbnail");
 
@@ -559,6 +841,7 @@ mod tests {
             width: 100,
             height: 100,
             quality: 80,
+            selected_entry: None,
         };
         assert_eq!(
             ThumbnailErrorKind::InvalidArchive,
@@ -577,9 +860,119 @@ mod tests {
                 width: 100,
                 height: 100,
                 quality: 80,
+                selected_entry: None,
             })
             .expect_err("reject empty ZIP")
             .kind
+        );
+    }
+
+    #[test]
+    fn candidates_are_safe_decodable_naturally_ordered_and_selected_generation_is_exact() {
+        let tree = TestTree::new("cover-candidates");
+        let source = tree.0.join("book.zip");
+        zip_with_images(
+            File::create(&source).expect("create ZIP"),
+            &[
+                ("../escape.png", png(20, 20, [0, 255, 0, 255])),
+                ("notes.txt", b"not an image".to_vec()),
+                ("page10.png", png(20, 40, [0, 0, 255, 255])),
+                ("page2.png", png(40, 20, [255, 0, 0, 255])),
+                ("broken.png", b"not a png".to_vec()),
+            ],
+        );
+
+        let candidates = cover_candidates(&source, MAX_COVER_CANDIDATES).expect("candidates");
+        assert_eq!(
+            vec!["page2.png", "page10.png"],
+            candidates
+                .iter()
+                .map(|candidate| candidate.entry_path.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            vec![2, 3],
+            candidates
+                .iter()
+                .map(|item| item.page_order)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            ThumbnailErrorKind::Unsupported,
+            validate_cover_candidate(&source, "../escape.png")
+                .expect_err("reject traversal")
+                .kind
+        );
+
+        let cache = tree.0.join("selected.webp");
+        generate_thumbnail(&ThumbnailGenerationRequest {
+            source_path: source.clone(),
+            cache_path: cache.clone(),
+            width: 100,
+            height: 100,
+            quality: 80,
+            selected_entry: Some("page10.png".to_owned()),
+        })
+        .expect("generate selected page");
+        let pixel = image::open(cache)
+            .expect("decode selected cache")
+            .to_rgb8()
+            .get_pixel(25, 50)
+            .0;
+        assert!(pixel[2] > pixel[0], "page10 blue image must be used");
+        assert_eq!(
+            ThumbnailErrorKind::NoSupportedImage,
+            validate_cover_candidate(&source, "missing.png")
+                .expect_err("missing override")
+                .kind
+        );
+    }
+
+    #[test]
+    fn candidates_enforce_limit_and_preview_is_bounded() {
+        let tree = TestTree::new("candidate-limits");
+        let source = tree.0.join("book.zip");
+        let images = (0..30)
+            .map(|index| (format!("{index:02}.png"), png(8, 8, [index, 0, 0, 255])))
+            .collect::<Vec<_>>();
+        let references = images
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), bytes.clone()))
+            .collect::<Vec<_>>();
+        zip_with_images(File::create(&source).expect("create ZIP"), &references);
+
+        assert_eq!(
+            MAX_COVER_CANDIDATES,
+            cover_candidates(&source, usize::MAX)
+                .expect("limited candidates")
+                .len()
+        );
+        let preview =
+            cover_candidate_preview(&source, "00.png", 160, 220).expect("bounded preview");
+        let decoded = image::load_from_memory(&preview).expect("decode preview");
+        assert!(decoded.width() <= 160 && decoded.height() <= 220);
+        assert_eq!(
+            ThumbnailErrorKind::ResourceLimit,
+            cover_candidate_preview(&source, "00.png", 2048, 220)
+                .expect_err("reject oversized preview")
+                .kind
+        );
+
+        let oversized_source = tree.0.join("oversized-dimension.zip");
+        zip_with_images(
+            File::create(&oversized_source).expect("create oversized ZIP"),
+            &[("huge.png", png(MAX_IMAGE_DIMENSION + 1, 1, [0, 0, 0, 255]))],
+        );
+        assert_eq!(
+            ThumbnailErrorKind::ResourceLimit,
+            validate_cover_candidate(&oversized_source, "huge.png")
+                .expect_err("reject oversized decoded dimensions")
+                .kind
+        );
+        assert!(
+            cover_candidates(&oversized_source, MAX_COVER_CANDIDATES)
+                .expect("skip resource-limited candidate")
+                .is_empty()
         );
     }
 }
