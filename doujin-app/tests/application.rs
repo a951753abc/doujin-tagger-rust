@@ -28,7 +28,10 @@ use doujin_storage::thumbnails::{
     ThumbnailStatus,
 };
 use doujin_storage::{CatalogRepository, StorageError};
-use doujin_thumbnails::{ThumbnailConfig, ThumbnailGenerationSuccess, generate_thumbnail};
+use doujin_thumbnails::{
+    ThumbnailConfig, ThumbnailGenerationSuccess, calculate_source_content_fingerprint,
+    generate_thumbnail,
+};
 use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
 use rusqlite::Connection;
 use zip::write::SimpleFileOptions;
@@ -288,6 +291,92 @@ impl Drop for TestTree {
             let _ = fs::remove_dir_all(&self.path);
         }
     }
+}
+
+#[test]
+fn duplicate_workers_process_100_plus_isolate_failure_retry_and_reuse_cache() {
+    let tree = TestTree::new("duplicate-worker-large");
+    for index in 0..101 {
+        tree.image_zip(
+            &format!("[Circle {index:03}] work {index:03}.zip"),
+            &[("001.png", [index as u8, 20, 30, 255])],
+        );
+    }
+    let corrupt = tree.zip("[Circle bad] corrupt.zip");
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application
+        .run_scan(&[tree.root()])
+        .expect("scan 102 collections");
+
+    let job = application
+        .start_duplicate_scan()
+        .expect("start duplicate scan");
+    assert_eq!(102, job.total);
+    assert_eq!(2, job.concurrency_limit);
+    while let Some(request) = application
+        .claim_duplicate_fingerprint()
+        .expect("claim duplicate work")
+    {
+        let result = calculate_source_content_fingerprint(&request.source_path);
+        application
+            .finish_duplicate_fingerprint(&request, result)
+            .expect("finish duplicate work");
+    }
+    let completed = application
+        .duplicate_scan_job(job.id)
+        .expect("completed duplicate scan");
+    assert_eq!(101, completed.processed);
+    assert_eq!(1, completed.failed);
+    assert_eq!(0, completed.pending);
+
+    let mut archive = zip::ZipWriter::new(fs::File::create(&corrupt).expect("replace corrupt ZIP"));
+    archive
+        .start_file("001.png", SimpleFileOptions::default())
+        .expect("start replacement image");
+    let image =
+        DynamicImage::ImageRgba8(ImageBuffer::from_pixel(24, 32, Rgba([200, 100, 50, 255])));
+    let mut encoded = Cursor::new(Vec::new());
+    image
+        .write_to(&mut encoded, ImageFormat::Png)
+        .expect("encode replacement image");
+    archive
+        .write_all(&encoded.into_inner())
+        .expect("write replacement image");
+    archive.finish().expect("finish replacement ZIP");
+
+    application
+        .retry_duplicate_scan_failures(job.id)
+        .expect("retry failed item");
+    let retry = application
+        .claim_duplicate_fingerprint()
+        .expect("claim retry")
+        .expect("retry request");
+    let result = calculate_source_content_fingerprint(&retry.source_path);
+    application
+        .finish_duplicate_fingerprint(&retry, result)
+        .expect("finish retry");
+    let completed = application
+        .duplicate_scan_job(job.id)
+        .expect("completed retried scan");
+    assert_eq!(102, completed.processed);
+    assert_eq!(0, completed.failed);
+
+    let cached_job = application
+        .start_duplicate_scan()
+        .expect("start cached duplicate scan");
+    assert!(
+        application
+            .claim_duplicate_fingerprint()
+            .expect("cached scan finishes without hashing")
+            .is_none()
+    );
+    let cached = application
+        .duplicate_scan_job(cached_job.id)
+        .expect("cached scan status");
+    assert_eq!(102, cached.processed);
+    assert_eq!(102, cached.reused_cache);
+    assert_eq!(0, cached.failed);
 }
 
 #[test]

@@ -13,6 +13,10 @@ use doujin_storage::collections::{
     MissingMetadataField, ReviewQueueKind, ReviewQueueQuery, SortDirection,
 };
 use doujin_storage::consolidation::{ConsolidationChoice, ConsolidationResolution};
+use doujin_storage::duplicates::{
+    DUPLICATE_FINGERPRINT_ALGORITHM_VERSION, DuplicateFingerprint, DuplicateLevel,
+    DuplicateScanItemStatus, DuplicateScanStatus,
+};
 use doujin_storage::external_search_batches::{
     ExternalSearchBatchItemOutcome, ExternalSearchBatchStrategy, NewExternalSearchBatchItem,
 };
@@ -134,11 +138,28 @@ fn mapping_evidence(reason: &str) -> CanonicalMappingEvidence {
     }
 }
 
+fn duplicate_fingerprint(collection_id: i64, source: &str, content: char) -> DuplicateFingerprint {
+    let hash = content.to_string().repeat(64);
+    DuplicateFingerprint {
+        collection_id,
+        source_fingerprint: source.to_owned(),
+        algorithm_version: DUPLICATE_FINGERPRINT_ALGORITHM_VERSION.to_owned(),
+        source_size: 4096,
+        file_sha256: Some(hash.clone()),
+        archive_entry_count: 2,
+        image_count: 2,
+        content_fingerprint: hash.clone(),
+        page_hashes: vec![hash.clone(), hash],
+        perceptual_hashes: None,
+        calculated_at: None,
+    }
+}
+
 #[test]
 fn migration_enables_required_sqlite_features() {
     let repository = CatalogRepository::open_in_memory().expect("open catalog");
 
-    assert_eq!(14, repository.schema_version().expect("schema version"));
+    assert_eq!(15, repository.schema_version().expect("schema version"));
     assert!(repository.foreign_keys_enabled().expect("foreign keys"));
     assert!(
         repository
@@ -159,6 +180,340 @@ fn migration_enables_required_sqlite_features() {
             .expect("FTS5 query")
             .is_empty()
     );
+}
+
+#[test]
+fn duplicate_scan_job_persists_101_items_bounds_claims_and_recovers_running_items() {
+    let tree = TestTree::new("duplicate-scan-persistence");
+    let database = tree.database();
+    let mut repository = CatalogRepository::open(&database).expect("open catalog");
+    let mut collection_ids = Vec::new();
+    for index in 0..101 {
+        let pending = tree.pending(&format!("[Circle {index:03}] duplicate {index:03}.zip"));
+        repository
+            .ingest_collection(&pending)
+            .expect("ingest collection");
+        collection_ids.push(
+            repository
+                .collection_id_for_current_path(&pending.path)
+                .expect("lookup collection")
+                .expect("collection ID"),
+        );
+    }
+    let job = repository
+        .create_duplicate_scan_job(&collection_ids, 2)
+        .expect("create duplicate scan");
+    assert_eq!(101, job.total);
+    assert_eq!(101, job.pending);
+    assert_eq!(2, job.concurrency_limit);
+    drop(repository);
+
+    let mut repository = CatalogRepository::open(&database).expect("reopen catalog");
+    let persisted = repository
+        .duplicate_scan_job(job.id)
+        .expect("persistent duplicate scan");
+    assert_eq!(101, persisted.pending);
+    let first = repository
+        .claim_duplicate_scan_item()
+        .expect("claim first")
+        .expect("first item");
+    let second = repository
+        .claim_duplicate_scan_item()
+        .expect("claim second")
+        .expect("second item");
+    assert_ne!(first.collection_id, second.collection_id);
+    assert_eq!(DuplicateScanItemStatus::Running, first.status);
+    assert!(
+        repository
+            .claim_duplicate_scan_item()
+            .expect("bounded third claim")
+            .is_none()
+    );
+    drop(repository);
+
+    let mut repository = CatalogRepository::open(&database).expect("reopen interrupted catalog");
+    assert_eq!(
+        2,
+        repository
+            .recover_interrupted_duplicate_scan_items()
+            .expect("recover interrupted items")
+    );
+    let recovered = repository
+        .duplicate_scan_job(job.id)
+        .expect("recovered job");
+    assert_eq!(101, recovered.pending);
+    assert_eq!(0, recovered.running);
+}
+
+#[test]
+fn duplicate_fingerprint_cache_reuses_only_matching_source_and_algorithm() {
+    let tree = TestTree::new("duplicate-cache");
+    let pending = tree.pending("[Circle] duplicate cache.zip");
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    repository
+        .ingest_collection(&pending)
+        .expect("ingest collection");
+    let collection_id = repository
+        .collection_id_for_current_path(&pending.path)
+        .expect("lookup collection")
+        .expect("collection ID");
+    let fingerprint = duplicate_fingerprint(collection_id, "source:v1", 'a');
+    repository
+        .upsert_duplicate_fingerprint(&fingerprint)
+        .expect("save fingerprint");
+
+    assert!(
+        repository
+            .cached_duplicate_fingerprint(
+                collection_id,
+                "source:v1",
+                DUPLICATE_FINGERPRINT_ALGORITHM_VERSION,
+            )
+            .expect("reuse cache")
+            .is_some()
+    );
+    assert!(
+        repository
+            .cached_duplicate_fingerprint(
+                collection_id,
+                "source:v2",
+                DUPLICATE_FINGERPRINT_ALGORITHM_VERSION,
+            )
+            .expect("source invalidation")
+            .is_none()
+    );
+    assert!(
+        repository
+            .cached_duplicate_fingerprint(collection_id, "source:v1", "sha256-pages-v2")
+            .expect("algorithm invalidation")
+            .is_none()
+    );
+}
+
+#[test]
+fn duplicate_failures_retry_and_pair_decisions_are_fingerprint_bound() {
+    let tree = TestTree::new("duplicate-decisions");
+    let first = tree.pending("[Circle] duplicate first.zip");
+    let second = tree.pending("[Circle] duplicate second.zip");
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    repository.ingest_collection(&first).expect("ingest first");
+    repository
+        .ingest_collection(&second)
+        .expect("ingest second");
+    let first_id = repository
+        .collection_id_for_current_path(&first.path)
+        .expect("lookup first")
+        .expect("first ID");
+    let second_id = repository
+        .collection_id_for_current_path(&second.path)
+        .expect("lookup second")
+        .expect("second ID");
+    let job = repository
+        .create_duplicate_scan_job(&[first_id], 1)
+        .expect("create scan");
+    let item = repository
+        .claim_duplicate_scan_item()
+        .expect("claim item")
+        .expect("scan item");
+    let failed = repository
+        .fail_duplicate_scan_item(job.id, item.collection_id, "invalid_archive", "ZIP 已損毀")
+        .expect("record failure");
+    assert_eq!(DuplicateScanStatus::CompletedWithErrors, failed.status);
+    assert_eq!(1, failed.failed);
+    let failures = repository
+        .duplicate_scan_failures(job.id)
+        .expect("locate duplicate failure");
+    assert_eq!(1, failures.len());
+    assert_eq!(item.collection_id, failures[0].collection_id);
+    assert_eq!(item.path, failures[0].path);
+    assert_eq!(Some("invalid_archive"), failures[0].error_kind.as_deref());
+    assert_eq!(1, failures[0].attempts);
+    let retried = repository
+        .retry_failed_duplicate_scan_items(job.id)
+        .expect("retry failure");
+    assert_eq!(DuplicateScanStatus::Running, retried.status);
+    assert_eq!(1, retried.pending);
+    let retried_item = repository
+        .claim_duplicate_scan_item()
+        .expect("claim retry")
+        .expect("retried item");
+    assert_eq!(2, retried_item.attempts);
+    let completed = repository
+        .complete_duplicate_scan_item(
+            job.id,
+            &duplicate_fingerprint(first_id, "source:first", 'b'),
+            false,
+        )
+        .expect("complete retry");
+    assert_eq!(DuplicateScanStatus::Completed, completed.status);
+
+    repository
+        .exclude_duplicate_pair(first_id, "fp:first:v1", second_id, "fp:second:v1")
+        .expect("exclude pair");
+    assert!(
+        repository
+            .duplicate_pair_is_excluded(first_id, "fp:first:v1", second_id, "fp:second:v1")
+            .expect("read exclusion")
+    );
+    assert!(
+        !repository
+            .duplicate_pair_is_excluded(first_id, "fp:first:v2", second_id, "fp:second:v1")
+            .expect("changed fingerprint re-evaluation")
+    );
+    repository
+        .confirm_duplicate_pair(second_id, "fp:second:v1", first_id, "fp:first:v1")
+        .expect("confirm pair with reverse input order");
+    assert!(
+        repository
+            .duplicate_pair_is_confirmed(first_id, "fp:first:v1", second_id, "fp:second:v1")
+            .expect("read review")
+    );
+    assert!(
+        !repository
+            .duplicate_pair_is_confirmed(first_id, "fp:first:v2", second_id, "fp:second:v1")
+            .expect("changed fingerprint not reviewed")
+    );
+}
+
+#[test]
+fn duplicate_candidates_prioritize_levels_require_conservative_probable_evidence_and_honor_decisions()
+ {
+    let tree = TestTree::new("duplicate-candidates");
+    let filenames = [
+        "[Exact Circle] Exact Work A.zip",
+        "[Exact Circle] Exact Work B.zip",
+        "[Content Circle] Content Work A.zip",
+        "[Content Circle] Content Work B.zip",
+        "[Same Circle (Shared Author)] Probable Work.zip",
+        "[Same Circle (Shared Author)] Probable Work [DL版].zip",
+        "[Different One] Title Alone.zip",
+        "[Different Two] Title Alone.zip",
+        "[RJ407766][Identifier One] First Edition.zip",
+        "[RJ407766][Identifier Two] Completely Renamed.zip",
+    ];
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut ids = Vec::new();
+    for filename in filenames {
+        let pending = tree.pending(filename);
+        repository
+            .ingest_collection(&pending)
+            .expect("ingest candidate");
+        ids.push(
+            repository
+                .collection_id_for_current_path(&pending.path)
+                .expect("lookup candidate")
+                .expect("candidate ID"),
+        );
+    }
+    let mut fingerprints = ids
+        .iter()
+        .enumerate()
+        .map(|(index, id)| {
+            duplicate_fingerprint(
+                *id,
+                &format!("source:{index}"),
+                char::from(b'a' + index as u8),
+            )
+        })
+        .collect::<Vec<_>>();
+    fingerprints[1].file_sha256 = fingerprints[0].file_sha256.clone();
+    fingerprints[1].content_fingerprint = fingerprints[0].content_fingerprint.clone();
+    fingerprints[1].page_hashes = fingerprints[0].page_hashes.clone();
+    fingerprints[3].content_fingerprint = fingerprints[2].content_fingerprint.clone();
+    fingerprints[3].page_hashes = fingerprints[2].page_hashes.clone();
+    fingerprints[5].image_count = fingerprints[4].image_count + 1;
+    fingerprints[5].page_hashes.push("f".repeat(64));
+    fingerprints[9].image_count = 20;
+    fingerprints[9].page_hashes = vec!["9".repeat(64); 20];
+    for fingerprint in &fingerprints {
+        repository
+            .upsert_duplicate_fingerprint(fingerprint)
+            .expect("save candidate fingerprint");
+    }
+
+    let candidates = repository.duplicate_candidates().expect("candidate query");
+    assert_eq!(DuplicateLevel::Exact, candidates[0].level);
+    assert_eq!(
+        (ids[0], ids[1]),
+        (
+            candidates[0].left.collection.id,
+            candidates[0].right.collection.id
+        )
+    );
+    assert_eq!(DuplicateLevel::Content, candidates[1].level);
+    assert_eq!(
+        (ids[2], ids[3]),
+        (
+            candidates[1].left.collection.id,
+            candidates[1].right.collection.id
+        )
+    );
+    assert!(candidates.iter().any(|candidate| {
+        candidate.level == DuplicateLevel::Probable
+            && candidate.left.collection.id == ids[4]
+            && candidate.right.collection.id == ids[5]
+            && candidate
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("作者相同"))
+    }));
+    assert!(candidates.iter().any(|candidate| {
+        candidate.level == DuplicateLevel::Probable
+            && candidate.left.collection.id == ids[8]
+            && candidate.right.collection.id == ids[9]
+            && candidate
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("RJ:RJ407766"))
+    }));
+    assert!(
+        !candidates.iter().any(|candidate| {
+            candidate.left.collection.id == ids[6] && candidate.right.collection.id == ids[7]
+        }),
+        "title alone must not create a probable candidate"
+    );
+    assert!(candidates[0].left.file_size > 0);
+    assert!(candidates[0].left.page_count > 0);
+    assert!(candidates[0].left.metadata_completeness > 0);
+    assert_eq!(0, candidates[0].left.manual_assertion_count);
+    assert!(candidates[0].left.collection.root.is_some());
+
+    let exact_left_identity = candidates[0].left.fingerprint_identity.clone();
+    let exact_right_identity = candidates[0].right.fingerprint_identity.clone();
+    repository
+        .confirm_duplicate_pair(ids[0], &exact_left_identity, ids[1], &exact_right_identity)
+        .expect("confirm exact pair");
+    let reviewed = repository
+        .duplicate_candidates()
+        .expect("reviewed candidates");
+    assert!(reviewed.iter().any(|candidate| {
+        candidate.left.collection.id == ids[0]
+            && candidate.right.collection.id == ids[1]
+            && candidate.reviewed
+    }));
+
+    repository
+        .exclude_duplicate_pair(ids[0], &exact_left_identity, ids[1], &exact_right_identity)
+        .expect("exclude exact pair");
+    let excluded = repository
+        .duplicate_candidates()
+        .expect("excluded candidates");
+    assert!(!excluded.iter().any(|candidate| {
+        candidate.left.collection.id == ids[0] && candidate.right.collection.id == ids[1]
+    }));
+
+    fingerprints[0].source_fingerprint = "source:changed".to_owned();
+    repository
+        .upsert_duplicate_fingerprint(&fingerprints[0])
+        .expect("change fingerprint identity");
+    let reevaluated = repository
+        .duplicate_candidates()
+        .expect("re-evaluated candidates");
+    assert!(reevaluated.iter().any(|candidate| {
+        candidate.left.collection.id == ids[0]
+            && candidate.right.collection.id == ids[1]
+            && !candidate.reviewed
+    }));
 }
 
 #[test]
@@ -1085,7 +1440,7 @@ fn version_one_catalog_upgrades_through_all_migrations_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade catalog");
 
-    assert_eq!(14, repository.schema_version().expect("schema version"));
+    assert_eq!(15, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     drop(repository);
     let connection = Connection::open(&database).expect("inspect upgraded catalog");
@@ -1142,14 +1497,19 @@ fn version_eight_catalog_removes_is_dl_event_fallback_without_overwriting_manual
              DROP TABLE work_basket_items;
              DROP TABLE cover_selections;
              DROP TABLE work_baskets;
-             DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12, 13, 14);
+             DROP TABLE duplicate_reviews;
+             DROP TABLE duplicate_exclusions;
+             DROP TABLE duplicate_scan_items;
+             DROP TABLE duplicate_scan_jobs;
+             DROP TABLE duplicate_fingerprints;
+             DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12, 13, 14, 15);
              PRAGMA user_version = 8;",
         )
         .expect("seed v8 metadata");
     drop(connection);
 
     let repository = CatalogRepository::open(&database).expect("upgrade catalog");
-    assert_eq!(14, repository.schema_version().expect("schema version"));
+    assert_eq!(15, repository.schema_version().expect("schema version"));
     drop(repository);
 
     let connection = Connection::open(&database).expect("inspect upgraded catalog");
@@ -1253,7 +1613,7 @@ fn version_six_catalog_adds_thumbnail_priority_without_losing_state() {
         .thumbnail_state(1)
         .expect("preserved thumbnail state");
 
-    assert_eq!(14, repository.schema_version().expect("schema version"));
+    assert_eq!(15, repository.schema_version().expect("schema version"));
     assert_eq!(ThumbnailStatus::Pending, state.status);
     assert_eq!(BACKGROUND_THUMBNAIL_PRIORITY, state.priority);
     assert!(state.requested_at.is_some());
@@ -1300,7 +1660,7 @@ fn version_two_catalog_upgrades_external_search_jobs_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v2 catalog");
 
-    assert_eq!(14, repository.schema_version().expect("schema version"));
+    assert_eq!(15, repository.schema_version().expect("schema version"));
     let job = repository
         .external_search_job(job_id)
         .expect("preserved external search job");
@@ -1350,7 +1710,7 @@ fn version_three_catalog_adds_consolidation_audit_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v3 catalog");
 
-    assert_eq!(14, repository.schema_version().expect("schema version"));
+    assert_eq!(15, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert_eq!(
         None,
@@ -1405,7 +1765,7 @@ fn version_four_catalog_adds_thumbnail_state_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v4 catalog");
 
-    assert_eq!(14, repository.schema_version().expect("schema version"));
+    assert_eq!(15, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert!(
         repository
@@ -1464,7 +1824,7 @@ fn version_five_catalog_adds_typed_application_settings_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v5 catalog");
 
-    assert_eq!(14, repository.schema_version().expect("schema version"));
+    assert_eq!(15, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert!(
         repository
