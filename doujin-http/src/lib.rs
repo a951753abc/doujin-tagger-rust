@@ -33,7 +33,7 @@ use doujin_scanner::SourceKind;
 use doujin_storage::StorageError;
 use doujin_storage::collections::{
     CollectionPage, CollectionQuery, CollectionQueryLocation, CollectionRootSnapshot,
-    CollectionSnapshot, MissingMetadataField,
+    CollectionSnapshot, CollectionSort, MissingMetadataField, SortDirection,
 };
 use doujin_storage::consolidation::{
     ConsolidationChoice, ConsolidationConflict, ConsolidationPreflight, ConsolidationResolution,
@@ -2634,6 +2634,23 @@ fn parse_collection_query(raw_query: Option<&str>) -> Result<CollectionQuery, Ap
                 ensure_single_parameter(&mut scalar_keys, key)?;
                 let value = value.parse::<i64>().map_err(|_| invalid_query())?;
                 query.per_page = clamped_per_page(Some(value));
+            }
+            "sort" => {
+                ensure_single_parameter(&mut scalar_keys, key)?;
+                query.sort = match value {
+                    "created" => CollectionSort::Created,
+                    "updated" => CollectionSort::Updated,
+                    "title" => CollectionSort::Title,
+                    _ => CollectionSort::default(),
+                };
+            }
+            "direction" => {
+                ensure_single_parameter(&mut scalar_keys, key)?;
+                query.direction = match value {
+                    "asc" => SortDirection::Ascending,
+                    "desc" => SortDirection::Descending,
+                    _ => SortDirection::default(),
+                };
             }
             "event" => {
                 ensure_single_parameter(&mut scalar_keys, key)?;
