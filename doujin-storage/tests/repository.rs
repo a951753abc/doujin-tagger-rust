@@ -23,6 +23,7 @@ use doujin_storage::metadata::{
     ExternalTag, ExternalTagOutcome, MetadataAssertionDecision, MetadataAssertionStatus,
     MetadataField, MetadataSource, MetadataValue,
 };
+use doujin_storage::saved_views::{SavedViewLayout, SavedViewQuery};
 use doujin_storage::statistics::CollectionFacet;
 use doujin_storage::thumbnails::{
     BACKGROUND_THUMBNAIL_PRIORITY, ThumbnailErrorKind, ThumbnailStatus,
@@ -133,7 +134,7 @@ fn mapping_evidence(reason: &str) -> CanonicalMappingEvidence {
 fn migration_enables_required_sqlite_features() {
     let repository = CatalogRepository::open_in_memory().expect("open catalog");
 
-    assert_eq!(9, repository.schema_version().expect("schema version"));
+    assert_eq!(10, repository.schema_version().expect("schema version"));
     assert!(repository.foreign_keys_enabled().expect("foreign keys"));
     assert!(
         repository
@@ -154,6 +155,61 @@ fn migration_enables_required_sqlite_features() {
             .expect("FTS5 query")
             .is_empty()
     );
+}
+
+#[test]
+fn saved_views_persist_allowlisted_query_rules_and_support_explicit_crud() {
+    let tree = TestTree::new("saved-views");
+    let database = tree.database();
+    let mut repository = CatalogRepository::open(&database).expect("open catalog");
+    let query = CollectionQuery {
+        search: Some("C106 blue archive".to_owned()),
+        sort: CollectionSort::Updated,
+        direction: SortDirection::Ascending,
+        filters: CollectionFilters {
+            source: Some(SourceKind::Downloads),
+            event: Some("C106".to_owned()),
+            tags: vec!["待整理".to_owned(), "會場限定".to_owned()],
+            missing: vec![MissingMetadataField::Parody],
+            ..CollectionFilters::default()
+        },
+        ..CollectionQuery::default()
+    };
+    let saved_query = SavedViewQuery::from_collection_query(&query, SavedViewLayout::List);
+
+    let created = repository
+        .create_saved_view("C106 待整理", &saved_query, true)
+        .expect("create saved view");
+    assert_eq!("C106 待整理", created.name);
+    assert_eq!(saved_query, created.query);
+    assert!(created.pinned);
+    assert!(matches!(
+        repository
+            .create_saved_view("c106 待整理", &saved_query, false)
+            .expect_err("name is unique without ASCII case"),
+        StorageError::SavedViewNameConflict(_)
+    ));
+    drop(repository);
+
+    let mut repository = CatalogRepository::open(&database).expect("reopen catalog");
+    let persisted = repository.saved_view(created.id).expect("persisted view");
+    assert_eq!(saved_query, persisted.query);
+    assert_eq!(1, repository.saved_views().expect("list views").len());
+
+    let renamed = repository
+        .update_saved_view(created.id, "C106 補原作", &saved_query, false)
+        .expect("rename and update");
+    assert_eq!("C106 補原作", renamed.name);
+    assert!(!renamed.pinned);
+    repository
+        .delete_saved_view(created.id)
+        .expect("delete saved view");
+    assert!(matches!(
+        repository
+            .saved_view(created.id)
+            .expect_err("deleted view is gone"),
+        StorageError::SavedViewNotFound(id) if id == created.id
+    ));
 }
 
 #[test]
@@ -765,7 +821,7 @@ fn version_one_catalog_upgrades_through_all_migrations_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade catalog");
 
-    assert_eq!(9, repository.schema_version().expect("schema version"));
+    assert_eq!(10, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     drop(repository);
     let connection = Connection::open(&database).expect("inspect upgraded catalog");
@@ -814,14 +870,15 @@ fn version_eight_catalog_removes_is_dl_event_fallback_without_overwriting_manual
              SELECT 2, 'event', id, 'manual'
              FROM metadata_assertions
              WHERE collection_id = 2 AND source_kind = 'manual';
-             DELETE FROM schema_migrations WHERE version = 9;
+             DROP TABLE saved_views;
+             DELETE FROM schema_migrations WHERE version IN (9, 10);
              PRAGMA user_version = 8;",
         )
         .expect("seed v8 metadata");
     drop(connection);
 
     let repository = CatalogRepository::open(&database).expect("upgrade catalog");
-    assert_eq!(9, repository.schema_version().expect("schema version"));
+    assert_eq!(10, repository.schema_version().expect("schema version"));
     drop(repository);
 
     let connection = Connection::open(&database).expect("inspect upgraded catalog");
@@ -925,7 +982,7 @@ fn version_six_catalog_adds_thumbnail_priority_without_losing_state() {
         .thumbnail_state(1)
         .expect("preserved thumbnail state");
 
-    assert_eq!(9, repository.schema_version().expect("schema version"));
+    assert_eq!(10, repository.schema_version().expect("schema version"));
     assert_eq!(ThumbnailStatus::Pending, state.status);
     assert_eq!(BACKGROUND_THUMBNAIL_PRIORITY, state.priority);
     assert!(state.requested_at.is_some());
@@ -972,7 +1029,7 @@ fn version_two_catalog_upgrades_external_search_jobs_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v2 catalog");
 
-    assert_eq!(9, repository.schema_version().expect("schema version"));
+    assert_eq!(10, repository.schema_version().expect("schema version"));
     let job = repository
         .external_search_job(job_id)
         .expect("preserved external search job");
@@ -1022,7 +1079,7 @@ fn version_three_catalog_adds_consolidation_audit_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v3 catalog");
 
-    assert_eq!(9, repository.schema_version().expect("schema version"));
+    assert_eq!(10, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert_eq!(
         None,
@@ -1077,7 +1134,7 @@ fn version_four_catalog_adds_thumbnail_state_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v4 catalog");
 
-    assert_eq!(9, repository.schema_version().expect("schema version"));
+    assert_eq!(10, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert!(
         repository
@@ -1136,7 +1193,7 @@ fn version_five_catalog_adds_typed_application_settings_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v5 catalog");
 
-    assert_eq!(9, repository.schema_version().expect("schema version"));
+    assert_eq!(10, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert!(
         repository

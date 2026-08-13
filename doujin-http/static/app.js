@@ -7,6 +7,7 @@
   const RECENT_LIMIT = 20;
   const PER_PAGE = 48;
   const SHELF_LIMIT = 8;
+  const SAVED_VIEW_SHELF_LIMIT = 6;
   const BATCH_REQUEST_SIZE = 100;
   const COLLECTION_WINDOW_SIZE = 384;
   const COLLECTION_WINDOW_OVERSCAN = 96;
@@ -104,6 +105,11 @@
     statsData: null,
     shelfLoaded: false,
     shelfData: null,
+    savedViewsLoaded: false,
+    savedViews: [],
+    savedViewsPromise: null,
+    activeSavedViewId: null,
+    savedViewDialogMode: null,
     libraryLoaded: false,
     libraryLoading: false,
     libraryLoadError: false,
@@ -195,6 +201,7 @@
       recentShelfBooks: byId("recent-shelf-books"),
       featuredShelfBooks: byId("featured-shelf-books"),
       eventShelfBooks: byId("event-shelf-books"),
+      savedViewList: byId("saved-view-list"),
       searchForm: byId("search-form"),
       searchInput: byId("search-input"),
       headerSearchScope: byId("header-search-scope"),
@@ -216,6 +223,21 @@
       emptySecondary: byId("library-empty-secondary"),
       resultSummary: byId("result-summary"),
       librarySort: byId("library-sort"),
+      savedViewContext: byId("saved-view-context"),
+      savedViewActiveName: byId("saved-view-active-name"),
+      savedViewDirty: byId("saved-view-dirty"),
+      saveCurrentView: byId("save-current-view"),
+      updateSavedView: byId("update-saved-view"),
+      saveAsView: byId("save-as-view"),
+      renameSavedView: byId("rename-saved-view"),
+      deleteSavedView: byId("delete-saved-view"),
+      savedViewDialog: byId("saved-view-dialog"),
+      savedViewForm: byId("saved-view-form"),
+      savedViewDialogHeading: byId("saved-view-dialog-heading"),
+      savedViewDialogIntro: byId("saved-view-dialog-intro"),
+      savedViewName: byId("saved-view-name"),
+      savedViewRuleSummary: byId("saved-view-rule-summary"),
+      confirmSavedView: byId("confirm-saved-view"),
       loadMore: byId("library-load-more"),
       loadMoreSpinner: byId("library-load-more-spinner"),
       loadMoreLabel: byId("library-load-more-label"),
@@ -351,6 +373,7 @@
     renderRecent();
     setLayout(state.layout);
     routeFromHash();
+    loadSavedViews();
     startActivityMonitoring();
   }
 
@@ -409,6 +432,12 @@
       button.addEventListener("click", () => setLayout(button.dataset.layout));
     });
     ui.librarySort.addEventListener("change", changeLibrarySort);
+    ui.saveCurrentView.addEventListener("click", () => openSavedViewDialog("create"));
+    ui.updateSavedView.addEventListener("click", updateActiveSavedView);
+    ui.saveAsView.addEventListener("click", () => openSavedViewDialog("save-as"));
+    ui.renameSavedView.addEventListener("click", () => openSavedViewDialog("rename"));
+    ui.deleteSavedView.addEventListener("click", deleteActiveSavedView);
+    ui.savedViewForm.addEventListener("submit", submitSavedViewDialog);
     byId("read-button").addEventListener("click", () => launchSelected("read"));
     byId("open-button").addEventListener("click", () => launchSelected("open"));
     byId("edit-metadata-button").addEventListener("click", () => openMetadataDialog());
@@ -433,6 +462,11 @@
         if (target === "event") showShelfFilter("event", state.shelfData?.eventName);
         else showShelfFilter(null, null);
       });
+    });
+    byId("manage-saved-views").addEventListener("click", () => {
+      state.activeSavedViewId = null;
+      setAppliedFilters({});
+      navigateLibrary();
     });
     initializeShelfScrollControls();
     byId("clear-recent").addEventListener("click", clearRecent);
@@ -550,6 +584,7 @@
       state.libraryRouteHash = location.hash || "#library";
       updateLibraryNavHref();
       state.restoreLibraryContext = previousRoute !== "library" || libraryNeedsLoad;
+      renderSavedViewContext();
     }
     state.route = nextRoute;
     if (state.route !== "settings") stopThumbnailCachePolling();
@@ -617,8 +652,17 @@
     const sort = ["created", "updated", "title"].includes(params.get("sort")) ? params.get("sort") : "created";
     const direction = ["asc", "desc"].includes(params.get("direction")) ? params.get("direction") : "desc";
     const focusId = Number.parseInt(params.get("focus") || "", 10);
-    const dataParams = libraryParams(values, null, sort, direction);
-    return { values, tags, sort, direction, focusId: Number.isSafeInteger(focusId) && focusId > 0 ? focusId : null, dataKey: dataParams.toString() };
+    const savedViewId = Number.parseInt(params.get("view") || "", 10);
+    const dataParams = libraryParams(values, null, sort, direction, null);
+    return {
+      values,
+      tags,
+      sort,
+      direction,
+      focusId: Number.isSafeInteger(focusId) && focusId > 0 ? focusId : null,
+      savedViewId: Number.isSafeInteger(savedViewId) && savedViewId > 0 ? savedViewId : null,
+      dataKey: dataParams.toString(),
+    };
   }
 
   function applyDecodedLibraryState(decoded) {
@@ -627,12 +671,19 @@
     state.direction = decoded.direction;
     ui.librarySort.value = `${state.sort}:${state.direction}`;
     state.libraryFocusId = decoded.focusId;
+    state.activeSavedViewId = decoded.savedViewId;
     state.libraryDataKey = decoded.dataKey;
     syncFilterDraftFromApplied();
     updateFilterCount();
   }
 
-  function libraryParams(filters = state.filters, focusId = state.libraryFocusId, sort = state.sort, direction = state.direction) {
+  function libraryParams(
+    filters = state.filters,
+    focusId = state.libraryFocusId,
+    sort = state.sort,
+    direction = state.direction,
+    savedViewId = state.activeSavedViewId,
+  ) {
     const params = new URLSearchParams();
     params.set("sort", sort);
     params.set("direction", direction);
@@ -643,6 +694,7 @@
       else if (value) params.set(name, value);
     });
     if (focusId) params.set("focus", String(focusId));
+    if (savedViewId) params.set("view", String(savedViewId));
     return params;
   }
 
@@ -1038,10 +1090,13 @@
     ui.shelfLoading.hidden = false;
     ui.shelfContent.hidden = true;
     try {
-      const stats = await api("/api/stats");
-      const recent = await shelfCollectionPage();
-      const downloads = await shelfCollectionPage({ source: "downloads" }, 1);
-      const candidateData = await api("/api/tombstone-candidates");
+      const [stats, recent, downloads, candidateData, savedViews] = await Promise.all([
+        api("/api/stats"),
+        shelfCollectionPage(),
+        shelfCollectionPage({ source: "downloads" }, 1),
+        api("/api/tombstone-candidates"),
+        loadSavedViews(),
+      ]);
       const featuredName = stats.top_parody?.[0]?.name || null;
       const quickParodyName = stats.top_parody?.find((entry) => entry.name !== "オリジナル")?.name || featuredName;
       const eventName = stats.top_event?.[0]?.name || null;
@@ -1080,6 +1135,7 @@
       renderShelfBooks(ui.recentShelfBooks, recent, null, null, false, thumbnailRequestEpoch);
       renderShelfBooks(ui.featuredShelfBooks, featured, "parody", featuredName, true, thumbnailRequestEpoch);
       renderShelfBooks(ui.eventShelfBooks, eventShelf, "event", eventName, false, thumbnailRequestEpoch);
+      renderSavedViewShelf(savedViews);
       renderTombstoneCandidates();
       updateWorkbenchBadge();
       ui.shelfContent.hidden = false;
@@ -1090,6 +1146,289 @@
     } finally {
       if (state.shelfLoaded) ui.shelfLoading.hidden = true;
     }
+  }
+
+  async function loadSavedViews({ force = false } = {}) {
+    if (state.savedViewsLoaded && !force) return state.savedViews;
+    if (state.savedViewsPromise) return state.savedViewsPromise;
+    state.savedViewsPromise = api("/api/saved-views")
+      .then((data) => {
+        state.savedViews = Array.isArray(data.items) ? data.items : [];
+        state.savedViewsLoaded = true;
+        restoreSavedViewLayout();
+        renderSavedViewContext();
+        if (state.shelfLoaded) renderSavedViewShelf(state.savedViews);
+        return state.savedViews;
+      })
+      .catch((error) => {
+        toast(`無法讀取 Saved Views：${error.message}`, true);
+        return state.savedViews;
+      })
+      .finally(() => {
+        state.savedViewsPromise = null;
+      });
+    return state.savedViewsPromise;
+  }
+
+  function restoreSavedViewLayout() {
+    const view = activeSavedView();
+    if (!view) return;
+    const current = currentSavedViewQuery();
+    current.layout = view.query.layout;
+    if (savedViewQueryKey(current) === savedViewQueryKey(view.query)) {
+      setLayout(view.query.layout);
+    }
+  }
+
+  function renderSavedViewShelf(views = state.savedViews) {
+    if (!ui.savedViewList) return;
+    ui.savedViewList.replaceChildren();
+    const pinned = views.filter((view) => view.pinned).slice(0, SAVED_VIEW_SHELF_LIMIT);
+    if (!pinned.length) {
+      const empty = el("li", "saved-view-empty");
+      empty.append(
+        el("strong", "", "還沒有釘選的智慧書架"),
+        el("span", "", "在「全部藏書」組好條件後，儲存目前檢視。"),
+      );
+      ui.savedViewList.append(empty);
+      return;
+    }
+    pinned.forEach((view) => {
+      const item = el("li", "saved-view-item");
+      const button = el("button", "saved-view-button");
+      button.type = "button";
+      button.addEventListener("click", () => openSavedView(view));
+      const heading = el("span", "saved-view-button-heading");
+      heading.append(el("strong", "", view.name), el("b", "", formatNumber(view.result_count)));
+      const summary = savedViewSummary(view.query).filter((part) => !part.startsWith("排列：")).slice(0, 3).join(" · ");
+      button.append(heading, el("small", "", summary || "全部藏書"));
+      item.append(button);
+      ui.savedViewList.append(item);
+    });
+  }
+
+  function openSavedView(view) {
+    state.activeSavedViewId = view.id;
+    setAppliedFilters(savedViewFilters(view.query));
+    state.sort = view.query.sort;
+    state.direction = view.query.direction;
+    ui.librarySort.value = `${state.sort}:${state.direction}`;
+    setLayout(view.query.layout);
+    state.libraryFocusId = null;
+    renderSavedViewContext();
+    navigateLibrary();
+  }
+
+  function savedViewFilters(query) {
+    const filters = {};
+    if (query.q) filters.q = query.q;
+    ["source", "classification", "event", "circle", "author", "parody", "subcategory"].forEach((name) => {
+      if (query[name]) filters[name] = query[name];
+    });
+    if (Array.isArray(query.tag) && query.tag.length) filters.tag = [...query.tag];
+    if (Array.isArray(query.missing) && query.missing.length) filters.missing = query.missing[0];
+    if (query.untagged) filters.untagged = "1";
+    return filters;
+  }
+
+  function currentSavedViewQuery() {
+    const filters = state.filters;
+    return {
+      q: filters.q || null,
+      source: filters.source || null,
+      classification: filters.classification || null,
+      missing: filters.missing ? (Array.isArray(filters.missing) ? [...filters.missing] : [filters.missing]) : [],
+      event: filters.event || null,
+      circle: filters.circle || null,
+      author: filters.author || null,
+      parody: filters.parody || null,
+      subcategory: filters.subcategory || null,
+      tag: Array.isArray(filters.tag) ? [...filters.tag] : [],
+      untagged: filters.untagged === "1" || filters.untagged === true,
+      sort: state.sort,
+      direction: state.direction,
+      layout: state.layout,
+    };
+  }
+
+  function savedViewQueryKey(query) {
+    return JSON.stringify({
+      q: query.q || null,
+      source: query.source || null,
+      classification: query.classification || null,
+      missing: Array.isArray(query.missing) ? query.missing : [],
+      event: query.event || null,
+      circle: query.circle || null,
+      author: query.author || null,
+      parody: query.parody || null,
+      subcategory: query.subcategory || null,
+      tag: Array.isArray(query.tag) ? query.tag : [],
+      untagged: Boolean(query.untagged),
+      sort: query.sort || "created",
+      direction: query.direction || "desc",
+      layout: query.layout === "list" ? "list" : "grid",
+    });
+  }
+
+  function activeSavedView() {
+    return state.savedViews.find((view) => view.id === state.activeSavedViewId) || null;
+  }
+
+  function savedViewIsModified(view = activeSavedView()) {
+    return Boolean(view && savedViewQueryKey(currentSavedViewQuery()) !== savedViewQueryKey(view.query));
+  }
+
+  function renderSavedViewContext() {
+    if (!ui.savedViewContext) return;
+    const view = activeSavedView();
+    const active = Boolean(view);
+    ui.savedViewContext.hidden = !active;
+    ui.saveCurrentView.hidden = active;
+    ui.updateSavedView.hidden = !active;
+    ui.saveAsView.hidden = !active;
+    ui.renameSavedView.hidden = !active;
+    ui.deleteSavedView.hidden = !active;
+    if (!view) return;
+    const modified = savedViewIsModified(view);
+    ui.savedViewActiveName.textContent = view.name;
+    ui.savedViewDirty.hidden = !modified;
+    ui.updateSavedView.disabled = !modified;
+    ui.updateSavedView.title = modified ? "以目前條件明確覆寫這個 Saved View" : "目前條件與保存規則相同";
+  }
+
+  function savedViewSummary(query) {
+    const parts = [];
+    if (query.q) parts.push(`搜尋「${query.q}」`);
+    const labels = {
+      source: "來源",
+      classification: "種類",
+      event: "場次",
+      circle: "社團",
+      author: "作者",
+      parody: "原作",
+      subcategory: "子分類",
+    };
+    Object.entries(labels).forEach(([name, label]) => {
+      if (query[name]) parts.push(`${label}：${query[name]}`);
+    });
+    (query.missing || []).forEach((value) => parts.push(value === "any" ? "缺少 metadata" : `缺少：${METADATA_LABELS[value] || value}`));
+    if (query.untagged) parts.push("尚無標籤");
+    if (query.tag?.length) parts.push(`標籤同時包含：${query.tag.join(" ＋ ")}`);
+    const sortLabels = {
+      "created:desc": "最近加入",
+      "created:asc": "最早加入",
+      "updated:desc": "最近修改",
+      "updated:asc": "最久未修改",
+      "title:asc": "標題 A → Z",
+      "title:desc": "標題 Z → A",
+    };
+    parts.push(`排序：${sortLabels[`${query.sort}:${query.direction}`] || "最近加入"}`);
+    parts.push(`排列：${query.layout === "list" ? "條列" : "書牆"}`);
+    return parts;
+  }
+
+  function renderSavedViewRuleSummary(query) {
+    ui.savedViewRuleSummary.replaceChildren();
+    const heading = el("strong", "", "將保存的條件");
+    const list = el("ul", "");
+    savedViewSummary(query).forEach((part) => list.append(el("li", "", part)));
+    ui.savedViewRuleSummary.append(heading, list);
+  }
+
+  function openSavedViewDialog(mode) {
+    const view = activeSavedView();
+    if ((mode === "rename" || mode === "save-as") && !view) return;
+    state.savedViewDialogMode = mode;
+    const isRename = mode === "rename";
+    const query = isRename ? view.query : currentSavedViewQuery();
+    ui.savedViewDialogHeading.textContent = isRename
+      ? "重新命名 Saved View"
+      : mode === "save-as" ? "另存新檢視" : "儲存目前檢視";
+    ui.savedViewDialogIntro.textContent = isRename
+      ? "只變更名稱與書架釘選狀態；即使目前 Library 條件已修改，也不會覆寫保存規則。"
+      : "保存的是目前查詢規則；新收藏與 metadata 變更會自動反映。";
+    ui.savedViewName.value = isRename ? view.name : mode === "save-as" ? `${view.name} 副本` : "";
+    ui.savedViewForm.elements.pinned.checked = isRename ? view.pinned : true;
+    ui.confirmSavedView.textContent = isRename ? "儲存名稱" : "儲存檢視";
+    renderSavedViewRuleSummary(query);
+    ui.savedViewDialog.showModal();
+    ui.savedViewName.focus();
+    ui.savedViewName.select();
+  }
+
+  async function submitSavedViewDialog(event) {
+    event.preventDefault();
+    const mode = state.savedViewDialogMode;
+    const view = activeSavedView();
+    const isRename = mode === "rename";
+    if (isRename && !view) return;
+    const name = ui.savedViewName.value.trim();
+    if (!name) return;
+    const body = {
+      name,
+      pinned: ui.savedViewForm.elements.pinned.checked,
+      query: isRename ? view.query : currentSavedViewQuery(),
+    };
+    ui.confirmSavedView.disabled = true;
+    try {
+      const saved = await api(isRename ? `/api/saved-views/${view.id}` : "/api/saved-views", {
+        method: isRename ? "PUT" : "POST",
+        body,
+      });
+      upsertSavedView(saved);
+      if (!isRename) {
+        state.activeSavedViewId = saved.id;
+        navigateLibrary({ replace: true });
+      }
+      ui.savedViewDialog.close();
+      renderSavedViewContext();
+      toast(isRename ? "Saved View 已重新命名" : "目前檢視已保存到 catalog");
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      ui.confirmSavedView.disabled = false;
+    }
+  }
+
+  async function updateActiveSavedView() {
+    const view = activeSavedView();
+    if (!view || !savedViewIsModified(view)) return;
+    ui.updateSavedView.disabled = true;
+    try {
+      const saved = await api(`/api/saved-views/${view.id}`, {
+        method: "PUT",
+        body: { name: view.name, pinned: view.pinned, query: currentSavedViewQuery() },
+      });
+      upsertSavedView(saved);
+      renderSavedViewContext();
+      toast(`已更新「${saved.name}」的保存規則`);
+    } catch (error) {
+      toast(error.message, true);
+      renderSavedViewContext();
+    }
+  }
+
+  async function deleteActiveSavedView() {
+    const view = activeSavedView();
+    if (!view || !window.confirm(`刪除 Saved View「${view.name}」？收藏本身不會被刪除。`)) return;
+    try {
+      await api(`/api/saved-views/${view.id}`, { method: "DELETE" });
+      state.savedViews = state.savedViews.filter((entry) => entry.id !== view.id);
+      state.activeSavedViewId = null;
+      navigateLibrary({ replace: true });
+      renderSavedViewContext();
+      if (state.shelfLoaded) renderSavedViewShelf();
+      toast("Saved View 已刪除；收藏資料未變更");
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  function upsertSavedView(saved) {
+    state.savedViews = [saved, ...state.savedViews.filter((view) => view.id !== saved.id)]
+      .sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updated_at.localeCompare(left.updated_at) || right.id - left.id);
+    state.savedViewsLoaded = true;
+    if (state.shelfLoaded) renderSavedViewShelf();
   }
 
   function shelfCollectionPage(filters = {}, perPage = SHELF_LIMIT) {
@@ -1171,11 +1510,13 @@
   }
 
   async function openShelfBook(collection, filterName, filterValue) {
+    state.activeSavedViewId = null;
     setAppliedFilters(filterName && filterValue ? { [filterName]: filterValue } : {});
     await navigateToCollection(collection);
   }
 
   function showShelfFilter(name, value) {
+    state.activeSavedViewId = null;
     setAppliedFilters(name && value ? { [name]: value } : {});
     navigateLibrary();
   }
@@ -1226,6 +1567,7 @@
     state.libraryFocusId = null;
     syncFilterDraftFromApplied();
     updateFilterCount();
+    renderSavedViewContext();
   }
 
   function applyFilterDraft() {
@@ -1233,12 +1575,14 @@
     state.libraryFocusId = null;
     updateFilterCount();
     updateFilterDraftState();
+    renderSavedViewContext();
     setFilterPanelOpen(false);
     navigateLibrary();
   }
 
   function applyHeaderSearch() {
     const keepCurrent = state.route === "library" && ui.headerSearchScope.value === "current";
+    if (!keepCurrent) state.activeSavedViewId = null;
     const filters = keepCurrent ? cloneFilters(state.filters) : {};
     const query = ui.searchInput.value.trim();
     if (query) filters.q = query;
@@ -1301,6 +1645,7 @@
     state.sort = ["created", "updated", "title"].includes(sort) ? sort : "created";
     state.direction = ["asc", "desc"].includes(direction) ? direction : "desc";
     state.libraryFocusId = null;
+    renderSavedViewContext();
     navigateLibrary();
   }
 
@@ -2114,6 +2459,7 @@
     document.querySelectorAll("[data-layout]").forEach((button) => {
       button.setAttribute("aria-pressed", String(button.dataset.layout === state.layout));
     });
+    renderSavedViewContext();
     if (state.libraryLoaded && state.items.length) {
       renderCollectionWindow({ anchorIndex: anchor, force: true });
       if (focusedIndex >= 0) {
@@ -4374,6 +4720,7 @@
     state.statsData = null;
     state.shelfLoaded = false;
     state.shelfData = null;
+    state.savedViewsLoaded = false;
     if (library) state.libraryLoaded = false;
   }
 

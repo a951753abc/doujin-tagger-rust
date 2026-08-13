@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>私藏編目室</title>
-  <link rel="stylesheet" href="/assets/app.css?v=44">
-  <script src="/assets/app.js?v=47" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=45">
+  <script src="/assets/app.js?v=48" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -69,6 +69,17 @@
             <p><strong>待整理</strong> <span id="shelf-tidy-summary">正在彙整待處理項目…</span></p>
             <a href="#workbench">前往工作台 <span aria-hidden="true">→</span></a>
           </aside>
+
+          <section class="saved-view-shelf" aria-labelledby="saved-view-shelf-heading">
+            <header class="shelf-heading">
+              <div>
+                <p class="eyebrow">SMART COLLECTIONS / 智慧書架</p>
+                <h1 id="saved-view-shelf-heading">我的書架</h1>
+              </div>
+              <button type="button" class="shelf-link" id="manage-saved-views">前往全部藏書 <span aria-hidden="true">→</span></button>
+            </header>
+            <ol class="saved-view-list" id="saved-view-list" aria-label="已釘選的 Saved Views"></ol>
+          </section>
 
           <section class="book-shelf" aria-labelledby="recent-shelf-heading">
             <header class="shelf-heading">
@@ -220,6 +231,18 @@
             </button>
           </div>
           <div class="library-toolbar-actions">
+            <div class="saved-view-context" id="saved-view-context" hidden>
+              <span>智慧書架</span>
+              <strong id="saved-view-active-name"></strong>
+              <small id="saved-view-dirty" hidden>條件已修改，尚未更新</small>
+            </div>
+            <div class="saved-view-actions" aria-label="Saved View 動作">
+              <button class="secondary-button compact-action" id="save-current-view" type="button">儲存目前檢視</button>
+              <button class="secondary-button compact-action" id="update-saved-view" type="button" hidden>更新此檢視</button>
+              <button class="text-button compact-action" id="save-as-view" type="button" hidden>另存新檢視</button>
+              <button class="text-button compact-action" id="rename-saved-view" type="button" hidden>重新命名</button>
+              <button class="text-button compact-action danger-text" id="delete-saved-view" type="button" hidden>刪除</button>
+            </div>
             <p id="result-summary" aria-live="polite">正在讀取收藏…</p>
             <label class="sort-control" for="library-sort">排序
               <select id="library-sort">
@@ -626,6 +649,17 @@
       <ol class="recent-list" id="recent-list"></ol>
       <div class="dialog-footer"><button class="text-button danger-text" id="clear-recent" type="button">清除最近紀錄</button></div>
     </div>
+  </dialog>
+
+  <dialog id="saved-view-dialog" aria-labelledby="saved-view-dialog-heading">
+    <form class="dialog-shell saved-view-dialog" id="saved-view-form">
+      <header><div><p class="eyebrow">SMART COLLECTION / 智慧書架</p><h2 id="saved-view-dialog-heading">儲存目前檢視</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉 Saved View 編輯">×</button></header>
+      <p class="dialog-intro" id="saved-view-dialog-intro">保存的是目前查詢規則；新收藏與 metadata 變更會自動反映。</p>
+      <label>檢視名稱<input name="name" id="saved-view-name" type="text" maxlength="80" required autocomplete="off"></label>
+      <div class="saved-view-rule-summary" id="saved-view-rule-summary" aria-live="polite"></div>
+      <label class="saved-view-pin"><input name="pinned" type="checkbox" checked> <span><strong>釘在「我的書架」</strong><small>書架會顯示依目前 catalog 即時計算的冊數。</small></span></label>
+      <div class="dialog-footer"><button class="text-button" data-close-dialog type="button">取消</button><button class="primary-button" id="confirm-saved-view" type="submit">儲存檢視</button></div>
+    </form>
   </dialog>
 
   <dialog id="focus-filter-dialog" aria-labelledby="focus-filter-dialog-heading">

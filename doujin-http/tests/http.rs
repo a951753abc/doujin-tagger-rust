@@ -284,8 +284,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("href=\"/assets/app.css?v=44\""));
-    assert!(document.contains("src=\"/assets/app.js?v=47\" defer"));
+    assert!(document.contains("href=\"/assets/app.css?v=45\""));
+    assert!(document.contains("src=\"/assets/app.js?v=48\" defer"));
     assert!(document.contains("id=\"library-scroll-sentinel\""));
     assert!(document.contains("id=\"library-load-more\""));
     assert!(document.contains("id=\"library-load-announcer\""));
@@ -298,6 +298,13 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("id=\"library-empty-heading\""));
     assert!(document.contains("id=\"library-empty-primary\""));
     assert!(document.contains("id=\"library-sort\""));
+    assert!(document.contains("id=\"saved-view-dialog\""));
+    assert!(document.contains("id=\"saved-view-rule-summary\""));
+    assert!(document.contains("id=\"update-saved-view\""));
+    assert!(document.contains("id=\"save-as-view\""));
+    assert!(document.contains("id=\"rename-saved-view\""));
+    assert!(document.contains("id=\"delete-saved-view\""));
+    assert!(document.contains("id=\"saved-view-list\""));
     assert!(document.contains("最近修改"));
     assert!(document.contains("全選已載入"));
     assert!(document.contains("新載入結果不會自動加入"));
@@ -369,6 +376,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(stylesheet.contains(".field-override-note"));
     assert!(stylesheet.contains(".empty-state-actions"));
     assert!(stylesheet.contains(".sort-control"));
+    assert!(stylesheet.contains(".saved-view-context"));
+    assert!(stylesheet.contains(".saved-view-rule-summary"));
     assert!(stylesheet.contains(".missing-metadata-actions"));
     assert!(stylesheet.contains(".tag-suggestion-combobox"));
     assert!(!stylesheet.contains("font-size: 0.6875rem;"));
@@ -400,6 +409,12 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     ));
     assert!(script.contains("rootMargin: \"1200px 0px\""));
     assert!(script.contains("/api/collections"));
+    assert!(script.contains("/api/saved-views"));
+    assert!(script.contains("function savedViewIsModified"));
+    assert!(script.contains("function openSavedView"));
+    assert!(script.contains("function updateActiveSavedView"));
+    assert!(script.contains("function deleteActiveSavedView"));
+    assert!(script.contains("params.set(\"view\", String(savedViewId))"));
     assert!(script.contains("rememberLaunch(state.selected, kind)"));
     assert!(script.contains("applyFilter(filterName, row.name)"));
     assert!(script.contains("/api/file-actions/move"));
@@ -709,7 +724,6 @@ async fn collections_support_paging_safe_search_and_detail_over_loopback() {
     let default_first_id = first_page.json["items"][0]["id"]
         .as_i64()
         .expect("default first ID");
-
     let second_page = server
         .request("GET", "/api/collections?page=2&per_page=2", &[])
         .await;
@@ -971,6 +985,149 @@ async fn collection_filters_require_all_metadata_and_tags_over_loopback() {
         .await;
     assert_eq!(400, duplicate.status);
     assert_eq!("invalid_query", duplicate.json["error"]["code"]);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn saved_views_crud_validates_allowlisted_rules_and_recounts_current_catalog() {
+    let tree = TestTree::new("saved-views");
+    tree.zip_in("downloads", "(C106) [AlphaCircle] First Story.zip");
+    tree.zip_in("downloads", "(C106) [BetaCircle] Second Story.zip");
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    repository
+        .register_library_root(&tree.root("downloads"), SourceKind::Downloads, "下載區")
+        .expect("register downloads");
+    let roots = repository.active_scan_roots().expect("active roots");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application.run_scan(&roots).expect("scan collections");
+    let first_id = application
+        .repository()
+        .collection_id_for_current_path(
+            &tree
+                .root("downloads")
+                .join("(C106) [AlphaCircle] First Story.zip"),
+        )
+        .expect("first lookup")
+        .expect("first ID");
+    let second_id = application
+        .repository()
+        .collection_id_for_current_path(
+            &tree
+                .root("downloads")
+                .join("(C106) [BetaCircle] Second Story.zip"),
+        )
+        .expect("second lookup")
+        .expect("second ID");
+    application
+        .add_collection_tag(first_id, "favorite")
+        .expect("first favorite");
+    application
+        .add_collection_tag(first_id, "color")
+        .expect("first color");
+    application
+        .add_collection_tag(second_id, "favorite")
+        .expect("second favorite");
+    let server = RunningServer::start(application).await;
+
+    let payload = serde_json::json!({
+        "name": "C106 待整理",
+        "pinned": true,
+        "query": {
+            "q": "Story",
+            "source": "downloads",
+            "event": "C106",
+            "tag": ["favorite", "color"],
+            "missing": [],
+            "untagged": false,
+            "sort": "updated",
+            "direction": "asc",
+            "layout": "list"
+        }
+    });
+    let created = server
+        .request_json("POST", "/api/saved-views", &payload)
+        .await;
+    assert_eq!(201, created.status);
+    assert_eq!("C106 待整理", created.json["name"]);
+    assert_eq!(1, created.json["result_count"]);
+    assert_eq!("downloads", created.json["query"]["source"]);
+    assert_eq!("updated", created.json["query"]["sort"]);
+    assert_eq!("list", created.json["query"]["layout"]);
+    assert_eq!(
+        Value::Null,
+        created.json["query"]
+            .get("focus")
+            .cloned()
+            .unwrap_or(Value::Null)
+    );
+    let saved_view_id = created.json["id"].as_i64().expect("saved view ID");
+
+    let listed = server.request("GET", "/api/saved-views", &[]).await;
+    assert_eq!(200, listed.status);
+    assert_eq!(1, listed.json["items"].as_array().expect("views").len());
+
+    let add_second_color = server
+        .request_json(
+            "POST",
+            &format!("/api/collections/{second_id}/tags"),
+            &serde_json::json!({ "name": "color" }),
+        )
+        .await;
+    assert_eq!(200, add_second_color.status);
+    let recounted = server
+        .request("GET", &format!("/api/saved-views/{saved_view_id}"), &[])
+        .await;
+    assert_eq!(2, recounted.json["result_count"]);
+
+    let renamed = server
+        .request_json(
+            "PUT",
+            &format!("/api/saved-views/{saved_view_id}"),
+            &serde_json::json!({
+                "name": "C106 雙標籤",
+                "pinned": false,
+                "query": payload["query"].clone()
+            }),
+        )
+        .await;
+    assert_eq!(200, renamed.status);
+    assert_eq!("C106 雙標籤", renamed.json["name"]);
+    assert_eq!(false, renamed.json["pinned"]);
+
+    let duplicate = server
+        .request_json(
+            "POST",
+            "/api/saved-views",
+            &serde_json::json!({
+                "name": "c106 雙標籤",
+                "query": payload["query"].clone()
+            }),
+        )
+        .await;
+    assert_eq!(409, duplicate.status);
+    assert_eq!("saved_view_name_conflict", duplicate.json["error"]["code"]);
+
+    for invalid_query in [
+        serde_json::json!({ "name": "SQL", "query": { "sort": "created", "direction": "desc", "layout": "grid", "where": "1=1" } }),
+        serde_json::json!({ "name": "Sort", "query": { "sort": "random", "direction": "desc", "layout": "grid" } }),
+        serde_json::json!({ "name": "Source", "query": { "sort": "created", "direction": "desc", "layout": "grid", "source": "remote" } }),
+        serde_json::json!({ "name": "Layout", "query": { "sort": "created", "direction": "desc", "layout": "cards" } }),
+    ] {
+        let invalid = server
+            .request_json("POST", "/api/saved-views", &invalid_query)
+            .await;
+        assert_eq!(400, invalid.status);
+    }
+
+    let deleted = server
+        .request("DELETE", &format!("/api/saved-views/{saved_view_id}"), &[])
+        .await;
+    assert_eq!(204, deleted.status);
+    let missing = server
+        .request("GET", &format!("/api/saved-views/{saved_view_id}"), &[])
+        .await;
+    assert_eq!(404, missing.status);
+    assert_eq!("saved_view_not_found", missing.json["error"]["code"]);
     server.stop().await;
 }
 
