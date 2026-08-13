@@ -1038,14 +1038,12 @@ mod tests {
 
     #[test]
     fn genre_never_becomes_parody_without_original_option() {
-        let body = PRODUCT.replace(
-            r#""ORW": {
-        "value": "ORW",
-        "name": "オリジナル作品",
-        "category": "else"
-      },"#,
-            "",
-        );
+        let mut product: Value = serde_json::from_str(PRODUCT).expect("product fixture");
+        product[0]["work_options"]
+            .as_object_mut()
+            .expect("work options")
+            .remove("ORW");
+        let body = serde_json::to_string(&product).expect("product response");
         let client = FakeClient::responding(response(200, &body));
         let provider = DlsiteExactProvider::with_client(&client);
         let result = provider
@@ -1265,13 +1263,9 @@ mod tests {
 
     #[test]
     fn malformed_optional_authors_preserve_valid_title_and_circle() {
-        let body = PRODUCT.replace(
-            r#""authors": [
-      { "author_name": "Author A" },
-      { "author_name": "Author B" }
-    ]"#,
-            r#""authors": "invalid""#,
-        );
+        let mut product: Value = serde_json::from_str(PRODUCT).expect("product fixture");
+        product[0]["authors"] = Value::String("invalid".to_owned());
+        let body = serde_json::to_string(&product).expect("product response");
         let client = FakeClient::responding(response(200, &body));
         let provider = DlsiteExactProvider::with_client(&client);
         let result = provider
