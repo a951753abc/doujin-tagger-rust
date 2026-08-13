@@ -2570,6 +2570,159 @@ dialog select {
   color: var(--muted);
   font-size: 0.75rem;
 }
+.saved-view-context {
+  display: grid;
+  min-width: 140px;
+  gap: 1px;
+  padding-inline-start: 10px;
+  border-inline-start: 2px solid var(--accent);
+  line-height: 1.2;
+}
+.saved-view-context > span {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+}
+.saved-view-context strong {
+  color: var(--accent-dark);
+  font-family: var(--serif);
+  font-size: 0.875rem;
+}
+.saved-view-context small {
+  color: var(--warning);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.saved-view-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.compact-action {
+  min-height: 34px;
+  padding-block: 5px;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+.saved-view-shelf {
+  display: grid;
+  gap: 12px;
+  padding-block: clamp(18px, 3vw, 30px);
+  border-block: 1px solid var(--line-strong);
+}
+.saved-view-shelf .eyebrow {
+  margin-bottom: 3px;
+}
+.saved-view-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+}
+.saved-view-item {
+  border-bottom: 1px solid var(--line);
+}
+.saved-view-item:nth-child(odd) {
+  border-inline-end: 1px solid var(--line);
+}
+.saved-view-button {
+  display: grid;
+  width: 100%;
+  min-height: 76px;
+  gap: 7px;
+  padding: 13px 16px;
+  border: 0;
+  background: transparent;
+  text-align: start;
+}
+.saved-view-button:hover {
+  background: var(--accent-pale);
+}
+.saved-view-button-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+}
+.saved-view-button-heading strong {
+  color: var(--accent-dark);
+  font-family: var(--serif);
+  font-size: 1rem;
+}
+.saved-view-button-heading b {
+  color: var(--accent);
+  font-family: var(--serif);
+  font-size: 1.25rem;
+  font-variant-numeric: tabular-nums;
+}
+.saved-view-button small,
+.saved-view-empty span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.saved-view-empty {
+  display: grid;
+  gap: 4px;
+  padding: 17px 16px;
+  color: var(--accent-dark);
+}
+.saved-view-dialog {
+  display: grid;
+  gap: 16px;
+}
+.saved-view-dialog .dialog-intro {
+  margin: 0;
+}
+.saved-view-rule-summary {
+  padding-block: 12px;
+  border-block: 1px solid var(--line);
+}
+.saved-view-rule-summary > strong {
+  color: var(--accent-dark);
+  font-family: var(--serif);
+}
+.saved-view-rule-summary ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.saved-view-rule-summary li {
+  padding: 5px 8px;
+  border-radius: 3px;
+  background: var(--tag-bg);
+  color: var(--tag-fg);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.saved-view-pin {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 10px;
+}
+.saved-view-pin input {
+  width: auto;
+  margin-top: 2px;
+}
+.saved-view-pin span {
+  display: grid;
+  gap: 3px;
+}
+.saved-view-pin small {
+  color: var(--muted);
+  font-weight: 400;
+}
 .sort-control {
   display: flex;
   min-height: 34px;
@@ -4264,6 +4417,13 @@ dialog::backdrop {
 }
 
 @media (max-width: 899px) {
+  .saved-view-item:nth-child(odd) {
+    border-inline-end: 0;
+  }
+  .saved-view-actions {
+    width: 100%;
+    overflow-x: auto;
+  }
   .primary-nav,
   .quick-filter-row {
     -webkit-mask-image: linear-gradient(

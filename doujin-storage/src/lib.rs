@@ -9,6 +9,7 @@ pub mod lifecycle;
 pub mod metadata;
 pub mod parser_runs;
 pub mod roots;
+pub mod saved_views;
 pub mod scan;
 pub mod settings;
 pub mod statistics;
@@ -35,7 +36,7 @@ use crate::metadata::{
     MetadataAssertionDecision, MetadataField, MetadataSource, MetadataValue, SelectionSnapshot,
 };
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const SCAN_RUN_GUARD_MIGRATION: &str = include_str!("../migrations/0002_scan_run_guard.sql");
 const EXTERNAL_SEARCH_JOBS_MIGRATION: &str =
@@ -50,6 +51,7 @@ const THUMBNAIL_PRIORITY_MIGRATION: &str =
 const DL_EVENT_FALLBACK_MIGRATION: &str = include_str!("../migrations/0008_dl_event_fallback.sql");
 const REVERT_IS_DL_EVENT_FALLBACK_MIGRATION: &str =
     include_str!("../migrations/0009_revert_is_dl_event_fallback.sql");
+const SAVED_VIEWS_MIGRATION: &str = include_str!("../migrations/0010_saved_views.sql");
 
 struct Migration {
     version: i64,
@@ -103,6 +105,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0009_revert_is_dl_event_fallback",
         sql: REVERT_IS_DL_EVENT_FALLBACK_MIGRATION,
     },
+    Migration {
+        version: 10,
+        name: "0010_saved_views",
+        sql: SAVED_VIEWS_MIGRATION,
+    },
 ];
 
 #[derive(Debug)]
@@ -142,6 +149,9 @@ pub enum StorageError {
     ThumbnailStateUnavailable(i64),
     InvalidThumbnailState(String),
     InvalidApplicationSettings(String),
+    SavedViewNotFound(i64),
+    SavedViewNameConflict(String),
+    InvalidSavedView(String),
     Ingest {
         path: PathBuf,
         source: Box<StorageError>,
@@ -237,6 +247,13 @@ impl fmt::Display for StorageError {
             Self::InvalidApplicationSettings(reason) => {
                 write!(formatter, "application settings 無效：{reason}")
             }
+            Self::SavedViewNotFound(saved_view_id) => {
+                write!(formatter, "找不到 Saved View ID：{saved_view_id}")
+            }
+            Self::SavedViewNameConflict(name) => {
+                write!(formatter, "Saved View 名稱已存在：{name}")
+            }
+            Self::InvalidSavedView(reason) => write!(formatter, "Saved View 無效：{reason}"),
             Self::Ingest { path, source } => {
                 write!(formatter, "收藏入庫失敗：{}：{source}", path.display())
             }
@@ -276,7 +293,10 @@ impl Error for StorageError {
             | Self::ThumbnailStateNotFound(_)
             | Self::ThumbnailStateUnavailable(_)
             | Self::InvalidThumbnailState(_)
-            | Self::InvalidApplicationSettings(_) => None,
+            | Self::InvalidApplicationSettings(_)
+            | Self::SavedViewNotFound(_)
+            | Self::SavedViewNameConflict(_)
+            | Self::InvalidSavedView(_) => None,
         }
     }
 }

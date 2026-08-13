@@ -29,6 +29,7 @@ use doujin_storage::metadata::{
     MetadataAssertionDecision, MetadataField, MetadataHistory, MetadataValue,
 };
 use doujin_storage::roots::LibraryRootSnapshot;
+use doujin_storage::saved_views::{SavedViewQuery, SavedViewSnapshot};
 use doujin_storage::scan::{ScanCompletion, ScanCompletionStatus, ScanIssueRecord};
 use doujin_storage::statistics::{CollectionFacet, CollectionStatistics, NamedCount};
 use doujin_storage::thumbnails::{
@@ -116,6 +117,12 @@ pub struct ApplicationBatchItem {
 #[derive(Debug)]
 pub struct ApplicationBatchReport {
     pub items: Vec<ApplicationBatchItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedViewWithCount {
+    pub view: SavedViewSnapshot,
+    pub result_count: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -825,6 +832,46 @@ impl<R: RecycleBin> ApplicationService<R> {
         Ok(self.repository.collections(query)?)
     }
 
+    pub fn saved_views(&self) -> ApplicationResult<Vec<SavedViewWithCount>> {
+        self.repository
+            .saved_views()?
+            .into_iter()
+            .map(|view| self.saved_view_with_count(view))
+            .collect()
+    }
+
+    pub fn saved_view(&self, saved_view_id: i64) -> ApplicationResult<SavedViewWithCount> {
+        let view = self.repository.saved_view(saved_view_id)?;
+        self.saved_view_with_count(view)
+    }
+
+    pub fn create_saved_view(
+        &mut self,
+        name: &str,
+        query: &SavedViewQuery,
+        pinned: bool,
+    ) -> ApplicationResult<SavedViewWithCount> {
+        let view = self.repository.create_saved_view(name, query, pinned)?;
+        self.saved_view_with_count(view)
+    }
+
+    pub fn update_saved_view(
+        &mut self,
+        saved_view_id: i64,
+        name: &str,
+        query: &SavedViewQuery,
+        pinned: bool,
+    ) -> ApplicationResult<SavedViewWithCount> {
+        let view = self
+            .repository
+            .update_saved_view(saved_view_id, name, query, pinned)?;
+        self.saved_view_with_count(view)
+    }
+
+    pub fn delete_saved_view(&mut self, saved_view_id: i64) -> ApplicationResult<()> {
+        Ok(self.repository.delete_saved_view(saved_view_id)?)
+    }
+
     pub fn collection(&self, collection_id: i64) -> ApplicationResult<CollectionSnapshot> {
         Ok(self.repository.collection(collection_id)?)
     }
@@ -1419,6 +1466,17 @@ impl<R: RecycleBin> ApplicationService<R> {
         self.thumbnail_config
             .as_ref()
             .ok_or(ApplicationError::ThumbnailNotConfigured)
+    }
+
+    fn saved_view_with_count(
+        &self,
+        view: SavedViewSnapshot,
+    ) -> ApplicationResult<SavedViewWithCount> {
+        let result_count = self
+            .repository
+            .collections(&view.query.collection_query())?
+            .total;
+        Ok(SavedViewWithCount { view, result_count })
     }
 }
 
