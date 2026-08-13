@@ -317,6 +317,13 @@
       statLedger: byId("stat-ledger"),
       statColumns: byId("stat-columns"),
       settingsForm: byId("settings-form"),
+      firstRun: byId("first-run"),
+      firstRunForm: byId("first-run-form"),
+      firstRunDownloadsField: byId("first-run-downloads-field"),
+      firstRunArchiveField: byId("first-run-archive-field"),
+      firstRunReaderField: byId("first-run-reader-field"),
+      firstRunError: byId("first-run-error"),
+      firstRunService: byId("first-run-service"),
       environmentOverrides: byId("environment-overrides"),
       viewerPathOverride: byId("viewer-path-override"),
       thumbSizeOverride: byId("thumb-size-override"),
@@ -559,6 +566,8 @@
     ui.metadataForm.addEventListener("submit", saveMetadata);
     byId("clear-manual-button").addEventListener("click", clearManualMetadata);
     ui.settingsForm.addEventListener("submit", saveSettings);
+    ui.firstRunForm.addEventListener("submit", completeFirstRun);
+    ui.firstRunForm.elements.reader_mode.forEach((radio) => radio.addEventListener("change", syncFirstRunReader));
     ui.thumbnailCacheForm.addEventListener("submit", startThumbnailCacheJob);
     ui.thumbnailCacheConfirmForm.addEventListener("submit", confirmThumbnailCacheJob);
     ui.thumbnailCacheViewFailures.addEventListener("click", openThumbnailCacheFailures);
@@ -5266,6 +5275,7 @@
         ? `有 ${formatNumber(settings.environment_overrides.length)} 個欄位由環境變數控制，已在各欄位旁標示目前有效值與已儲存值。`
         : "目前沒有環境變數覆寫；這裡儲存的值會直接生效。";
       state.settingsRoots = roots.roots;
+      renderFirstRun(settings, roots.roots);
       ui.rootRescanNote.hidden = !state.rootsNeedScan;
       updateThumbnailCacheJob(cacheJobs.job, { announce: false });
       renderRoots(roots.roots);
@@ -5275,6 +5285,79 @@
       focusRequestedRootSettings();
     } catch (error) {
       toast(error.message, true);
+    }
+  }
+
+  function renderFirstRun(settings, roots) {
+    const hasDownloads = roots.some((root) => root.active && root.source === "downloads");
+    const hasArchive = roots.some((root) => root.active && root.source === "archive");
+    ui.firstRun.hidden = hasDownloads && hasArchive;
+    ui.firstRunDownloadsField.hidden = hasDownloads;
+    ui.firstRunArchiveField.hidden = hasArchive;
+    ui.firstRunForm.elements.downloads_path.required = !hasDownloads;
+    ui.firstRunForm.elements.archive_path.required = !hasArchive;
+    ui.firstRunService.textContent = `${location.hostname}:${location.port || "80"} · 僅限本機`;
+    if (ui.firstRunForm.dataset.initialized !== "true") {
+      const customReader = Boolean(settings.viewer_path);
+      ui.firstRunForm.elements.reader_mode.value = customReader ? "custom" : "system";
+      ui.firstRunForm.elements.viewer_path.value = settings.viewer_path || "";
+      ui.firstRunForm.dataset.initialized = "true";
+    }
+    syncFirstRunReader();
+  }
+
+  function syncFirstRunReader() {
+    const custom = ui.firstRunForm.elements.reader_mode.value === "custom";
+    ui.firstRunReaderField.hidden = !custom;
+    ui.firstRunForm.elements.viewer_path.required = custom;
+  }
+
+  async function completeFirstRun(event) {
+    event.preventDefault();
+    const form = new FormData(ui.firstRunForm);
+    const submit = ui.firstRunForm.querySelector('[type="submit"]');
+    const scanNow = form.get("scan_now") === "on";
+    const customReader = form.get("reader_mode") === "custom";
+    submit.disabled = true;
+    submit.textContent = "正在準備編目室…";
+    ui.firstRunError.hidden = true;
+    try {
+      const settingsSnapshot = state.settingsSnapshot;
+      await api("/api/settings", {
+        method: "PUT",
+        body: {
+          viewer_path: settingsSnapshot?.overrides.viewer_path
+            ? settingsSnapshot.saved_viewer_path
+            : customReader ? String(form.get("viewer_path") || "").trim() : "",
+          thumb_size: settingsSnapshot.saved_thumb_size,
+          thumb_quality: settingsSnapshot.saved_thumb_quality,
+        },
+      });
+      const activeSources = new Set(state.settingsRoots.filter((root) => root.active).map((root) => root.source));
+      if (!activeSources.has("downloads")) {
+        await api("/api/library-roots", {
+          method: "POST",
+          body: { label: "新收藏", path: String(form.get("downloads_path") || "").trim(), source: "downloads" },
+        });
+      }
+      if (!activeSources.has("archive")) {
+        await api("/api/library-roots", {
+          method: "POST",
+          body: { label: "典藏庫", path: String(form.get("archive_path") || "").trim(), source: "archive" },
+        });
+      }
+      invalidateDerivedData({ library: true });
+      state.rootsNeedScan = true;
+      await loadSettingsPage();
+      toast(scanNow ? "首次設定已儲存；請確認掃描預覽" : "首次設定已儲存");
+      if (scanNow) await startScan();
+    } catch (error) {
+      ui.firstRunError.textContent = `${error.message} 已完成的項目會保留；修正欄位後可再次繼續。`;
+      ui.firstRunError.hidden = false;
+      await loadSettingsPage();
+    } finally {
+      submit.disabled = false;
+      submit.textContent = "完成設定並開啟書架";
     }
   }
 

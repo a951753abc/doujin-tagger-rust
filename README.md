@@ -89,6 +89,27 @@ cargo run --quiet -p doujin-http -- `
 
 啟動後以瀏覽器開啟 `http://127.0.0.1:5000/`。首頁、CSS 與 JavaScript 都編譯進 Rust 執行檔，不需要 Python template server、Node.js、CDN 或額外 frontend build。介面包含 Library 搜尋／組合篩選、列表／對比模式、分頁、收藏詳細資料、開啟／閱讀、tag、手動 metadata、外部資料搜尋、縮圖重建、依資料夾來源批次建立縮圖快取、統計、設定、來源管理與重新掃描。收藏詳情可漸進展開七個 metadata 欄位的 selection、assertions、confidence 與外部搜尋紀錄，並直接採用或拒絕可裁決 assertion。人工裁決工作台只保留目前頁面的選取，可批次加入 tag、覆寫原作／種類、搬移或刪除收藏，並提供同名候選裁決、合併預檢與逐欄衝突選擇。
 
+### Windows Launcher
+
+一般 Windows 使用者可從 repository 根目錄安裝小型 Launcher；它只包裝現有 Rust localhost service，不包含 Electron、Tauri 或遠端存取：
+
+```powershell
+.\tools\install_windows_launcher.ps1
+```
+
+安裝後雙擊桌面的「私藏編目室」。第一次會選擇「建立新的 catalog」或「開啟既有 v2 catalog」，接著自動選擇可用的 loopback port、啟動 `doujin-http` 並開啟 Settings 導引。導引可設定新收藏資料夾、典藏庫資料夾、Windows 系統預設或指定閱讀器，以及是否立即進入既有掃描預覽。Catalog 只在 Launcher 開啟服務前選擇，Web UI 不會在執行中切換資料庫。
+
+開始功能表另提供開啟、重新啟動、停止與狀態捷徑。進階使用者也可直接執行：
+
+```powershell
+doujin-launcher.exe open --catalog D:\Catalogs\doujin-v2.db
+doujin-launcher.exe status
+doujin-launcher.exe restart
+doujin-launcher.exe stop
+```
+
+Launcher state、service identity、log 與預設 catalog 位於 `%LOCALAPPDATA%\Doujin Tagger`。重複開啟會先核對同一 catalog、loopback health 與 instance identity，再重用現有服務；stale metadata 會在不終止未知 PID 的情況下清理。停止／重新啟動只有在 catalog、port、health 與 instance identity 全部吻合時才會終止程序。啟動錯誤會顯示對話框，詳細輸出保留於 `service-error.log`。既有 `doujin-http <catalog> [port]` CLI mode 保持不變。
+
 列表／對比模式及最近開啟清單使用瀏覽器 `localStorage`。最近開啟只在 server 成功交給外部程式後更新，同一收藏移到最前方且最多保留 20 筆；不會寫入 SQLite，也不會在不同瀏覽器間同步。
 
 舊 `doujin.db` 是未版本化的 Python catalog，不能直接交給此 server；必須先依 migration rehearsal／正式切換流程建立 v2 catalog。

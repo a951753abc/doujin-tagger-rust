@@ -627,6 +627,50 @@
       <section class="view" id="settings-view" data-view="settings" aria-labelledby="settings-heading" hidden>
         <h1 class="visually-hidden" id="settings-heading">編目室設定</h1>
 
+        <section class="first-run" id="first-run" aria-labelledby="first-run-heading" hidden>
+          <div class="first-run-copy">
+            <p class="eyebrow">FIRST EDITION / 初次開室</p>
+            <h2 id="first-run-heading">把兩座書架交給編目室</h2>
+            <p>Catalog 已由 Launcher 建立或選取。完成新收藏、典藏庫與閱讀方式後，就能在瀏覽器內開始第一次掃描。</p>
+            <dl class="first-run-instance" aria-label="目前編目室">
+              <div><dt>Catalog</dt><dd>Launcher 目前選取的本機 catalog</dd></div>
+              <div><dt>Service</dt><dd id="first-run-service">127.0.0.1</dd></div>
+            </dl>
+            <ol class="first-run-ledger" aria-label="首次設定步驟">
+              <li class="is-complete"><span>01</span><strong>Catalog</strong><small>已由 Launcher 準備</small></li>
+              <li><span>02</span><strong>資料夾來源</strong><small>新收藏與典藏庫</small></li>
+              <li><span>03</span><strong>閱讀與掃描</strong><small>選擇閱讀方式後預覽</small></li>
+            </ol>
+          </div>
+          <form class="first-run-form" id="first-run-form">
+            <div class="first-run-root" id="first-run-downloads-field">
+              <label for="first-run-downloads">新收藏資料夾</label>
+              <input id="first-run-downloads" name="downloads_path" type="text" autocomplete="off" placeholder="D:\Doujin\New" required>
+              <small>會解析新進檔名，作為整理前的工作區。</small>
+            </div>
+            <div class="first-run-root" id="first-run-archive-field">
+              <label for="first-run-archive">典藏庫資料夾</label>
+              <input id="first-run-archive" name="archive_path" type="text" autocomplete="off" placeholder="D:\Doujin\Archive" required>
+              <small>保存完成整理的正式收藏。</small>
+            </div>
+            <fieldset class="reader-choice">
+              <legend>閱讀方式</legend>
+              <label><input name="reader_mode" type="radio" value="system" checked> 使用 Windows 系統預設程式</label>
+              <label><input name="reader_mode" type="radio" value="custom"> 指定閱讀器</label>
+              <label class="custom-reader" id="first-run-reader-field" hidden>
+                <span>閱讀器執行檔</span>
+                <input name="viewer_path" type="text" autocomplete="off" placeholder="C:\Program Files\Reader\Reader.exe">
+              </label>
+            </fieldset>
+            <label class="first-run-scan"><input name="scan_now" type="checkbox" checked> 儲存後立即預覽第一次掃描</label>
+            <p class="first-run-error" id="first-run-error" role="alert" hidden></p>
+            <div class="first-run-actions">
+              <button class="primary-button" type="submit">完成設定並開啟書架</button>
+              <a class="text-button" href="#library">稍後設定，先查看書架</a>
+            </div>
+          </form>
+        </section>
+
         <div class="settings-layout">
           <section class="settings-section preferences-settings" aria-labelledby="reader-settings-heading">
             <h2 id="reader-settings-heading">閱讀與縮圖</h2>

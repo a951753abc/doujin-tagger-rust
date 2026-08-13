@@ -321,6 +321,14 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("id=\"thumbnail-cache-retry-failures\""));
     assert!(document.contains("id=\"edit-root-dialog\""));
     assert!(document.contains("id=\"root-rescan-note\""));
+    assert!(document.contains("id=\"first-run\""));
+    assert!(document.contains("id=\"first-run-form\""));
+    assert!(document.contains("name=\"downloads_path\""));
+    assert!(document.contains("name=\"archive_path\""));
+    assert!(document.contains("name=\"reader_mode\""));
+    assert!(document.contains("name=\"scan_now\""));
+    assert!(document.contains("id=\"first-run-service\""));
+    assert!(document.contains("稍後設定，先查看書架"));
     assert!(document.contains("id=\"viewer-path-override\""));
     assert!(document.contains("id=\"library-empty-heading\""));
     assert!(document.contains("id=\"library-empty-primary\""));
@@ -544,6 +552,11 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("function resolveLibraryEmptyContext"));
     assert!(script.contains("function renderLibraryEmptyState"));
     assert!(script.contains("function scanEmptyLibrary"));
+    assert!(script.contains("function renderFirstRun"));
+    assert!(script.contains("hasDownloads && hasArchive"));
+    assert!(script.contains("async function completeFirstRun"));
+    assert!(script.contains("/api/scans/preflight"));
+    assert!(script.contains("viewer_path: settingsSnapshot?.overrides.viewer_path"));
     assert!(script.contains("openLibraryRootSettings(\"new\")"));
     assert!(script.contains("function changeLibrarySort"));
     assert!(script.contains("sort: state.sort"));
@@ -3117,6 +3130,7 @@ async fn settings_api_validates_persists_and_requeues_existing_thumbnail_state()
         .request_thumbnail(collection_id)
         .expect("create existing thumbnail state");
     let reader_path = tree.root("reader.exe");
+    fs::write(&reader_path, b"reader placeholder").expect("reader executable");
     let server = RunningServer::start(application).await;
 
     let initial = server.request("GET", "/api/settings", &[]).await;
@@ -3157,6 +3171,11 @@ async fn settings_api_validates_persists_and_requeues_existing_thumbnail_state()
             "thumb_size": "300x400",
             "thumb_quality": 80,
             "unknown": true
+        }),
+        serde_json::json!({
+            "viewer_path": tree.root("missing-reader.exe").to_string_lossy(),
+            "thumb_size": "300x400",
+            "thumb_quality": 80
         }),
     ] {
         let invalid = server.request_json("PUT", "/api/settings", &payload).await;

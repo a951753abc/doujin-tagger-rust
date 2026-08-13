@@ -22,6 +22,8 @@ use doujin_storage::thumbnails::DEFAULT_THUMBNAIL_PRIORITY;
 use doujin_thumbnails::{ThumbnailConfig, ThumbnailGenerationRequest, generate_thumbnail};
 use serde::Deserialize;
 
+mod instance;
+
 const WORKER_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const THUMBNAIL_WORKER_COUNT: usize = 2;
 
@@ -154,6 +156,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let database = absolute_path(PathBuf::from(database))?;
+    let instance = instance::ServiceInstanceGuard::from_environment()?;
     let repository = CatalogRepository::open(&database)?;
     let config_path = config_path()?;
     let file_config = load_file_config(&config_path)?;
@@ -198,7 +201,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     let listener = bind_loopback(address).await?;
-    println!("doujin-http listening on http://{}", listener.local_addr()?);
+    let local_address = listener.local_addr()?;
+    if let Some(instance) = instance.as_ref() {
+        instance.publish(&database, local_address)?;
+    }
+    println!("doujin-http listening on http://{local_address}");
 
     let application = share_application(application);
     let stopping = Arc::new(AtomicBool::new(false));
