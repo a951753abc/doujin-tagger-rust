@@ -284,7 +284,7 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("src=\"/assets/app.js?v=39\" defer"));
+    assert!(document.contains("src=\"/assets/app.js?v=40\" defer"));
     assert!(document.contains("id=\"library-scroll-sentinel\""));
     assert!(document.contains("id=\"library-load-more\""));
     assert!(document.contains("id=\"library-load-announcer\""));
@@ -295,6 +295,10 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(!document.contains("id=\"previous-page\""));
     assert!(!document.contains("id=\"next-page\""));
     assert!(document.contains("id=\"close-filter-panel\""));
+    assert!(document.contains("id=\"header-search-scope\""));
+    assert!(document.contains("在目前結果中搜尋"));
+    assert!(document.contains("id=\"filter-draft-status\""));
+    assert!(document.contains("id=\"discard-filter-dialog\""));
     assert!(document.contains("id=\"shelf-view\""));
     assert!(document.contains("data-route=\"shelf\""));
     assert!(document.contains("id=\"workbench-view\""));
@@ -334,6 +338,7 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(stylesheet.contains("(pointer: coarse)"));
     assert!(stylesheet.contains("--muted: #786e60;"));
     assert!(stylesheet.contains("outline: 3px solid var(--focus);"));
+    assert!(stylesheet.contains(".filter-draft-status"));
     assert!(!stylesheet.contains("font-size: 0.6875rem;"));
     assert!(!stylesheet.contains("font-size: 0.625rem;"));
     assert!(!stylesheet.contains("font-size: 0.5625rem;"));
@@ -386,7 +391,7 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("const readyUrl = await blobAsDataUrl(thumbnail)"));
     assert!(script.contains("x-thumbnail-next-retry-at"));
     assert!(script.contains("restartThumbnailCollection"));
-    assert!(script.contains("setFilterPanelOpen(false, { restoreFocus: true })"));
+    assert!(script.contains("requestFilterPanelClose({ restoreFocus: true })"));
     assert!(script.contains("updateSelectionCheckbox(selection"));
     assert!(script.contains("從批次選取移除"));
     assert!(script.contains("已選 ${formatNumber(state.selectedIds.size)} / 已載入 ${formatNumber(state.items.length)} / 符合 ${formatNumber(state.total)}"));
@@ -401,6 +406,12 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("/api/facets?${params}"));
     assert!(script.contains("params.append(name, entry)"));
     assert!(script.contains("aria-activedescendant"));
+    assert!(script.contains("function applyFilterDraft"));
+    assert!(script.contains("function filterDraftChanged"));
+    assert!(script.contains("function applyHeaderSearch"));
+    assert!(script.contains("state.route === \"library\" && ui.headerSearchScope.value === \"current\""));
+    assert!(script.contains("item.addEventListener(\"click\", () => selectFacetOption"));
+    assert!(!script.contains("item.addEventListener(\"pointerdown\""));
     assert!(script.contains("function decodeLibraryParams"));
     assert!(script.contains("function rememberLibraryContext"));
     assert!(script.contains("function returnToLibraryContext"));
