@@ -31,6 +31,7 @@ use doujin_storage::statistics::CollectionFacet;
 use doujin_storage::thumbnails::{
     BACKGROUND_THUMBNAIL_PRIORITY, ThumbnailErrorKind, ThumbnailStatus,
 };
+use doujin_storage::vocabulary::VocabularyField;
 use doujin_storage::{CatalogRepository, IngestOutcome, StorageError, path_key};
 use rusqlite::Connection;
 
@@ -137,7 +138,7 @@ fn mapping_evidence(reason: &str) -> CanonicalMappingEvidence {
 fn migration_enables_required_sqlite_features() {
     let repository = CatalogRepository::open_in_memory().expect("open catalog");
 
-    assert_eq!(11, repository.schema_version().expect("schema version"));
+    assert_eq!(12, repository.schema_version().expect("schema version"));
     assert!(repository.foreign_keys_enabled().expect("foreign keys"));
     assert!(
         repository
@@ -986,7 +987,7 @@ fn version_one_catalog_upgrades_through_all_migrations_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade catalog");
 
-    assert_eq!(11, repository.schema_version().expect("schema version"));
+    assert_eq!(12, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     drop(repository);
     let connection = Connection::open(&database).expect("inspect upgraded catalog");
@@ -1037,15 +1038,17 @@ fn version_eight_catalog_removes_is_dl_event_fallback_without_overwriting_manual
              WHERE collection_id = 2 AND source_kind = 'manual';
              DROP TABLE external_search_batch_items;
              DROP TABLE external_search_batches;
+             DROP TABLE vocabulary_exclusions;
+             DROP TABLE vocabulary_aliases;
              DROP TABLE saved_views;
-             DELETE FROM schema_migrations WHERE version IN (9, 10, 11);
+             DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12);
              PRAGMA user_version = 8;",
         )
         .expect("seed v8 metadata");
     drop(connection);
 
     let repository = CatalogRepository::open(&database).expect("upgrade catalog");
-    assert_eq!(11, repository.schema_version().expect("schema version"));
+    assert_eq!(12, repository.schema_version().expect("schema version"));
     drop(repository);
 
     let connection = Connection::open(&database).expect("inspect upgraded catalog");
@@ -1149,7 +1152,7 @@ fn version_six_catalog_adds_thumbnail_priority_without_losing_state() {
         .thumbnail_state(1)
         .expect("preserved thumbnail state");
 
-    assert_eq!(11, repository.schema_version().expect("schema version"));
+    assert_eq!(12, repository.schema_version().expect("schema version"));
     assert_eq!(ThumbnailStatus::Pending, state.status);
     assert_eq!(BACKGROUND_THUMBNAIL_PRIORITY, state.priority);
     assert!(state.requested_at.is_some());
@@ -1196,7 +1199,7 @@ fn version_two_catalog_upgrades_external_search_jobs_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v2 catalog");
 
-    assert_eq!(11, repository.schema_version().expect("schema version"));
+    assert_eq!(12, repository.schema_version().expect("schema version"));
     let job = repository
         .external_search_job(job_id)
         .expect("preserved external search job");
@@ -1246,7 +1249,7 @@ fn version_three_catalog_adds_consolidation_audit_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v3 catalog");
 
-    assert_eq!(11, repository.schema_version().expect("schema version"));
+    assert_eq!(12, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert_eq!(
         None,
@@ -1301,7 +1304,7 @@ fn version_four_catalog_adds_thumbnail_state_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v4 catalog");
 
-    assert_eq!(11, repository.schema_version().expect("schema version"));
+    assert_eq!(12, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert!(
         repository
@@ -1360,7 +1363,7 @@ fn version_five_catalog_adds_typed_application_settings_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v5 catalog");
 
-    assert_eq!(11, repository.schema_version().expect("schema version"));
+    assert_eq!(12, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert!(
         repository
@@ -3565,6 +3568,269 @@ fn canonical_entity_cannot_be_deleted_until_mappings_and_aliases_are_removed() {
         repository
             .search_titles("RawCircle")
             .expect("raw circle restored in FTS")
+    );
+}
+
+#[test]
+fn vocabulary_candidates_cover_four_fields_with_safe_normalization_and_counts() {
+    let tree = TestTree::new("vocabulary-four-fields");
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+
+    for (field, values) in [
+        (VocabularyField::Event, ["ＡＬＩＣＥ", "alice"]),
+        (VocabularyField::Circle, ["Circle・Works", "circle works"]),
+        (VocabularyField::Author, ["トウホウ", "とうほう"]),
+        (VocabularyField::Parody, ["Project‐Moon", "project moon"]),
+    ] {
+        for (index, value) in values.into_iter().enumerate() {
+            let pending = tree.pending(&format!(
+                "[seed-{field:?}-{index}] title-{field:?}-{index}.zip"
+            ));
+            let path = pending.path.clone();
+            repository
+                .ingest_collection(&pending)
+                .expect("ingest collection");
+            let collection_id = repository
+                .collection_id_for_current_path(&path)
+                .expect("collection lookup")
+                .expect("collection id");
+            let (metadata_field, metadata_value) = match field {
+                VocabularyField::Event => {
+                    (MetadataField::Event, MetadataValue::Text(value.to_owned()))
+                }
+                VocabularyField::Circle => {
+                    (MetadataField::Circle, MetadataValue::Text(value.to_owned()))
+                }
+                VocabularyField::Author => (
+                    MetadataField::Authors,
+                    MetadataValue::Authors(Authors {
+                        raw: Some(value.to_owned()),
+                        values: vec![value.to_owned()],
+                    }),
+                ),
+                VocabularyField::Parody => (
+                    MetadataField::Parody,
+                    MetadataValue::Parody(Parody {
+                        raw: value.to_owned(),
+                        canonical: value.to_owned(),
+                        evidence: "manual_test".to_owned(),
+                    }),
+                ),
+            };
+            repository
+                .set_manual_value(collection_id, metadata_field, metadata_value)
+                .expect("set vocabulary value");
+        }
+
+        let groups = repository
+            .vocabulary_candidates(Some(field))
+            .expect("vocabulary candidates");
+        assert_eq!(1, groups.len(), "{field:?}");
+        assert_eq!(2, groups[0].variants.len(), "{field:?}");
+        assert!(
+            groups[0]
+                .variants
+                .iter()
+                .all(|variant| variant.active_count == 1 && !variant.representatives.is_empty()),
+            "{field:?}"
+        );
+    }
+}
+
+#[test]
+fn vocabulary_merge_preserves_manual_priority_and_updates_library_and_saved_views() {
+    let tree = TestTree::new("vocabulary-merge");
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut collection_ids = Vec::new();
+    for (index, value) in ["Ｃ１００", "C100"].into_iter().enumerate() {
+        let pending = tree.pending(&format!("[circle-{index}] event-{index}.zip"));
+        let path = pending.path.clone();
+        repository
+            .ingest_collection(&pending)
+            .expect("ingest collection");
+        let collection_id = repository
+            .collection_id_for_current_path(&path)
+            .expect("collection lookup")
+            .expect("collection id");
+        repository
+            .set_manual_value(
+                collection_id,
+                MetadataField::Event,
+                MetadataValue::Text(value.to_owned()),
+            )
+            .expect("set event");
+        collection_ids.push(collection_id);
+    }
+    let saved_query = SavedViewQuery::from_collection_query(
+        &CollectionQuery {
+            filters: CollectionFilters {
+                event: Some("Ｃ１００".to_owned()),
+                ..CollectionFilters::default()
+            },
+            ..CollectionQuery::default()
+        },
+        SavedViewLayout::Grid,
+    );
+    let saved = repository
+        .create_saved_view("舊活動名稱", &saved_query, true)
+        .expect("save old event view");
+    let variants = vec!["Ｃ１００".to_owned(), "C100".to_owned()];
+
+    let preflight = repository
+        .vocabulary_merge_preflight(VocabularyField::Event, "C100", &variants)
+        .expect("merge preflight");
+    assert_eq!(2, preflight.affected_collections);
+    assert_eq!(2, preflight.manual_assertions);
+    assert_eq!(1, preflight.manual_selected_conflicts);
+    assert_eq!(
+        vec![saved.id],
+        preflight
+            .saved_views
+            .iter()
+            .map(|view| view.id)
+            .collect::<Vec<_>>()
+    );
+
+    let result = repository
+        .merge_vocabulary(VocabularyField::Event, "C100", &variants)
+        .expect("merge vocabulary");
+    assert_eq!(2, result.affected_collections);
+    assert_eq!(1, result.saved_views_updated);
+    let original_selection = repository
+        .current_selection(collection_ids[0], MetadataField::Event)
+        .expect("selection")
+        .expect("selected event");
+    assert!(original_selection.selected_manually);
+    assert_eq!(
+        serde_json::json!("Ｃ１００").to_string(),
+        original_selection.value_json
+    );
+    assert_eq!(
+        Some("C100".to_owned()),
+        repository
+            .collection(collection_ids[0])
+            .expect("collection")
+            .event
+    );
+    assert_eq!(
+        Some("C100".to_owned()),
+        repository
+            .saved_view(saved.id)
+            .expect("saved view")
+            .query
+            .filters
+            .event
+    );
+
+    let filtered = repository
+        .collections(&CollectionQuery {
+            filters: CollectionFilters {
+                event: Some("C100".to_owned()),
+                ..CollectionFilters::default()
+            },
+            ..CollectionQuery::default()
+        })
+        .expect("canonical filter");
+    assert_eq!(2, filtered.total);
+    let facets = repository
+        .collection_facets(CollectionFacet::Event, "C100", 20)
+        .expect("canonical facets");
+    assert_eq!(("C100", 2), (facets[0].name.as_str(), facets[0].count));
+    assert!(
+        repository
+            .collection_statistics()
+            .expect("statistics")
+            .top_events
+            .iter()
+            .any(|entry| entry.name == "C100" && entry.count == 2)
+    );
+
+    let pending = tree.pending("[future] future-alias.zip");
+    let path = pending.path.clone();
+    repository
+        .ingest_collection(&pending)
+        .expect("ingest future collection");
+    let future_id = repository
+        .collection_id_for_current_path(&path)
+        .expect("future lookup")
+        .expect("future id");
+    repository
+        .set_inferred_value(
+            future_id,
+            MetadataField::Event,
+            MetadataValue::Text("Ｃ１００".to_owned()),
+            "test alias reuse",
+        )
+        .expect("save inferred alias");
+    assert_eq!(
+        Some("C100".to_owned()),
+        repository
+            .collection(future_id)
+            .expect("future collection")
+            .event
+    );
+    repository
+        .set_manual_value(
+            future_id,
+            MetadataField::Event,
+            MetadataValue::Text("Ｃ１００".to_owned()),
+        )
+        .expect("manual alias remains protected");
+    assert_eq!(
+        Some("Ｃ１００".to_owned()),
+        repository
+            .collection(future_id)
+            .expect("manual collection")
+            .event
+    );
+}
+
+#[test]
+fn rejected_vocabulary_pair_is_persistent_and_not_suggested_again() {
+    let tree = TestTree::new("vocabulary-reject");
+    let database = tree.database();
+    let mut repository = CatalogRepository::open(&database).expect("open catalog");
+    for (index, value) in ["Circle・Name", "circle name"].into_iter().enumerate() {
+        let pending = tree.pending(&format!("[reject-{index}] reject-{index}.zip"));
+        let path = pending.path.clone();
+        repository
+            .ingest_collection(&pending)
+            .expect("ingest collection");
+        let collection_id = repository
+            .collection_id_for_current_path(&path)
+            .expect("collection lookup")
+            .expect("collection id");
+        repository
+            .set_manual_value(
+                collection_id,
+                MetadataField::Circle,
+                MetadataValue::Text(value.to_owned()),
+            )
+            .expect("set circle");
+    }
+    assert_eq!(
+        1,
+        repository
+            .vocabulary_candidates(Some(VocabularyField::Circle))
+            .expect("candidate")
+            .len()
+    );
+    repository
+        .reject_vocabulary_group(
+            VocabularyField::Circle,
+            &["Circle・Name".to_owned(), "circle name".to_owned()],
+            "管理者確認為不同社團",
+            false,
+        )
+        .expect("reject candidate");
+    drop(repository);
+
+    let repository = CatalogRepository::open(&database).expect("reopen catalog");
+    assert!(
+        repository
+            .vocabulary_candidates(Some(VocabularyField::Circle))
+            .expect("persistent candidates")
+            .is_empty()
     );
 }
 

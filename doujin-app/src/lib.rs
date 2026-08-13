@@ -37,6 +37,9 @@ use doujin_storage::thumbnails::{
     BACKGROUND_THUMBNAIL_PRIORITY, BATCH_THUMBNAIL_PRIORITY, DEFAULT_THUMBNAIL_PRIORITY,
     ThumbnailRequestOutcome, ThumbnailStateSnapshot, ThumbnailStatus, ThumbnailStatusCounts,
 };
+use doujin_storage::vocabulary::{
+    VocabularyCandidateGroup, VocabularyField, VocabularyMergePreflight, VocabularyMergeResult,
+};
 use doujin_storage::{CatalogRepository, IngestOutcome, StorageError};
 use doujin_thumbnails::{
     ThumbnailConfig, ThumbnailError, ThumbnailGenerationRequest, ThumbnailGenerationSuccess,
@@ -1198,6 +1201,47 @@ impl<R: RecycleBin> ApplicationService<R> {
         limit: u32,
     ) -> ApplicationResult<Vec<NamedCount>> {
         Ok(self.repository.collection_facets(facet, search, limit)?)
+    }
+
+    pub fn vocabulary_candidates(
+        &self,
+        field: Option<VocabularyField>,
+    ) -> ApplicationResult<Vec<VocabularyCandidateGroup>> {
+        Ok(self.repository.vocabulary_candidates(field)?)
+    }
+
+    pub fn vocabulary_merge_preflight(
+        &self,
+        field: VocabularyField,
+        canonical: &str,
+        variants: &[String],
+    ) -> ApplicationResult<VocabularyMergePreflight> {
+        Ok(self
+            .repository
+            .vocabulary_merge_preflight(field, canonical, variants)?)
+    }
+
+    pub fn merge_vocabulary(
+        &mut self,
+        field: VocabularyField,
+        canonical: &str,
+        variants: &[String],
+    ) -> ApplicationResult<VocabularyMergeResult> {
+        Ok(self
+            .repository
+            .merge_vocabulary(field, canonical, variants)?)
+    }
+
+    pub fn reject_vocabulary_group(
+        &mut self,
+        field: VocabularyField,
+        values: &[String],
+        reason: &str,
+        removed: bool,
+    ) -> ApplicationResult<usize> {
+        Ok(self
+            .repository
+            .reject_vocabulary_group(field, values, reason, removed)?)
     }
 
     pub fn request_thumbnail(
