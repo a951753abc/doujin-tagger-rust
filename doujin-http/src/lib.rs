@@ -34,7 +34,8 @@ use doujin_scanner::SourceKind;
 use doujin_storage::StorageError;
 use doujin_storage::collections::{
     CollectionPage, CollectionQuery, CollectionQueryLocation, CollectionRootSnapshot,
-    CollectionSnapshot, CollectionSort, MissingMetadataField, SortDirection,
+    CollectionSnapshot, CollectionSort, MissingMetadataField, ReviewQueueKind, ReviewQueuePage,
+    ReviewQueueQuery, SortDirection,
 };
 use doujin_storage::consolidation::{
     ConsolidationChoice, ConsolidationConflict, ConsolidationPreflight, ConsolidationResolution,
@@ -170,6 +171,7 @@ where
                 .delete(delete_saved_view::<R>),
         )
         .route("/api/collections", get(list_collections::<R>))
+        .route("/api/review-queue", get(list_review_queue::<R>))
         .route(
             "/api/collections/{collection_id}/locate",
             get(locate_collection::<R>),
@@ -1667,6 +1669,25 @@ where
     Ok(Json(page.into()))
 }
 
+async fn list_review_queue<R>(
+    State(state): State<HttpState<R>>,
+    RawQuery(raw_query): RawQuery,
+) -> Result<Json<ReviewQueueResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let query = parse_review_queue_query(raw_query.as_deref())?;
+    let page = tokio::task::spawn_blocking(move || {
+        let application = lock_interactive_application(&state.application)?;
+        application
+            .review_queue(&query)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(page.try_into()?))
+}
+
 async fn locate_collection<R>(
     State(state): State<HttpState<R>>,
     Path(collection_id): Path<String>,
@@ -1763,6 +1784,48 @@ struct ExternalSearchResultResponse {
     disposition: &'static str,
     assertion_id: Option<i64>,
     created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewQueueResponse {
+    items: Vec<ReviewQueueItemResponse>,
+    pagination: PaginationResponse,
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewQueueItemResponse {
+    collection: CollectionResponse,
+    metadata: MetadataHistoryResponse,
+}
+
+impl TryFrom<ReviewQueuePage> for ReviewQueueResponse {
+    type Error = ApiError;
+
+    fn try_from(page: ReviewQueuePage) -> Result<Self, Self::Error> {
+        let total_pages = if page.total == 0 {
+            0
+        } else {
+            (page.total + i64::from(page.per_page) - 1) / i64::from(page.per_page)
+        };
+        Ok(Self {
+            items: page
+                .items
+                .into_iter()
+                .map(|item| {
+                    Ok(ReviewQueueItemResponse {
+                        collection: item.collection.into(),
+                        metadata: item.metadata.try_into()?,
+                    })
+                })
+                .collect::<Result<_, ApiError>>()?,
+            pagination: PaginationResponse {
+                page: page.page,
+                per_page: page.per_page,
+                total: page.total,
+                total_pages,
+            },
+        })
+    }
 }
 
 impl TryFrom<MetadataHistory> for MetadataHistoryResponse {
@@ -3028,6 +3091,51 @@ fn parse_collection_query(raw_query: Option<&str>) -> Result<CollectionQuery, Ap
     Ok(query)
 }
 
+fn parse_review_queue_query(raw_query: Option<&str>) -> Result<ReviewQueueQuery, ApiError> {
+    let mut query = ReviewQueueQuery::default();
+    let mut scalar_keys = HashSet::new();
+    for (key, value) in form_urlencoded::parse(raw_query.unwrap_or_default().as_bytes()) {
+        let key = key.as_ref();
+        let value = value.as_ref();
+        match key {
+            "page" => {
+                ensure_single_review_parameter(&mut scalar_keys, key)?;
+                let value = value.parse::<i64>().map_err(|_| invalid_review_query())?;
+                query.page = positive_u32_or(Some(value), 1);
+            }
+            "per_page" => {
+                ensure_single_review_parameter(&mut scalar_keys, key)?;
+                let value = value.parse::<i64>().map_err(|_| invalid_review_query())?;
+                query.per_page = value.clamp(1, 100) as u32;
+            }
+            "kind" => {
+                ensure_single_review_parameter(&mut scalar_keys, key)?;
+                query.kind = match value {
+                    "all" => ReviewQueueKind::All,
+                    "missing" => ReviewQueueKind::Missing,
+                    "candidate" => ReviewQueueKind::Candidate,
+                    _ => return Err(invalid_review_query()),
+                };
+            }
+            _ => {
+                return Err(invalid_review_query());
+            }
+        }
+    }
+    Ok(query)
+}
+
+fn ensure_single_review_parameter(
+    scalar_keys: &mut HashSet<String>,
+    key: &str,
+) -> Result<(), ApiError> {
+    if scalar_keys.insert(key.to_owned()) {
+        Ok(())
+    } else {
+        Err(invalid_review_query())
+    }
+}
+
 fn ensure_single_parameter(scalar_keys: &mut HashSet<String>, key: &str) -> Result<(), ApiError> {
     if scalar_keys.insert(key.to_owned()) {
         Ok(())
@@ -3050,6 +3158,13 @@ fn required_filter_value(value: &str) -> Result<String, ApiError> {
 
 fn invalid_query() -> ApiError {
     ApiError::bad_request("invalid_query", "collection query 參數無效")
+}
+
+fn invalid_review_query() -> ApiError {
+    ApiError::bad_request(
+        "invalid_review_query",
+        "review queue 只支援 page、per_page 與 kind=all|missing|candidate",
+    )
 }
 
 fn source_name(source: SourceKind) -> &'static str {

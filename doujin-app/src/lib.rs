@@ -19,7 +19,8 @@ use doujin_scanner::{
     scan_new_collections_with_mode,
 };
 use doujin_storage::collections::{
-    CollectionPage, CollectionQuery, CollectionQueryLocation, CollectionSnapshot,
+    CollectionPage, CollectionQuery, CollectionQueryLocation, CollectionSnapshot, ReviewQueuePage,
+    ReviewQueueQuery,
 };
 use doujin_storage::consolidation::{
     ConsolidationPreflight, ConsolidationResolution, ConsolidationSnapshot,
@@ -830,6 +831,10 @@ impl<R: RecycleBin> ApplicationService<R> {
 
     pub fn collections(&self, query: &CollectionQuery) -> ApplicationResult<CollectionPage> {
         Ok(self.repository.collections(query)?)
+    }
+
+    pub fn review_queue(&self, query: &ReviewQueueQuery) -> ApplicationResult<ReviewQueuePage> {
+        Ok(self.repository.review_queue(query)?)
     }
 
     pub fn saved_views(&self) -> ApplicationResult<Vec<SavedViewWithCount>> {

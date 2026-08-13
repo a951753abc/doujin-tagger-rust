@@ -284,8 +284,12 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("href=\"/assets/app.css?v=45\""));
-    assert!(document.contains("src=\"/assets/app.js?v=48\" defer"));
+    assert!(document.contains("href=\"/assets/app.css?v=46\""));
+    assert!(document.contains("src=\"/assets/app.js?v=49\" defer"));
+    assert!(document.contains("id=\"review-view\""));
+    assert!(document.contains("data-route=\"review\""));
+    assert!(document.contains("id=\"review-desk\""));
+    assert!(document.contains("id=\"review-accept\""));
     assert!(document.contains("id=\"library-scroll-sentinel\""));
     assert!(document.contains("id=\"library-load-more\""));
     assert!(document.contains("id=\"library-load-announcer\""));
@@ -380,6 +384,7 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(stylesheet.contains(".saved-view-rule-summary"));
     assert!(stylesheet.contains(".missing-metadata-actions"));
     assert!(stylesheet.contains(".tag-suggestion-combobox"));
+    assert!(stylesheet.contains(".review-desk"));
     assert!(!stylesheet.contains("font-size: 0.6875rem;"));
     assert!(!stylesheet.contains("font-size: 0.625rem;"));
     assert!(!stylesheet.contains("font-size: 0.5625rem;"));
@@ -409,6 +414,12 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     ));
     assert!(script.contains("rootMargin: \"1200px 0px\""));
     assert!(script.contains("/api/collections"));
+    assert!(script.contains("/api/review-queue?kind=${encodeURIComponent(state.reviewKind)}"));
+    assert!(script.contains("function decideReviewCandidate"));
+    assert!(script.contains("state.reviewSkipped.add(item.collection.id)"));
+    assert!(script.contains("state.reviewReturnId = item.collection.id"));
+    assert!(script.contains("target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement || target?.isContentEditable"));
+    assert!(script.contains("!event.altKey && !event.ctrlKey && !event.metaKey"));
     assert!(script.contains("/api/saved-views"));
     assert!(script.contains("function savedViewIsModified"));
     assert!(script.contains("function openSavedView"));
@@ -1687,6 +1698,170 @@ async fn metadata_history_exposes_candidates_selection_and_confidence_over_loopb
         .await;
     assert_eq!(404, missing.status);
     assert_eq!("collection_not_found", missing.json["error"]["code"]);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn review_queue_is_allowlisted_and_reuses_existing_metadata_decision_contracts() {
+    let tree = TestTree::new("review-queue");
+    for filename in [
+        "[Missing] missing.zip",
+        "[Accept] accept.zip",
+        "[Reject] reject.zip",
+        "[Clean] clean.zip",
+    ] {
+        tree.zip(filename);
+    }
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    repository
+        .register_library_root(&tree.library(), SourceKind::Archive, "歸檔區")
+        .expect("register root");
+    let roots = repository.active_scan_roots().expect("active roots");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application.run_scan(&roots).expect("scan review fixtures");
+    let mut repository = application.into_repository();
+    let id = |repository: &CatalogRepository, filename: &str| {
+        repository
+            .collection_id_for_current_path(&tree.library().join(filename))
+            .expect("collection lookup")
+            .expect("collection ID")
+    };
+    let missing_id = id(&repository, "[Missing] missing.zip");
+    let accept_id = id(&repository, "[Accept] accept.zip");
+    let reject_id = id(&repository, "[Reject] reject.zip");
+    let clean_id = id(&repository, "[Clean] clean.zip");
+    for collection_id in [missing_id, accept_id, reject_id, clean_id] {
+        for (field, value) in [
+            (
+                MetadataField::Circle,
+                MetadataValue::Text("review circle".to_owned()),
+            ),
+            (
+                MetadataField::Authors,
+                MetadataValue::Authors(doujin_parser::domain::Authors {
+                    raw: Some("review author".to_owned()),
+                    values: vec!["review author".to_owned()],
+                }),
+            ),
+            (
+                MetadataField::Parody,
+                MetadataValue::Parody(doujin_parser::domain::Parody {
+                    raw: "review parody".to_owned(),
+                    canonical: "review parody".to_owned(),
+                    evidence: "HTTP review fixture".to_owned(),
+                }),
+            ),
+            (
+                MetadataField::Classification,
+                MetadataValue::Classification(doujin_parser::domain::Classification {
+                    top_level: "同人誌".to_owned(),
+                    subcategory: None,
+                    raw_marker: None,
+                }),
+            ),
+        ] {
+            repository
+                .set_manual_value(collection_id, field, value)
+                .expect("complete shared review metadata");
+        }
+        if collection_id != missing_id {
+            repository
+                .set_manual_value(
+                    collection_id,
+                    MetadataField::Event,
+                    MetadataValue::Text("C106".to_owned()),
+                )
+                .expect("complete review event");
+        }
+    }
+    let candidate = |repository: &mut CatalogRepository, collection_id, value: &str| {
+        let outcome = repository
+            .save_external_candidate(ExternalCandidate {
+                collection_id,
+                field: MetadataField::Title,
+                value: MetadataValue::Text(value.to_owned()),
+                source_reference: format!("provider:review-{collection_id}"),
+                confidence: confidence(0.8),
+            })
+            .expect("save review candidate");
+        let ExternalCandidateOutcome::Suggestion { assertion_id, .. } = outcome else {
+            panic!("review candidate must require a decision");
+        };
+        assertion_id
+    };
+    let accept_assertion = candidate(&mut repository, accept_id, "accepted review title");
+    let reject_assertion = candidate(&mut repository, reject_id, "rejected review title");
+    let server = RunningServer::start(ApplicationService::new(repository, NoopRecycleBin)).await;
+
+    let listed = server
+        .request("GET", "/api/review-queue?kind=all&page=1&per_page=2", &[])
+        .await;
+    assert_eq!(200, listed.status);
+    assert_eq!(3, listed.json["pagination"]["total"]);
+    assert_eq!(
+        2,
+        listed.json["items"].as_array().expect("review items").len()
+    );
+    assert_eq!(accept_id, listed.json["items"][0]["collection"]["id"]);
+    let title = listed.json["items"][0]["metadata"]["fields"]
+        .as_array()
+        .expect("metadata fields")
+        .iter()
+        .find(|field| field["field"] == "title")
+        .expect("title history");
+    let assertion = title["assertions"]
+        .as_array()
+        .expect("title assertions")
+        .iter()
+        .find(|assertion| assertion["id"] == accept_assertion)
+        .expect("review assertion");
+    assert_eq!("candidate", assertion["status"]);
+    assert_eq!(0.8, assertion["confidence_total"]);
+    assert_eq!("HTTP metadata history test", assertion["reason"]);
+
+    for path in [
+        "/api/review-queue?kind=confidence",
+        "/api/review-queue?kind=missing&kind=candidate",
+        "/api/review-queue?unknown=all",
+    ] {
+        let invalid = server.request("GET", path, &[]).await;
+        assert_eq!(400, invalid.status);
+        assert_eq!("invalid_review_query", invalid.json["error"]["code"]);
+    }
+
+    let select = server
+        .request_json(
+            "PATCH",
+            &format!("/api/collections/{accept_id}/metadata/title/assertions/{accept_assertion}"),
+            &serde_json::json!({"decision": "select"}),
+        )
+        .await;
+    assert_eq!(200, select.status);
+    let reject = server
+        .request_json(
+            "PATCH",
+            &format!("/api/collections/{reject_id}/metadata/title/assertions/{reject_assertion}"),
+            &serde_json::json!({"decision": "reject"}),
+        )
+        .await;
+    assert_eq!(200, reject.status);
+    let manual = server
+        .request_json(
+            "PUT",
+            &format!("/api/collections/{missing_id}/metadata/event"),
+            &serde_json::json!({"value": "C106"}),
+        )
+        .await;
+    assert_eq!(200, manual.status);
+
+    let empty = server
+        .request("GET", "/api/review-queue?kind=all", &[])
+        .await;
+    assert_eq!(0, empty.json["pagination"]["total"]);
+    assert_eq!(
+        0,
+        empty.json["items"].as_array().expect("empty queue").len()
+    );
     server.stop().await;
 }
 

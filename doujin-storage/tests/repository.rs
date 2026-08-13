@@ -10,7 +10,7 @@ use doujin_scanner::{FilenameNormalization, PendingCollection, SourceKind};
 use doujin_storage::canonical::{CanonicalMappingEvidence, EntityKind};
 use doujin_storage::collections::{
     CollectionFilters, CollectionQuery, CollectionRootSnapshot, CollectionSort,
-    MissingMetadataField, SortDirection,
+    MissingMetadataField, ReviewQueueKind, ReviewQueueQuery, SortDirection,
 };
 use doujin_storage::consolidation::{ConsolidationChoice, ConsolidationResolution};
 use doujin_storage::jobs::{
@@ -1909,6 +1909,181 @@ fn collection_filters_combine_metadata_missing_source_and_all_tags() {
     assert_eq!(
         vec!["color".to_owned(), "favorite".to_owned()],
         repository.collection(ids[0]).expect("tagged detail").tags
+    );
+}
+
+#[test]
+fn review_queue_queries_missing_and_candidate_items_with_server_side_totals() {
+    let tree = TestTree::new("review-queue");
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut ids = Vec::new();
+    for filename in [
+        "[Missing] missing.zip",
+        "[Candidate] candidate.zip",
+        "[Clean] clean.zip",
+    ] {
+        repository
+            .ingest_collection(&tree.pending(filename))
+            .expect("ingest review fixture");
+        ids.push(
+            repository
+                .collection_id_for_current_path(&tree.path.join(filename))
+                .expect("collection lookup")
+                .expect("collection ID"),
+        );
+    }
+    let missing_id = ids[0];
+    let candidate_id = ids[1];
+    let clean_id = ids[2];
+
+    for collection_id in [candidate_id, clean_id] {
+        for (field, value) in [
+            (
+                MetadataField::Title,
+                MetadataValue::Text(format!("review title {collection_id}")),
+            ),
+            (MetadataField::Event, MetadataValue::Text("C106".to_owned())),
+            (
+                MetadataField::Circle,
+                MetadataValue::Text("review circle".to_owned()),
+            ),
+            (
+                MetadataField::Authors,
+                MetadataValue::Authors(Authors {
+                    raw: Some("review author".to_owned()),
+                    values: vec!["review author".to_owned()],
+                }),
+            ),
+            (
+                MetadataField::Parody,
+                MetadataValue::Parody(Parody {
+                    raw: "review parody".to_owned(),
+                    canonical: "review parody".to_owned(),
+                    evidence: "manual review fixture".to_owned(),
+                }),
+            ),
+            (
+                MetadataField::Classification,
+                MetadataValue::Classification(Classification {
+                    top_level: "同人誌".to_owned(),
+                    subcategory: None,
+                    raw_marker: None,
+                }),
+            ),
+        ] {
+            repository
+                .set_manual_value(collection_id, field, value)
+                .expect("complete primary metadata");
+        }
+    }
+    let suggestion = repository
+        .save_external_candidate(ExternalCandidate {
+            collection_id: candidate_id,
+            field: MetadataField::Title,
+            value: MetadataValue::Text("candidate title".to_owned()),
+            source_reference: "provider:review-candidate".to_owned(),
+            confidence: confidence(0.8, false),
+        })
+        .expect("save review candidate");
+    let ExternalCandidateOutcome::Suggestion { assertion_id, .. } = suggestion else {
+        panic!("review fixture must create a candidate assertion");
+    };
+
+    let all = repository
+        .review_queue(&ReviewQueueQuery {
+            per_page: 1,
+            ..ReviewQueueQuery::default()
+        })
+        .expect("all review items");
+    assert_eq!(2, all.total);
+    assert_eq!(1, all.items.len());
+    assert_eq!(candidate_id, all.items[0].collection.id);
+    assert!(
+        all.items[0]
+            .metadata
+            .fields
+            .iter()
+            .flat_map(|field| &field.assertions)
+            .any(|assertion| assertion.id == assertion_id
+                && assertion.status == MetadataAssertionStatus::Candidate)
+    );
+
+    let missing = repository
+        .review_queue(&ReviewQueueQuery {
+            kind: ReviewQueueKind::Missing,
+            ..ReviewQueueQuery::default()
+        })
+        .expect("missing review items");
+    assert_eq!(1, missing.total);
+    assert_eq!(missing_id, missing.items[0].collection.id);
+
+    let candidate = repository
+        .review_queue(&ReviewQueueQuery {
+            kind: ReviewQueueKind::Candidate,
+            ..ReviewQueueQuery::default()
+        })
+        .expect("candidate review items");
+    assert_eq!(1, candidate.total);
+    assert_eq!(candidate_id, candidate.items[0].collection.id);
+
+    repository
+        .decide_metadata_assertion(
+            candidate_id,
+            MetadataField::Title,
+            assertion_id,
+            MetadataAssertionDecision::Reject,
+        )
+        .expect("reject review candidate through existing contract");
+    assert_eq!(
+        0,
+        repository
+            .review_queue(&ReviewQueueQuery {
+                kind: ReviewQueueKind::Candidate,
+                ..ReviewQueueQuery::default()
+            })
+            .expect("candidate leaves queue")
+            .total
+    );
+
+    for (field, value) in [
+        (MetadataField::Event, MetadataValue::Text("C106".to_owned())),
+        (
+            MetadataField::Authors,
+            MetadataValue::Authors(Authors {
+                raw: Some("manual author".to_owned()),
+                values: vec!["manual author".to_owned()],
+            }),
+        ),
+        (
+            MetadataField::Parody,
+            MetadataValue::Parody(Parody {
+                raw: "manual parody".to_owned(),
+                canonical: "manual parody".to_owned(),
+                evidence: "manual review fixture".to_owned(),
+            }),
+        ),
+        (
+            MetadataField::Classification,
+            MetadataValue::Classification(Classification {
+                top_level: "同人誌".to_owned(),
+                subcategory: None,
+                raw_marker: None,
+            }),
+        ),
+    ] {
+        repository
+            .set_manual_value(missing_id, field, value)
+            .expect("complete missing review metadata");
+    }
+    assert_eq!(
+        0,
+        repository
+            .review_queue(&ReviewQueueQuery {
+                kind: ReviewQueueKind::Missing,
+                ..ReviewQueueQuery::default()
+            })
+            .expect("completed metadata leaves queue")
+            .total
     );
 }
 
