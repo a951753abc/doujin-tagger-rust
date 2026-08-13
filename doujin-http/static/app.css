@@ -1018,6 +1018,105 @@ select:disabled {
   align-self: end;
 }
 
+.enrichment-operation {
+  padding: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--paper-deep) 56%, var(--paper-raised));
+}
+.enrichment-heading,
+.enrichment-result-heading,
+.enrichment-actions,
+.enrichment-result-links {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.enrichment-heading h3 {
+  margin: 2px 0 0;
+  color: var(--accent);
+  font-family: var(--serif);
+}
+.enrichment-heading p:not(.section-index),
+.enrichment-preflight p {
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.8125rem;
+}
+.enrichment-strategy,
+.enrichment-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 14px 0 0;
+  padding: 0;
+  border: 0;
+}
+.enrichment-strategy legend,
+.enrichment-fields legend {
+  width: 100%;
+  margin-bottom: 2px;
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.enrichment-strategy label,
+.enrichment-fields label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.8125rem;
+}
+.enrichment-preflight,
+.enrichment-result {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.enrichment-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin: 10px 0 0;
+}
+.enrichment-summary dt,
+.enrichment-summary dd {
+  margin: 0;
+  text-align: center;
+}
+.enrichment-summary dt {
+  grid-row: 2;
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+}
+.enrichment-summary dd {
+  grid-row: 1;
+  font-family: var(--serif);
+  font-weight: 700;
+}
+.enrichment-warning {
+  color: var(--danger) !important;
+}
+.enrichment-actions,
+.enrichment-result-links {
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+.enrichment-failure-list {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.enrichment-failure-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+  font-size: 0.75rem;
+}
+
 .file-operation-strip > div:last-child {
   display: flex;
   flex-wrap: wrap;

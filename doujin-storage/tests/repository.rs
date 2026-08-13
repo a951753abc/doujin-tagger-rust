@@ -13,6 +13,9 @@ use doujin_storage::collections::{
     MissingMetadataField, ReviewQueueKind, ReviewQueueQuery, SortDirection,
 };
 use doujin_storage::consolidation::{ConsolidationChoice, ConsolidationResolution};
+use doujin_storage::external_search_batches::{
+    ExternalSearchBatchItemOutcome, ExternalSearchBatchStrategy, NewExternalSearchBatchItem,
+};
 use doujin_storage::jobs::{
     ExternalSearchCompletionStatus, ExternalSearchErrorKind, ExternalSearchJobIssue,
     ExternalSearchJobStatus, ExternalSearchJobSummary,
@@ -134,7 +137,7 @@ fn mapping_evidence(reason: &str) -> CanonicalMappingEvidence {
 fn migration_enables_required_sqlite_features() {
     let repository = CatalogRepository::open_in_memory().expect("open catalog");
 
-    assert_eq!(10, repository.schema_version().expect("schema version"));
+    assert_eq!(11, repository.schema_version().expect("schema version"));
     assert!(repository.foreign_keys_enabled().expect("foreign keys"));
     assert!(
         repository
@@ -502,6 +505,168 @@ fn external_search_jobs_deduplicate_persist_results_and_schedule_typed_retries()
 }
 
 #[test]
+fn external_search_batch_persists_100_plus_items_and_aggregates_linked_job_state() {
+    let tree = TestTree::new("external-search-batch");
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut collection_ids = Vec::new();
+    for index in 0..105 {
+        let pending = tree.pending(&format!("[circle] batch {index:03}.zip"));
+        repository
+            .ingest_collection(&pending)
+            .expect("ingest batch collection");
+        collection_ids.push(
+            repository
+                .collection_id_for_current_path(&pending.path)
+                .expect("collection lookup")
+                .expect("collection ID"),
+        );
+    }
+
+    let pending_job = repository
+        .enqueue_external_search(collection_ids[0], &[MetadataField::Title])
+        .expect("enqueue pending")
+        .job;
+    let running_job = repository
+        .enqueue_external_search(collection_ids[1], &[MetadataField::Authors])
+        .expect("enqueue running")
+        .job;
+    repository
+        .start_external_search_job(running_job.id)
+        .expect("start running");
+    let succeeded_job = repository
+        .enqueue_external_search(collection_ids[2], &[MetadataField::Parody])
+        .expect("enqueue succeeded")
+        .job;
+    repository
+        .start_external_search_job(succeeded_job.id)
+        .expect("start succeeded");
+    repository
+        .complete_external_search_job(
+            succeeded_job.id,
+            ExternalSearchCompletionStatus::Succeeded,
+            &ExternalSearchJobSummary {
+                candidates_received: 1,
+                tags_received: 0,
+                tags_applied: 0,
+                auto_applied: 0,
+                suggestions: 1,
+                search_only: 0,
+                issues: Vec::new(),
+            },
+        )
+        .expect("complete succeeded");
+
+    let mut items = vec![
+        NewExternalSearchBatchItem {
+            collection_id: collection_ids[0],
+            job_id: Some(pending_job.id),
+            outcome: ExternalSearchBatchItemOutcome::Reused,
+            fields: vec![MetadataField::Title],
+            reason: Some("已有 pending/running 工作".to_owned()),
+        },
+        NewExternalSearchBatchItem {
+            collection_id: collection_ids[1],
+            job_id: Some(running_job.id),
+            outcome: ExternalSearchBatchItemOutcome::Enqueued,
+            fields: vec![MetadataField::Authors],
+            reason: None,
+        },
+        NewExternalSearchBatchItem {
+            collection_id: collection_ids[2],
+            job_id: Some(succeeded_job.id),
+            outcome: ExternalSearchBatchItemOutcome::Enqueued,
+            fields: vec![MetadataField::Parody],
+            reason: None,
+        },
+    ];
+    items.extend(
+        collection_ids[3..104]
+            .iter()
+            .map(|collection_id| NewExternalSearchBatchItem {
+                collection_id: *collection_id,
+                job_id: None,
+                outcome: ExternalSearchBatchItemOutcome::Unchanged,
+                fields: Vec::new(),
+                reason: Some("指定欄位已有值".to_owned()),
+            }),
+    );
+    items.push(NewExternalSearchBatchItem {
+        collection_id: collection_ids[104],
+        job_id: None,
+        outcome: ExternalSearchBatchItemOutcome::Skipped,
+        fields: vec![MetadataField::Title],
+        reason: Some("缺少足夠識別資訊".to_owned()),
+    });
+
+    let batch = repository
+        .create_external_search_batch(
+            ExternalSearchBatchStrategy::OnlyMissing,
+            &[
+                MetadataField::Title,
+                MetadataField::Authors,
+                MetadataField::Parody,
+            ],
+            &items,
+        )
+        .expect("create persistent batch");
+    assert_eq!(105, batch.summary.total);
+    assert_eq!(1, batch.summary.pending);
+    assert_eq!(1, batch.summary.running);
+    assert_eq!(1, batch.summary.succeeded);
+    assert_eq!(0, batch.summary.partial);
+    assert_eq!(0, batch.summary.failed);
+    assert_eq!(1, batch.summary.skipped);
+    assert_eq!(101, batch.summary.unchanged);
+    assert_eq!(1, batch.summary.reused);
+    assert_eq!(105, batch.items.len());
+    assert_eq!(
+        vec![MetadataField::Title],
+        batch.items[0].fields,
+        "per-collection requested fields stay traceable"
+    );
+
+    let running = repository
+        .external_search_job(running_job.id)
+        .expect("read running");
+    repository
+        .complete_external_search_job(
+            running.id,
+            ExternalSearchCompletionStatus::Partial,
+            &ExternalSearchJobSummary {
+                candidates_received: 1,
+                tags_received: 0,
+                tags_applied: 0,
+                auto_applied: 0,
+                suggestions: 0,
+                search_only: 1,
+                issues: vec![ExternalSearchJobIssue {
+                    field: Some(MetadataField::Authors),
+                    kind: "provider_field_error".to_owned(),
+                    message: "部分欄位無結果".to_owned(),
+                }],
+            },
+        )
+        .expect("complete partial");
+    let refreshed = repository
+        .external_search_batch(batch.id)
+        .expect("refresh dynamic summary");
+    assert_eq!(0, refreshed.summary.running);
+    assert_eq!(1, refreshed.summary.partial);
+    assert_eq!(
+        1,
+        serde_json::from_str::<serde_json::Value>(
+            &repository
+                .external_search_job(running.id)
+                .expect("read partial")
+                .result_json
+                .expect("partial result")
+        )
+        .expect("decode summary")["search_only"],
+        "batch references the original evidence-bearing job without promoting search_only"
+    );
+}
+
+#[test]
 fn thumbnail_states_deduplicate_retry_and_require_manual_reset_after_permanent_failure() {
     let tree = TestTree::new("thumbnail-state");
     let pending = tree.pending("[circle] cover test.zip");
@@ -821,7 +986,7 @@ fn version_one_catalog_upgrades_through_all_migrations_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade catalog");
 
-    assert_eq!(10, repository.schema_version().expect("schema version"));
+    assert_eq!(11, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     drop(repository);
     let connection = Connection::open(&database).expect("inspect upgraded catalog");
@@ -870,15 +1035,17 @@ fn version_eight_catalog_removes_is_dl_event_fallback_without_overwriting_manual
              SELECT 2, 'event', id, 'manual'
              FROM metadata_assertions
              WHERE collection_id = 2 AND source_kind = 'manual';
+             DROP TABLE external_search_batch_items;
+             DROP TABLE external_search_batches;
              DROP TABLE saved_views;
-             DELETE FROM schema_migrations WHERE version IN (9, 10);
+             DELETE FROM schema_migrations WHERE version IN (9, 10, 11);
              PRAGMA user_version = 8;",
         )
         .expect("seed v8 metadata");
     drop(connection);
 
     let repository = CatalogRepository::open(&database).expect("upgrade catalog");
-    assert_eq!(10, repository.schema_version().expect("schema version"));
+    assert_eq!(11, repository.schema_version().expect("schema version"));
     drop(repository);
 
     let connection = Connection::open(&database).expect("inspect upgraded catalog");
@@ -982,7 +1149,7 @@ fn version_six_catalog_adds_thumbnail_priority_without_losing_state() {
         .thumbnail_state(1)
         .expect("preserved thumbnail state");
 
-    assert_eq!(10, repository.schema_version().expect("schema version"));
+    assert_eq!(11, repository.schema_version().expect("schema version"));
     assert_eq!(ThumbnailStatus::Pending, state.status);
     assert_eq!(BACKGROUND_THUMBNAIL_PRIORITY, state.priority);
     assert!(state.requested_at.is_some());
@@ -1029,7 +1196,7 @@ fn version_two_catalog_upgrades_external_search_jobs_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v2 catalog");
 
-    assert_eq!(10, repository.schema_version().expect("schema version"));
+    assert_eq!(11, repository.schema_version().expect("schema version"));
     let job = repository
         .external_search_job(job_id)
         .expect("preserved external search job");
@@ -1079,7 +1246,7 @@ fn version_three_catalog_adds_consolidation_audit_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v3 catalog");
 
-    assert_eq!(10, repository.schema_version().expect("schema version"));
+    assert_eq!(11, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert_eq!(
         None,
@@ -1134,7 +1301,7 @@ fn version_four_catalog_adds_thumbnail_state_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v4 catalog");
 
-    assert_eq!(10, repository.schema_version().expect("schema version"));
+    assert_eq!(11, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert!(
         repository
@@ -1193,7 +1360,7 @@ fn version_five_catalog_adds_typed_application_settings_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v5 catalog");
 
-    assert_eq!(10, repository.schema_version().expect("schema version"));
+    assert_eq!(11, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert!(
         repository

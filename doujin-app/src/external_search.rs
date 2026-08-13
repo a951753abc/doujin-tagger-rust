@@ -2,6 +2,10 @@ use doujin_files::RecycleBin;
 use doujin_parser::domain::Identifier;
 use doujin_storage::StorageError;
 use doujin_storage::collections::CollectionSnapshot;
+use doujin_storage::external_search_batches::{
+    ExternalSearchBatchItemOutcome, ExternalSearchBatchSnapshot, ExternalSearchBatchStrategy,
+    NewExternalSearchBatchItem,
+};
 use doujin_storage::jobs::{
     ExternalSearchCompletionStatus, ExternalSearchEnqueueOutcome, ExternalSearchErrorKind,
     ExternalSearchJobIssue, ExternalSearchJobSnapshot, ExternalSearchJobStatus,
@@ -87,7 +91,222 @@ pub struct ExternalSearchWorkerReport {
     pub issues: Vec<ExternalSearchWorkerIssue>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalSearchBatchFieldNeed {
+    pub field: MetadataField,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalSearchBatchPreflightItem {
+    pub collection_id: i64,
+    pub fields: Vec<MetadataField>,
+    pub outcome: ExternalSearchBatchItemOutcome,
+    pub job_id: Option<i64>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalSearchBatchPreflight {
+    pub strategy: ExternalSearchBatchStrategy,
+    pub fields: Vec<MetadataField>,
+    pub total: usize,
+    pub will_enqueue: usize,
+    pub reused: usize,
+    pub skipped: usize,
+    pub unchanged: usize,
+    pub insufficient_identifiers: usize,
+    pub field_needs: Vec<ExternalSearchBatchFieldNeed>,
+    pub items: Vec<ExternalSearchBatchPreflightItem>,
+}
+
 impl<R: RecycleBin> ApplicationService<R> {
+    pub fn preflight_external_search_batch(
+        &self,
+        collection_ids: &[i64],
+        fields: &[MetadataField],
+        strategy: ExternalSearchBatchStrategy,
+    ) -> ApplicationResult<ExternalSearchBatchPreflight> {
+        let collection_ids = normalized_collection_ids(collection_ids)?;
+        let fields = normalized_batch_fields(fields)?;
+        let mut field_needs = MetadataField::ALL
+            .into_iter()
+            .filter(|field| fields.contains(field))
+            .map(|field| ExternalSearchBatchFieldNeed { field, count: 0 })
+            .collect::<Vec<_>>();
+        let mut items = Vec::with_capacity(collection_ids.len());
+        let mut will_enqueue = 0;
+        let mut reused = 0;
+        let mut skipped = 0;
+        let mut unchanged = 0;
+        let mut insufficient_identifiers = 0;
+        for collection_id in collection_ids {
+            let collection = match self.repository.collection(collection_id) {
+                Ok(collection) => collection,
+                Err(StorageError::CollectionNotFound(_)) => {
+                    skipped += 1;
+                    items.push(ExternalSearchBatchPreflightItem {
+                        collection_id,
+                        fields: Vec::new(),
+                        outcome: ExternalSearchBatchItemOutcome::Skipped,
+                        job_id: None,
+                        reason: Some("收藏不存在或已不在 active library".to_owned()),
+                    });
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let requested = fields
+                .iter()
+                .copied()
+                .filter(|field| {
+                    strategy == ExternalSearchBatchStrategy::Specified
+                        || metadata_field_missing(&collection, *field)
+                })
+                .collect::<Vec<_>>();
+            if requested.is_empty() {
+                unchanged += 1;
+                items.push(ExternalSearchBatchPreflightItem {
+                    collection_id,
+                    fields: requested,
+                    outcome: ExternalSearchBatchItemOutcome::Unchanged,
+                    job_id: None,
+                    reason: Some("指定欄位已有 metadata".to_owned()),
+                });
+                continue;
+            }
+            for need in &mut field_needs {
+                if requested.contains(&need.field) {
+                    need.count += 1;
+                }
+            }
+            if let Some(job) = self.repository.active_external_search_job(collection_id)? {
+                reused += 1;
+                items.push(ExternalSearchBatchPreflightItem {
+                    collection_id,
+                    fields: requested,
+                    outcome: ExternalSearchBatchItemOutcome::Reused,
+                    job_id: Some(job.id),
+                    reason: Some("已有 pending/running external search job".to_owned()),
+                });
+                continue;
+            }
+            let identifiers = self.repository.latest_parser_identifiers(collection_id)?;
+            let has_title = collection
+                .title
+                .as_deref()
+                .is_some_and(|title| !title.trim().is_empty());
+            if identifiers.is_empty() && !has_title {
+                skipped += 1;
+                insufficient_identifiers += 1;
+                items.push(ExternalSearchBatchPreflightItem {
+                    collection_id,
+                    fields: requested,
+                    outcome: ExternalSearchBatchItemOutcome::Skipped,
+                    job_id: None,
+                    reason: Some("缺少 provider 可用的識別碼或辨識書名".to_owned()),
+                });
+                continue;
+            }
+            will_enqueue += 1;
+            items.push(ExternalSearchBatchPreflightItem {
+                collection_id,
+                fields: requested,
+                outcome: ExternalSearchBatchItemOutcome::Enqueued,
+                job_id: None,
+                reason: None,
+            });
+        }
+        Ok(ExternalSearchBatchPreflight {
+            strategy,
+            fields,
+            total: items.len(),
+            will_enqueue,
+            reused,
+            skipped,
+            unchanged,
+            insufficient_identifiers,
+            field_needs,
+            items,
+        })
+    }
+
+    pub fn create_external_search_batch(
+        &mut self,
+        collection_ids: &[i64],
+        fields: &[MetadataField],
+        strategy: ExternalSearchBatchStrategy,
+    ) -> ApplicationResult<ExternalSearchBatchSnapshot> {
+        let preflight = self.preflight_external_search_batch(collection_ids, fields, strategy)?;
+        let mut stored_items = Vec::with_capacity(preflight.items.len());
+        for item in preflight.items {
+            let (job_id, outcome, reason) = match item.outcome {
+                ExternalSearchBatchItemOutcome::Enqueued => {
+                    let result = self.enqueue_external_search(item.collection_id, &item.fields)?;
+                    if result.created {
+                        (
+                            Some(result.job.id),
+                            ExternalSearchBatchItemOutcome::Enqueued,
+                            None,
+                        )
+                    } else {
+                        (
+                            Some(result.job.id),
+                            ExternalSearchBatchItemOutcome::Reused,
+                            Some(
+                                "建立 batch 時已有 pending/running external search job".to_owned(),
+                            ),
+                        )
+                    }
+                }
+                _ => (item.job_id, item.outcome, item.reason),
+            };
+            stored_items.push(NewExternalSearchBatchItem {
+                collection_id: item.collection_id,
+                job_id,
+                outcome,
+                fields: item.fields,
+                reason,
+            });
+        }
+        Ok(self.repository.create_external_search_batch(
+            preflight.strategy,
+            &preflight.fields,
+            &stored_items,
+        )?)
+    }
+
+    pub fn external_search_batch(
+        &self,
+        batch_id: i64,
+    ) -> ApplicationResult<ExternalSearchBatchSnapshot> {
+        Ok(self.repository.external_search_batch(batch_id)?)
+    }
+
+    pub fn retry_external_search_batch(
+        &mut self,
+        batch_id: i64,
+    ) -> ApplicationResult<ExternalSearchBatchSnapshot> {
+        let batch = self.repository.external_search_batch(batch_id)?;
+        let retryable = batch
+            .items
+            .iter()
+            .filter(|item| item.job_status == Some(ExternalSearchJobStatus::Partial))
+            .map(|item| item.collection_id)
+            .collect::<Vec<_>>();
+        if retryable.is_empty() {
+            return Err(StorageError::InvalidExternalSearchBatch(
+                "沒有可重試項目；typed permanent failure 不可由 batch 繞過".to_owned(),
+            )
+            .into());
+        }
+        self.create_external_search_batch(
+            &retryable,
+            &batch.fields,
+            ExternalSearchBatchStrategy::Specified,
+        )
+    }
+
     pub fn recover_interrupted_external_search_jobs(&mut self) -> ApplicationResult<usize> {
         Ok(self.repository.recover_interrupted_external_search_jobs()?)
     }
@@ -380,6 +599,54 @@ impl<R: RecycleBin> ApplicationService<R> {
         Ok(self
             .repository
             .complete_external_search_job(job.id, status, &summary)?)
+    }
+}
+
+fn normalized_collection_ids(collection_ids: &[i64]) -> Result<Vec<i64>, StorageError> {
+    let mut normalized = Vec::with_capacity(collection_ids.len());
+    for collection_id in collection_ids {
+        if *collection_id <= 0 {
+            return Err(StorageError::InvalidExternalSearchBatch(
+                "collection IDs 必須是正整數".to_owned(),
+            ));
+        }
+        if !normalized.contains(collection_id) {
+            normalized.push(*collection_id);
+        }
+    }
+    if normalized.is_empty() {
+        return Err(StorageError::InvalidExternalSearchBatch(
+            "batch 至少必須包含一筆 collection".to_owned(),
+        ));
+    }
+    Ok(normalized)
+}
+
+fn normalized_batch_fields(fields: &[MetadataField]) -> Result<Vec<MetadataField>, StorageError> {
+    let fields = MetadataField::ALL
+        .into_iter()
+        .filter(|field| fields.contains(field))
+        .collect::<Vec<_>>();
+    if fields.is_empty() {
+        return Err(StorageError::InvalidExternalSearchBatch(
+            "batch 至少必須指定一個 metadata field".to_owned(),
+        ));
+    }
+    Ok(fields)
+}
+
+fn metadata_field_missing(collection: &CollectionSnapshot, field: MetadataField) -> bool {
+    match field {
+        MetadataField::Title => collection.title.as_deref().is_none_or(str::is_empty),
+        MetadataField::Event => collection.event.as_deref().is_none_or(str::is_empty),
+        MetadataField::Circle => collection.circle.as_deref().is_none_or(str::is_empty),
+        MetadataField::Authors => collection.authors.is_empty(),
+        MetadataField::Parody => collection.parody.as_deref().is_none_or(str::is_empty),
+        MetadataField::Classification => collection
+            .classification_top
+            .as_deref()
+            .is_none_or(str::is_empty),
+        MetadataField::IsDl => collection.is_dl.is_none(),
     }
 }
 

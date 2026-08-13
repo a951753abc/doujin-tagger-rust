@@ -14,6 +14,8 @@ use doujin_app::{
 };
 use doujin_files::RecycleBin;
 use doujin_scanner::{ScanRoot, SourceKind};
+use doujin_storage::collections::{ReviewQueueKind, ReviewQueueQuery};
+use doujin_storage::external_search_batches::ExternalSearchBatchStrategy;
 use doujin_storage::jobs::{ExternalSearchErrorKind, ExternalSearchJobStatus};
 use doujin_storage::lifecycle::{CandidateDecision, CollectionStatus};
 use doujin_storage::metadata::{ConfidenceEvidence, MetadataField, MetadataValue};
@@ -179,6 +181,31 @@ impl ExternalMetadataProvider for BatchProvider {
                 message: format!("unexpected test title: {title}"),
             }),
         }
+    }
+}
+
+struct BatchEvidenceProvider;
+
+impl ExternalMetadataProvider for BatchEvidenceProvider {
+    fn search(
+        &self,
+        request: &ExternalSearchRequest,
+    ) -> Result<ExternalSearchProviderResponse, ExternalSearchProviderError> {
+        let medium = request.collection.title.as_deref() == Some("medium");
+        Ok(ExternalSearchProviderResponse {
+            candidates: vec![ExternalMetadataCandidate {
+                field: MetadataField::Title,
+                value: MetadataValue::Text(if medium {
+                    "medium candidate".to_owned()
+                } else {
+                    "search-only evidence".to_owned()
+                }),
+                source_reference: format!("batch:evidence:{}", request.collection.id),
+                confidence: confidence(if medium { 0.8 } else { 0.5 }, false),
+            }],
+            tags: Vec::new(),
+            issues: Vec::new(),
+        })
     }
 }
 
@@ -779,6 +806,71 @@ fn external_search_request_carries_latest_parser_identifiers() {
         .expect("run identifier provider");
 
     assert_eq!(ExternalSearchJobStatus::Succeeded, completed.status);
+}
+
+#[test]
+fn external_search_batch_reuses_candidate_and_search_only_review_rules() {
+    let tree = TestTree::new("external-search-batch-evidence");
+    let medium_path = tree.zip("[Circle] medium.zip");
+    let low_path = tree.zip("[Circle] low.zip");
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application
+        .run_scan(&[tree.root()])
+        .expect("scan collections");
+    let collection_ids = [&medium_path, &low_path]
+        .into_iter()
+        .map(|path| {
+            application
+                .repository()
+                .collection_id_for_current_path(path)
+                .expect("collection lookup")
+                .expect("collection ID")
+        })
+        .collect::<Vec<_>>();
+
+    let batch = application
+        .create_external_search_batch(
+            &collection_ids,
+            &[MetadataField::Title],
+            ExternalSearchBatchStrategy::Specified,
+        )
+        .expect("create batch");
+    assert_eq!(2, batch.summary.pending);
+    for item in batch.items {
+        application
+            .run_external_search_job(item.job_id.expect("batch job"), &BatchEvidenceProvider)
+            .expect("run existing external pipeline");
+    }
+    let completed = application
+        .external_search_batch(batch.id)
+        .expect("completed batch");
+    assert_eq!(2, completed.summary.succeeded);
+    let low_job = completed
+        .items
+        .iter()
+        .find(|item| item.collection_id == collection_ids[1])
+        .and_then(|item| item.job_id)
+        .expect("low confidence job");
+    let summary: serde_json::Value = serde_json::from_str(
+        &application
+            .external_search_job(low_job)
+            .expect("read low confidence job")
+            .result_json
+            .expect("job summary"),
+    )
+    .expect("decode job summary");
+    assert_eq!(1, summary["search_only"]);
+    assert_eq!(0, summary["suggestions"]);
+
+    let queue = application
+        .review_queue(&ReviewQueueQuery {
+            kind: ReviewQueueKind::Candidate,
+            ..ReviewQueueQuery::default()
+        })
+        .expect("candidate review queue");
+    assert_eq!(1, queue.total);
+    assert_eq!(collection_ids[0], queue.items[0].collection.id);
 }
 
 #[test]

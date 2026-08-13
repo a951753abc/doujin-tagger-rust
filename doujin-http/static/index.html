@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>私藏編目室</title>
-  <link rel="stylesheet" href="/assets/app.css?v=46">
-  <script src="/assets/app.js?v=49" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=47">
+  <script src="/assets/app.js?v=50" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -411,6 +411,34 @@
                 <label id="batch-metadata-value-label">新的原作<input name="value" type="text" autocomplete="off" required></label>
                 <button class="primary-button" type="submit">寫入</button>
               </form>
+
+              <section class="enrichment-operation" aria-labelledby="batch-enrichment-heading">
+                <div class="enrichment-heading">
+                  <div><p class="section-index">EXTERNAL / 外部資料</p><h3 id="batch-enrichment-heading">批次補齊 metadata</h3><p>由既有背景 worker 依 provider 限速逐筆處理；沒有可靠估算，因此不顯示 ETA。</p></div>
+                  <button class="secondary-button" id="prepare-external-batch" type="button">檢查搜尋範圍</button>
+                </div>
+                <fieldset class="enrichment-strategy">
+                  <legend>搜尋策略</legend>
+                  <label><input type="radio" name="external-batch-strategy" value="only_missing" checked> 只搜尋目前缺少欄位</label>
+                  <label><input type="radio" name="external-batch-strategy" value="specified"> 搜尋指定欄位</label>
+                </fieldset>
+                <fieldset class="enrichment-fields">
+                  <legend>欄位</legend>
+                  <label><input type="checkbox" name="external-batch-field" value="title" checked> 標題</label>
+                  <label><input type="checkbox" name="external-batch-field" value="event" checked> 場次</label>
+                  <label><input type="checkbox" name="external-batch-field" value="circle" checked> 社團</label>
+                  <label><input type="checkbox" name="external-batch-field" value="authors" checked> 作者</label>
+                  <label><input type="checkbox" name="external-batch-field" value="parody" checked> 原作</label>
+                  <label><input type="checkbox" name="external-batch-field" value="classification" checked> 種類</label>
+                  <label><input type="checkbox" name="external-batch-field" value="is_dl" checked> DL 判定</label>
+                </fieldset>
+                <div class="enrichment-preflight" id="external-batch-preflight" aria-live="polite" hidden></div>
+                <div class="enrichment-actions" id="external-batch-actions" hidden>
+                  <button class="primary-button" id="start-external-batch" type="button">開始背景搜尋</button>
+                  <button class="text-button" id="cancel-external-batch" type="button">取消</button>
+                </div>
+                <div class="enrichment-result" id="external-batch-result" aria-live="polite" hidden></div>
+              </section>
 
               <div class="file-operation-strip">
                 <div><p class="section-index">FILES / 檔案</p><h3>搬移或刪除</h3><p>每筆操作都會由後端重新驗證來源、路徑與檔案狀態，批次允許部分成功。</p></div>

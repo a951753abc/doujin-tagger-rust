@@ -284,8 +284,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("href=\"/assets/app.css?v=46\""));
-    assert!(document.contains("src=\"/assets/app.js?v=49\" defer"));
+    assert!(document.contains("href=\"/assets/app.css?v=47\""));
+    assert!(document.contains("src=\"/assets/app.js?v=50\" defer"));
     assert!(document.contains("id=\"review-view\""));
     assert!(document.contains("data-route=\"review\""));
     assert!(document.contains("id=\"review-desk\""));
@@ -323,6 +323,10 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("id=\"discard-filter-dialog\""));
     assert!(document.contains("id=\"batch-progress\""));
     assert!(document.contains("id=\"retry-batch-failures\""));
+    assert!(document.contains("id=\"prepare-external-batch\""));
+    assert!(document.contains("id=\"external-batch-preflight\""));
+    assert!(document.contains("只搜尋目前缺少欄位"));
+    assert!(document.contains("沒有可靠估算，因此不顯示 ETA"));
     assert!(document.contains("id=\"shelf-view\""));
     assert!(document.contains("data-route=\"shelf\""));
     assert!(document.contains("id=\"workbench-view\""));
@@ -372,6 +376,7 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(stylesheet.contains("outline: 3px solid var(--focus);"));
     assert!(stylesheet.contains(".filter-draft-status"));
     assert!(stylesheet.contains(".batch-progress"));
+    assert!(stylesheet.contains(".enrichment-operation"));
     assert!(stylesheet.contains(".collection-window-spacer"));
     assert!(stylesheet.contains("contain: layout paint style"));
     assert!(stylesheet.contains(".scan-issue-list"));
@@ -504,6 +509,13 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("/api/batch/tags"));
     assert!(script.contains("/api/batch/metadata/${field}"));
     assert!(script.contains("function retryFailedBatch"));
+    assert!(script.contains("function preflightExternalBatch"));
+    assert!(script.contains("/api/external-search-batches/preflight"));
+    assert!(script.contains("function renderExternalBatch"));
+    assert!(script.contains("function retryExternalBatch"));
+    assert!(script.contains("typed terminal failure"));
+    assert!(script.contains("依 backoff 自動重試"));
+    assert!(script.contains("前往品質審核"));
     assert!(script.contains("invalidateDerivedData({ library: true })"));
     assert!(
         script
@@ -1969,6 +1981,126 @@ async fn external_search_jobs_can_be_enqueued_deduplicated_and_read_over_loopbac
         "external_search_job_not_found",
         missing_job.json["error"]["code"]
     );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn external_search_batches_preflight_and_persist_100_plus_only_missing_jobs() {
+    let tree = TestTree::new("external-search-batches");
+    for index in 0..101 {
+        tree.zip(&format!("[Circle] batch {index:03}.zip"));
+    }
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    repository
+        .register_library_root(&tree.library(), SourceKind::Archive, "歸檔區")
+        .expect("register root");
+    let roots = repository.active_scan_roots().expect("active roots");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application.run_scan(&roots).expect("scan collections");
+    let mut collection_ids = Vec::new();
+    for index in 0..101 {
+        collection_ids.push(
+            application
+                .repository()
+                .collection_id_for_current_path(
+                    &tree
+                        .library()
+                        .join(format!("[Circle] batch {index:03}.zip")),
+                )
+                .expect("collection lookup")
+                .expect("collection ID"),
+        );
+    }
+    application
+        .set_manual_metadata(
+            collection_ids[1],
+            MetadataField::Event,
+            MetadataValue::Text("C106".to_owned()),
+        )
+        .expect("seed existing event");
+    let existing = application
+        .enqueue_external_search(collection_ids[0], &[MetadataField::Parody])
+        .expect("seed active job")
+        .job;
+    let server = RunningServer::start(application).await;
+    let request_ids = collection_ids
+        .iter()
+        .copied()
+        .chain(std::iter::once(collection_ids[0]))
+        .collect::<Vec<_>>();
+    let body = serde_json::json!({
+        "collection_ids": request_ids,
+        "fields": ["event", "parody", "event"],
+        "strategy": "only_missing"
+    });
+
+    let preflight = server
+        .request_json("POST", "/api/external-search-batches/preflight", &body)
+        .await;
+    assert_eq!(200, preflight.status);
+    assert_eq!(101, preflight.json["total"]);
+    assert_eq!(100, preflight.json["will_enqueue"]);
+    assert_eq!(1, preflight.json["reused"]);
+    assert_eq!(0, preflight.json["skipped"]);
+    assert_eq!(0, preflight.json["unchanged"]);
+    assert_eq!(100, preflight.json["field_needs"][0]["count"]);
+    assert_eq!(101, preflight.json["field_needs"][1]["count"]);
+    let second = preflight.json["items"]
+        .as_array()
+        .expect("preflight items")
+        .iter()
+        .find(|item| item["collection_id"] == collection_ids[1])
+        .expect("second item");
+    assert_eq!(serde_json::json!(["parody"]), second["fields"]);
+
+    let created = server
+        .request_json("POST", "/api/external-search-batches", &body)
+        .await;
+    assert_eq!(200, created.status);
+    assert_eq!(101, created.json["summary"]["total"]);
+    assert_eq!(101, created.json["summary"]["pending"]);
+    assert_eq!(1, created.json["summary"]["reused"]);
+    let batch_id = created.json["id"].as_i64().expect("batch ID");
+    let reused = created.json["items"]
+        .as_array()
+        .expect("batch items")
+        .iter()
+        .find(|item| item["outcome"] == "reused")
+        .expect("reused item");
+    assert_eq!(existing.id, reused["job_id"]);
+    assert_eq!("pending", reused["status"]);
+
+    let fetched = server
+        .request(
+            "GET",
+            &format!("/api/external-search-batches/{batch_id}"),
+            &[],
+        )
+        .await;
+    assert_eq!(200, fetched.status);
+    assert_eq!(101, fetched.json["items"].as_array().expect("items").len());
+    let retry = server
+        .request(
+            "POST",
+            &format!("/api/external-search-batches/{batch_id}/retry"),
+            &[],
+        )
+        .await;
+    assert_eq!(400, retry.status);
+    assert_eq!("invalid_external_search_batch", retry.json["error"]["code"]);
+
+    for invalid in [
+        serde_json::json!({"collection_ids": collection_ids, "fields": ["path"], "strategy": "only_missing"}),
+        serde_json::json!({"collection_ids": [1], "fields": ["title"], "strategy": "overwrite"}),
+    ] {
+        assert_eq!(
+            400,
+            server
+                .request_json("POST", "/api/external-search-batches/preflight", &invalid)
+                .await
+                .status
+        );
+    }
     server.stop().await;
 }
 

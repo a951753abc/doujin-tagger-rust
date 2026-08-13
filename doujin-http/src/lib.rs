@@ -21,6 +21,7 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
+use doujin_app::external_search::{ExternalSearchBatchFieldNeed, ExternalSearchBatchPreflight};
 use doujin_app::{
     ApplicationBatchOutcome, ApplicationBatchReport, ApplicationError, ApplicationScanExpectation,
     ApplicationScanMode, ApplicationScanOptions, ApplicationScanPreflight, ApplicationScanReport,
@@ -40,6 +41,9 @@ use doujin_storage::collections::{
 use doujin_storage::consolidation::{
     ConsolidationChoice, ConsolidationConflict, ConsolidationPreflight, ConsolidationResolution,
     ConsolidationSnapshot, ManualSelectionEvidence,
+};
+use doujin_storage::external_search_batches::{
+    ExternalSearchBatchItemSnapshot, ExternalSearchBatchSnapshot, ExternalSearchBatchStrategy,
 };
 use doujin_storage::jobs::{ExternalSearchEnqueueOutcome, ExternalSearchJobSnapshot};
 use doujin_storage::lifecycle::{CandidateDecision, DeleteMode, TombstoneCandidateSnapshot};
@@ -242,6 +246,22 @@ where
         .route(
             "/api/external-search-jobs/{job_id}",
             get(get_external_search_job::<R>),
+        )
+        .route(
+            "/api/external-search-batches/preflight",
+            post(preflight_external_search_batch::<R>),
+        )
+        .route(
+            "/api/external-search-batches",
+            post(create_external_search_batch::<R>),
+        )
+        .route(
+            "/api/external-search-batches/{batch_id}",
+            get(get_external_search_batch::<R>),
+        )
+        .route(
+            "/api/external-search-batches/{batch_id}/retry",
+            post(retry_external_search_batch::<R>),
         )
         .route(
             "/api/tombstone-candidates",
@@ -2013,6 +2033,79 @@ struct ExternalSearchJobRequest {
     fields: Vec<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalSearchBatchRequest {
+    collection_ids: Vec<i64>,
+    fields: Vec<String>,
+    strategy: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ExternalSearchBatchFieldNeedResponse {
+    field: &'static str,
+    count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct ExternalSearchBatchPreflightItemResponse {
+    collection_id: i64,
+    fields: Vec<&'static str>,
+    outcome: &'static str,
+    job_id: Option<i64>,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExternalSearchBatchPreflightResponse {
+    strategy: &'static str,
+    fields: Vec<&'static str>,
+    total: usize,
+    will_enqueue: usize,
+    reused: usize,
+    skipped: usize,
+    unchanged: usize,
+    insufficient_identifiers: usize,
+    field_needs: Vec<ExternalSearchBatchFieldNeedResponse>,
+    items: Vec<ExternalSearchBatchPreflightItemResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExternalSearchBatchSummaryResponse {
+    total: usize,
+    pending: usize,
+    running: usize,
+    succeeded: usize,
+    partial: usize,
+    failed: usize,
+    skipped: usize,
+    unchanged: usize,
+    reused: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct ExternalSearchBatchItemResponse {
+    collection_id: i64,
+    job_id: Option<i64>,
+    outcome: &'static str,
+    fields: Vec<&'static str>,
+    reason: Option<String>,
+    status: Option<&'static str>,
+    error_kind: Option<String>,
+    error_message: Option<String>,
+    next_retry_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExternalSearchBatchResponse {
+    id: i64,
+    strategy: &'static str,
+    fields: Vec<&'static str>,
+    created_at: String,
+    summary: ExternalSearchBatchSummaryResponse,
+    items: Vec<ExternalSearchBatchItemResponse>,
+}
+
 #[derive(Debug, Serialize)]
 struct ExternalSearchEnqueueResponse {
     created: bool,
@@ -2223,6 +2316,89 @@ impl TryFrom<ExternalSearchEnqueueOutcome> for ExternalSearchEnqueueResponse {
             created: outcome.created,
             job: outcome.job.try_into()?,
         })
+    }
+}
+
+impl From<ExternalSearchBatchFieldNeed> for ExternalSearchBatchFieldNeedResponse {
+    fn from(need: ExternalSearchBatchFieldNeed) -> Self {
+        Self {
+            field: need.field.as_str(),
+            count: need.count,
+        }
+    }
+}
+
+impl From<ExternalSearchBatchPreflight> for ExternalSearchBatchPreflightResponse {
+    fn from(preflight: ExternalSearchBatchPreflight) -> Self {
+        Self {
+            strategy: preflight.strategy.as_str(),
+            fields: preflight
+                .fields
+                .into_iter()
+                .map(MetadataField::as_str)
+                .collect(),
+            total: preflight.total,
+            will_enqueue: preflight.will_enqueue,
+            reused: preflight.reused,
+            skipped: preflight.skipped,
+            unchanged: preflight.unchanged,
+            insufficient_identifiers: preflight.insufficient_identifiers,
+            field_needs: preflight.field_needs.into_iter().map(Into::into).collect(),
+            items: preflight
+                .items
+                .into_iter()
+                .map(|item| ExternalSearchBatchPreflightItemResponse {
+                    collection_id: item.collection_id,
+                    fields: item.fields.into_iter().map(MetadataField::as_str).collect(),
+                    outcome: item.outcome.as_str(),
+                    job_id: item.job_id,
+                    reason: item.reason,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<ExternalSearchBatchItemSnapshot> for ExternalSearchBatchItemResponse {
+    fn from(item: ExternalSearchBatchItemSnapshot) -> Self {
+        Self {
+            collection_id: item.collection_id,
+            job_id: item.job_id,
+            outcome: item.outcome.as_str(),
+            fields: item.fields.into_iter().map(MetadataField::as_str).collect(),
+            reason: item.reason,
+            status: item.job_status.map(|status| status.as_str()),
+            error_kind: item.error_kind,
+            error_message: item.error_message,
+            next_retry_at: item.next_retry_at,
+        }
+    }
+}
+
+impl From<ExternalSearchBatchSnapshot> for ExternalSearchBatchResponse {
+    fn from(batch: ExternalSearchBatchSnapshot) -> Self {
+        Self {
+            id: batch.id,
+            strategy: batch.strategy.as_str(),
+            fields: batch
+                .fields
+                .into_iter()
+                .map(MetadataField::as_str)
+                .collect(),
+            created_at: batch.created_at,
+            summary: ExternalSearchBatchSummaryResponse {
+                total: batch.summary.total,
+                pending: batch.summary.pending,
+                running: batch.summary.running,
+                succeeded: batch.summary.succeeded,
+                partial: batch.summary.partial,
+                failed: batch.summary.failed,
+                skipped: batch.summary.skipped,
+                unchanged: batch.summary.unchanged,
+                reused: batch.summary.reused,
+            },
+            items: batch.items.into_iter().map(Into::into).collect(),
+        }
     }
 }
 
@@ -2593,6 +2769,88 @@ where
     Ok(Json(job.try_into()?))
 }
 
+async fn preflight_external_search_batch<R>(
+    State(state): State<HttpState<R>>,
+    payload: Result<Json<ExternalSearchBatchRequest>, JsonRejection>,
+) -> Result<Json<ExternalSearchBatchPreflightResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let fields = parse_external_search_fields(payload.fields)?;
+    let strategy = parse_external_search_batch_strategy(&payload.strategy)?;
+    let preflight = tokio::task::spawn_blocking(move || {
+        let application = lock_interactive_application(&state.application)?;
+        application
+            .preflight_external_search_batch(&payload.collection_ids, &fields, strategy)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(preflight.into()))
+}
+
+async fn create_external_search_batch<R>(
+    State(state): State<HttpState<R>>,
+    payload: Result<Json<ExternalSearchBatchRequest>, JsonRejection>,
+) -> Result<Json<ExternalSearchBatchResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let fields = parse_external_search_fields(payload.fields)?;
+    let strategy = parse_external_search_batch_strategy(&payload.strategy)?;
+    let batch = tokio::task::spawn_blocking(move || {
+        let mut application = lock_interactive_application(&state.application)?;
+        application
+            .create_external_search_batch(&payload.collection_ids, &fields, strategy)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(batch.into()))
+}
+
+async fn get_external_search_batch<R>(
+    State(state): State<HttpState<R>>,
+    Path(batch_id): Path<String>,
+) -> Result<Json<ExternalSearchBatchResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let batch_id = parse_external_search_batch_id(&batch_id)?;
+    let batch = tokio::task::spawn_blocking(move || {
+        let application = lock_interactive_application(&state.application)?;
+        application
+            .external_search_batch(batch_id)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(batch.into()))
+}
+
+async fn retry_external_search_batch<R>(
+    State(state): State<HttpState<R>>,
+    Path(batch_id): Path<String>,
+) -> Result<Json<ExternalSearchBatchResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let batch_id = parse_external_search_batch_id(&batch_id)?;
+    let batch = tokio::task::spawn_blocking(move || {
+        let mut application = lock_interactive_application(&state.application)?;
+        application
+            .retry_external_search_batch(batch_id)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(batch.into()))
+}
+
 async fn list_tombstone_candidates<R>(
     State(state): State<HttpState<R>>,
 ) -> Result<Json<TombstoneCandidatesResponse>, ApiError>
@@ -2806,6 +3064,32 @@ fn parse_external_search_job_id(value: &str) -> Result<i64, ApiError> {
                 "external search job ID 必須是正整數",
             )
         })
+}
+
+fn parse_external_search_batch_id(value: &str) -> Result<i64, ApiError> {
+    value
+        .parse::<i64>()
+        .ok()
+        .filter(|id| *id > 0)
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "invalid_external_search_batch_id",
+                "external search batch ID 必須是正整數",
+            )
+        })
+}
+
+fn parse_external_search_batch_strategy(
+    value: &str,
+) -> Result<ExternalSearchBatchStrategy, ApiError> {
+    match value {
+        "only_missing" => Ok(ExternalSearchBatchStrategy::OnlyMissing),
+        "specified" => Ok(ExternalSearchBatchStrategy::Specified),
+        _ => Err(ApiError::bad_request(
+            "invalid_external_search_batch_strategy",
+            "external search batch strategy 必須是 only_missing 或 specified",
+        )),
+    }
 }
 
 fn parse_external_search_fields(values: Vec<String>) -> Result<Vec<MetadataField>, ApiError> {
@@ -4012,6 +4296,14 @@ impl ApiError {
             ),
             StorageError::InvalidExternalSearchJob(reason) => {
                 Self::bad_request("invalid_external_search_job", &reason)
+            }
+            StorageError::ExternalSearchBatchNotFound(_) => Self::new(
+                StatusCode::NOT_FOUND,
+                "external_search_batch_not_found",
+                "找不到指定的 external search batch",
+            ),
+            StorageError::InvalidExternalSearchBatch(reason) => {
+                Self::bad_request("invalid_external_search_batch", &reason)
             }
             StorageError::ThumbnailStateNotFound(_) => Self::new(
                 StatusCode::NOT_FOUND,
