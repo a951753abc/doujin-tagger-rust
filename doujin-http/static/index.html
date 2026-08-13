@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>私藏編目室</title>
-  <link rel="stylesheet" href="/assets/app.css?v=37">
-  <script src="/assets/app.js?v=40" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=38">
+  <script src="/assets/app.js?v=41" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -376,8 +376,13 @@
               </div>
             </div>
 
+            <div class="batch-progress" id="batch-progress" role="status" aria-live="polite" hidden>
+              <div><strong id="batch-progress-label">準備批次操作…</strong><span id="batch-progress-count">0 / 0</span></div>
+              <progress id="batch-progress-bar" value="0" max="1"></progress>
+            </div>
+
             <section class="batch-result" id="batch-result" aria-labelledby="batch-result-heading" hidden>
-              <h3 id="batch-result-heading">最近一次操作結果</h3>
+              <div class="batch-result-heading"><h3 id="batch-result-heading">最近一次操作結果</h3><button class="text-button" id="retry-batch-failures" type="button" hidden>只重試失敗項目</button></div>
               <div id="batch-result-summary"></div>
               <ol id="batch-result-items"></ol>
             </section>

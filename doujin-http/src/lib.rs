@@ -22,7 +22,8 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
 use doujin_app::{
-    ApplicationError, ApplicationScanReport, ApplicationService, ApplicationSettingsSnapshot,
+    ApplicationBatchOutcome, ApplicationBatchReport, ApplicationError, ApplicationScanReport,
+    ApplicationService, ApplicationSettingsSnapshot,
 };
 use doujin_files::{
     BatchReport, DeleteRequest, ItemStatus, LaunchAction, LaunchError, LaunchReceipt, RecycleBin,
@@ -202,6 +203,11 @@ where
         .route(
             "/api/collections/{collection_id}/tags",
             post(add_collection_tag::<R>).delete(remove_collection_tag::<R>),
+        )
+        .route("/api/batch/tags", post(batch_add_collection_tag::<R>))
+        .route(
+            "/api/batch/metadata/{field}",
+            put(batch_set_manual_metadata::<R>),
         )
         .route(
             "/api/collections/{collection_id}/external-search-jobs",
@@ -1383,6 +1389,51 @@ struct TagRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct BatchTagRequest {
+    collection_ids: Vec<i64>,
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BatchMetadataRequest {
+    collection_ids: Vec<i64>,
+    value: Value,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchMutationResponse {
+    summary: BatchMutationSummaryResponse,
+    items: Vec<BatchMutationItemResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchMutationSummaryResponse {
+    total: usize,
+    completed: usize,
+    succeeded: usize,
+    unchanged: usize,
+    failed: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchMutationItemResponse {
+    collection_id: i64,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    collection: Option<CollectionResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<BatchMutationErrorResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchMutationErrorResponse {
+    code: &'static str,
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ExternalSearchJobRequest {
     fields: Vec<String>,
 }
@@ -1762,6 +1813,136 @@ where
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(collection.into()))
+}
+
+async fn batch_add_collection_tag<R>(
+    State(state): State<HttpState<R>>,
+    payload: Result<Json<BatchTagRequest>, JsonRejection>,
+) -> Result<Json<BatchMutationResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let collection_ids = validate_batch_collection_ids(payload.collection_ids)?;
+    let name = payload.name.trim().to_owned();
+    if name.is_empty() {
+        return Err(ApiError::bad_request(
+            "invalid_tag_name",
+            "tag name 不得為空白",
+        ));
+    }
+    let report = tokio::task::spawn_blocking(move || {
+        let mut application = lock_interactive_application(&state.application)?;
+        Ok::<_, ApiError>(application.batch_add_collection_tag(&collection_ids, &name))
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(batch_mutation_response(report)))
+}
+
+async fn batch_set_manual_metadata<R>(
+    State(state): State<HttpState<R>>,
+    Path(field): Path<String>,
+    payload: Result<Json<BatchMetadataRequest>, JsonRejection>,
+) -> Result<Json<BatchMutationResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let field = parse_metadata_field(&field)?;
+    if !matches!(field, MetadataField::Parody | MetadataField::Classification) {
+        return Err(ApiError::bad_request(
+            "unsupported_batch_metadata_field",
+            "批次 metadata 目前只支援 parody 與 classification",
+        ));
+    }
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let collection_ids = validate_batch_collection_ids(payload.collection_ids)?;
+    let value = decode_manual_metadata(field, payload.value)?;
+    let report = tokio::task::spawn_blocking(move || {
+        let mut application = lock_interactive_application(&state.application)?;
+        Ok::<_, ApiError>(application.batch_set_manual_metadata(&collection_ids, field, value))
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(batch_mutation_response(report)))
+}
+
+fn validate_batch_collection_ids(collection_ids: Vec<i64>) -> Result<Vec<i64>, ApiError> {
+    if collection_ids.is_empty() || collection_ids.len() > 1_000 {
+        return Err(ApiError::bad_request(
+            "invalid_batch_collection_ids",
+            "collection_ids 必須包含 1 到 1000 個 ID",
+        ));
+    }
+    if collection_ids
+        .iter()
+        .any(|collection_id| *collection_id <= 0)
+    {
+        return Err(ApiError::bad_request(
+            "invalid_batch_collection_ids",
+            "collection_ids 必須全部是正整數",
+        ));
+    }
+    let mut seen = HashSet::new();
+    Ok(collection_ids
+        .into_iter()
+        .filter(|collection_id| seen.insert(*collection_id))
+        .collect())
+}
+
+fn batch_mutation_response(report: ApplicationBatchReport) -> BatchMutationResponse {
+    let mut succeeded = 0;
+    let mut unchanged = 0;
+    let mut failed = 0;
+    let items = report
+        .items
+        .into_iter()
+        .map(|item| match item.outcome {
+            ApplicationBatchOutcome::Succeeded(collection) => {
+                succeeded += 1;
+                BatchMutationItemResponse {
+                    collection_id: item.collection_id,
+                    status: "succeeded",
+                    collection: Some(collection.into()),
+                    error: None,
+                }
+            }
+            ApplicationBatchOutcome::Unchanged(collection) => {
+                unchanged += 1;
+                BatchMutationItemResponse {
+                    collection_id: item.collection_id,
+                    status: "unchanged",
+                    collection: Some(collection.into()),
+                    error: None,
+                }
+            }
+            ApplicationBatchOutcome::Failed(error) => {
+                failed += 1;
+                let error = ApiError::from_application(error);
+                BatchMutationItemResponse {
+                    collection_id: item.collection_id,
+                    status: "failed",
+                    collection: None,
+                    error: Some(BatchMutationErrorResponse {
+                        code: error.code,
+                        message: error.message,
+                    }),
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+    BatchMutationResponse {
+        summary: BatchMutationSummaryResponse {
+            total: items.len(),
+            completed: items.len(),
+            succeeded,
+            unchanged,
+            failed,
+        },
+        items,
+    }
 }
 
 async fn remove_collection_tag<R>(

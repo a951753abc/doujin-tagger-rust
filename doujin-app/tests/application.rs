@@ -8,8 +8,8 @@ use doujin_app::external_search::{
     ExternalTagCandidate,
 };
 use doujin_app::{
-    ApplicationError, ApplicationScanIssueKind, ApplicationScanStatus, ApplicationService,
-    ApplicationSettingsOverrides,
+    ApplicationBatchOutcome, ApplicationError, ApplicationScanIssueKind, ApplicationScanStatus,
+    ApplicationService, ApplicationSettingsOverrides,
 };
 use doujin_files::RecycleBin;
 use doujin_scanner::{ScanRoot, SourceKind};
@@ -271,6 +271,50 @@ fn successful_scan_is_idempotent_and_persists_each_run() {
             .repository()
             .scan_run_count()
             .expect("scan runs")
+    );
+}
+
+#[test]
+fn batch_tag_reports_success_unchanged_and_failure_per_collection() {
+    let tree = TestTree::new("batch-tag");
+    tree.zip("[circle] first.zip");
+    tree.zip("[circle] second.zip");
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application
+        .run_scan(&[tree.root()])
+        .expect("scan collections");
+    let collection_ids = application
+        .collections(&Default::default())
+        .expect("list collections")
+        .items
+        .into_iter()
+        .map(|collection| collection.id)
+        .collect::<Vec<_>>();
+
+    let first = application
+        .batch_add_collection_tag(&[collection_ids[0], collection_ids[1], 999_999], "favorite");
+    assert!(matches!(
+        &first.items[0].outcome,
+        ApplicationBatchOutcome::Succeeded(_)
+    ));
+    assert!(matches!(
+        &first.items[1].outcome,
+        ApplicationBatchOutcome::Succeeded(_)
+    ));
+    assert!(matches!(
+        &first.items[2].outcome,
+        ApplicationBatchOutcome::Failed(ApplicationError::Storage(
+            StorageError::CollectionNotFound(999_999)
+        ))
+    ));
+
+    let second = application.batch_add_collection_tag(&collection_ids, "favorite");
+    assert!(
+        second
+            .items
+            .iter()
+            .all(|item| matches!(&item.outcome, ApplicationBatchOutcome::Unchanged(_)))
     );
 }
 

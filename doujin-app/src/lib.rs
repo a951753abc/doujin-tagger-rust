@@ -97,6 +97,24 @@ impl From<ThumbnailError> for ApplicationError {
 
 pub type ApplicationResult<T> = Result<T, ApplicationError>;
 
+#[derive(Debug)]
+pub enum ApplicationBatchOutcome {
+    Succeeded(CollectionSnapshot),
+    Unchanged(CollectionSnapshot),
+    Failed(ApplicationError),
+}
+
+#[derive(Debug)]
+pub struct ApplicationBatchItem {
+    pub collection_id: i64,
+    pub outcome: ApplicationBatchOutcome,
+}
+
+#[derive(Debug)]
+pub struct ApplicationBatchReport {
+    pub items: Vec<ApplicationBatchItem>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThumbnailCachePreparation {
     pub collection_ids: Vec<i64>,
@@ -603,6 +621,56 @@ impl<R: RecycleBin> ApplicationService<R> {
         self.repository
             .add_collection_tag(collection_id, tag_name)?;
         Ok(self.repository.collection(collection_id)?)
+    }
+
+    pub fn batch_add_collection_tag(
+        &mut self,
+        collection_ids: &[i64],
+        tag_name: &str,
+    ) -> ApplicationBatchReport {
+        let tag_name = tag_name.trim();
+        let items = collection_ids
+            .iter()
+            .map(|&collection_id| {
+                let outcome = match self.repository.collection(collection_id) {
+                    Ok(collection) if collection.tags.iter().any(|tag| tag == tag_name) => {
+                        ApplicationBatchOutcome::Unchanged(collection)
+                    }
+                    Ok(_) => match self.add_collection_tag(collection_id, tag_name) {
+                        Ok(collection) => ApplicationBatchOutcome::Succeeded(collection),
+                        Err(error) => ApplicationBatchOutcome::Failed(error),
+                    },
+                    Err(error) => ApplicationBatchOutcome::Failed(error.into()),
+                };
+                ApplicationBatchItem {
+                    collection_id,
+                    outcome,
+                }
+            })
+            .collect();
+        ApplicationBatchReport { items }
+    }
+
+    pub fn batch_set_manual_metadata(
+        &mut self,
+        collection_ids: &[i64],
+        field: MetadataField,
+        value: MetadataValue,
+    ) -> ApplicationBatchReport {
+        let items = collection_ids
+            .iter()
+            .map(|&collection_id| {
+                let outcome = match self.set_manual_metadata(collection_id, field, value.clone()) {
+                    Ok(collection) => ApplicationBatchOutcome::Succeeded(collection),
+                    Err(error) => ApplicationBatchOutcome::Failed(error),
+                };
+                ApplicationBatchItem {
+                    collection_id,
+                    outcome,
+                }
+            })
+            .collect();
+        ApplicationBatchReport { items }
     }
 
     pub fn remove_collection_tag(

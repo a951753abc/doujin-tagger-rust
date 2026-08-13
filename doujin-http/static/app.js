@@ -7,6 +7,7 @@
   const RECENT_LIMIT = 20;
   const PER_PAGE = 48;
   const SHELF_LIMIT = 8;
+  const BATCH_REQUEST_SIZE = 100;
   const THUMBNAIL_REQUEST_CONCURRENCY = 4;
   const THUMBNAIL_POLL_DELAYS = [1000, 2000, 3000, 5000];
   const THUMBNAIL_NETWORK_DELAYS = [1000, 2000, 5000, 10000, 30000];
@@ -112,6 +113,8 @@
     thumbnailCacheTimer: null,
     settingsRoots: [],
     lastBatchActivity: null,
+    batchRetry: null,
+    batchRunning: null,
     activityTimer: null,
     activitySignature: null,
   };
@@ -251,6 +254,11 @@
       batchResult: byId("batch-result"),
       batchResultSummary: byId("batch-result-summary"),
       batchResultItems: byId("batch-result-items"),
+      batchProgress: byId("batch-progress"),
+      batchProgressLabel: byId("batch-progress-label"),
+      batchProgressCount: byId("batch-progress-count"),
+      batchProgressBar: byId("batch-progress-bar"),
+      retryBatchFailures: byId("retry-batch-failures"),
       moveDialog: byId("move-dialog"),
       moveForm: byId("move-form"),
       archiveRootSelect: byId("archive-root-select"),
@@ -372,6 +380,7 @@
     ui.batchTagForm.addEventListener("submit", batchAddTag);
     ui.batchMetadataForm.elements.field.addEventListener("change", syncBatchMetadataField);
     ui.batchMetadataForm.addEventListener("submit", batchSetMetadata);
+    ui.retryBatchFailures.addEventListener("click", retryFailedBatch);
     byId("prepare-move").addEventListener("click", prepareMove);
     ui.moveForm.addEventListener("submit", executeMove);
     byId("prepare-delete").addEventListener("click", prepareDelete);
@@ -669,6 +678,7 @@
     const thumbnailCacheRunning = state.thumbnailCacheJob?.status === "running";
     const active = state.activityScan?.status === "running"
       || thumbnailCacheRunning
+      || state.batchRunning != null
       || [...state.activityExternalJobs.values()].some((job) => ["pending", "running"].includes(job.status));
     state.activityTimer = window.setTimeout(() => refreshActivityCenter(), active ? 4000 : 15000);
   }
@@ -699,9 +709,10 @@
     const thumbnailCacheFailures = state.thumbnailCacheJob?.status === "completed_with_errors"
       ? state.thumbnailCacheJob.failed
       : 0;
+    const batchRunning = state.batchRunning != null;
     const batchFailures = state.lastBatchActivity?.failed || 0;
     const attentionCount = failedJobs.length + state.activityThumbnailFailures.size + Number(scanNeedsAttention) + batchFailures + thumbnailCacheFailures;
-    const runningCount = activeJobs.length + Number(scanRunning) + Number(thumbnailCacheRunning);
+    const runningCount = activeJobs.length + Number(scanRunning) + Number(thumbnailCacheRunning) + Number(batchRunning);
 
     let summary = "本機服務正常";
     let mode = "is-online";
@@ -719,6 +730,9 @@
       mode = "is-running";
     } else if (thumbnailCacheRunning) {
       summary = `縮圖快取 ${formatProgressPercent(state.thumbnailCacheJob.progress_percent)}`;
+      mode = "is-running";
+    } else if (batchRunning) {
+      summary = `批次操作 ${formatNumber(state.batchRunning.completed)} / ${formatNumber(state.batchRunning.total)}`;
       mode = "is-running";
     } else if (activeJobs.length) {
       summary = `外部搜尋 ${formatNumber(activeJobs.length)}`;
@@ -765,6 +779,13 @@
         location.hash = "settings";
       }));
     }
+    if (state.batchRunning) {
+      const batch = state.batchRunning;
+      ui.activityList.append(activityItem("batch running", batch.title, `已完成 ${formatNumber(batch.completed)} / ${formatNumber(batch.total)}；已完成項目不會回滾。`, "進行中", "查看工作台", () => {
+        setActivityPanelOpen(false);
+        location.hash = "workbench";
+      }));
+    }
     if (state.lastBatchActivity) {
       const batch = state.lastBatchActivity;
       ui.activityList.append(activityItem(`batch ${batch.failed ? "failed" : "succeeded"}`, batch.title, `${batch.summary} · ${formatMetadataTime(batch.updatedAt)}`, batch.failed ? "部分完成" : "完成", "查看工作台", () => {
@@ -774,7 +795,7 @@
     }
     ui.activityEmpty.hidden = ui.activityList.children.length > 0;
 
-    const signature = [state.serviceOnline, runningCount, attentionCount, state.activityScan?.status || "", state.thumbnailCacheJob ? `${state.thumbnailCacheJob.id}:${state.thumbnailCacheJob.status}:${state.thumbnailCacheJob.progress_percent}` : "", ...activeJobs.map((job) => `${job.id}:${job.status}`), ...failedJobs.map((job) => `${job.id}:${job.status}`)].join("|");
+    const signature = [state.serviceOnline, runningCount, attentionCount, state.activityScan?.status || "", state.thumbnailCacheJob ? `${state.thumbnailCacheJob.id}:${state.thumbnailCacheJob.status}:${state.thumbnailCacheJob.progress_percent}` : "", state.batchRunning ? `${state.batchRunning.title}:${state.batchRunning.completed}:${state.batchRunning.total}` : "", ...activeJobs.map((job) => `${job.id}:${job.status}`), ...failedJobs.map((job) => `${job.id}:${job.status}`)].join("|");
     if (state.activitySignature != null && signature !== state.activitySignature) {
       ui.activityAnnouncer.textContent = summary;
     }
@@ -2478,19 +2499,14 @@
       return;
     }
     const collections = selectedCollections();
-    const unchanged = collections.filter((collection) => collection.tags?.includes(name));
-    const targets = collections.filter((collection) => !collection.tags?.includes(name));
-    const outcomes = await runSelectedRequests(
-      (collection) => api(`/api/collections/${collection.id}/tags`, { method: "POST", body: { name } }),
-      "正在加入標籤…",
-      targets,
-    );
-    outcomes.unchanged = unchanged;
-    outcomes.succeeded.forEach((entry) => state.selectedRecords.set(entry.collection.id, entry.result));
-    renderWorkbenchSelection();
-    renderClientBatchResult(`批次加入標籤「${name}」`, outcomes);
-    invalidateDerivedData();
-    ui.batchTagForm.reset();
+    const completed = await runBatchOperation({
+      title: `批次加入標籤「${name}」`,
+      endpoint: "/api/batch/tags",
+      method: "POST",
+      payload: { name },
+      collections,
+    });
+    if (completed) ui.batchTagForm.reset();
   }
 
   async function batchSetMetadata(event) {
@@ -2502,39 +2518,108 @@
       toast(`請輸入新的${METADATA_LABELS[field]}`, true);
       return;
     }
-    const outcomes = await runSelectedRequests(
-      (collection) => api(`/api/collections/${collection.id}/metadata/${field}`, { method: "PUT", body: { value } }),
-      `正在批次寫入${METADATA_LABELS[field]}…`,
-    );
-    outcomes.succeeded.forEach((entry) => state.selectedRecords.set(entry.collection.id, entry.result));
-    renderWorkbenchSelection();
-    renderClientBatchResult(`批次寫入${METADATA_LABELS[field]}「${value}」`, outcomes);
-    ui.batchMetadataForm.elements.value.value = "";
-    invalidateDerivedData();
+    const completed = await runBatchOperation({
+      title: `批次寫入${METADATA_LABELS[field]}「${value}」`,
+      endpoint: `/api/batch/metadata/${field}`,
+      method: "PUT",
+      payload: { value },
+      collections: selectedCollections(),
+    });
+    if (completed) ui.batchMetadataForm.elements.value.value = "";
   }
 
-  async function runSelectedRequests(request, loadingLabel, collections = selectedCollections()) {
-    const submitters = document.querySelectorAll("#batch-tools button");
+  async function retryFailedBatch() {
+    if (!state.batchRetry) return;
+    await runBatchOperation(state.batchRetry);
+  }
+
+  async function runBatchOperation(operation) {
+    const collections = operation.collections || [];
+    if (!collections.length) return false;
+    const submitters = document.querySelectorAll("#batch-tools button, #retry-batch-failures");
     submitters.forEach((button) => { button.disabled = true; });
-    ui.workbenchSelectionSummary.textContent = loadingLabel;
-    const succeeded = [];
-    const failed = [];
-    for (const collection of collections) {
-      try {
-        const result = await request(collection);
-        succeeded.push({ collection, result });
-      } catch (error) {
-        failed.push({ collection, error });
+    updateBatchProgress(operation.title, 0, collections.length, "後端正在處理批次要求");
+    state.batchRunning = { title: operation.title, completed: 0, total: collections.length };
+    state.lastBatchActivity = null;
+    renderActivityCenter();
+    const outcomes = { succeeded: [], unchanged: [], failed: [] };
+    try {
+      for (let offset = 0; offset < collections.length; offset += BATCH_REQUEST_SIZE) {
+        const chunk = collections.slice(offset, offset + BATCH_REQUEST_SIZE);
+        try {
+          const report = await api(operation.endpoint, {
+            method: operation.method,
+            body: {
+              ...operation.payload,
+              collection_ids: chunk.map((collection) => collection.id),
+            },
+          });
+          const chunkOutcomes = batchOutcomes(report, chunk);
+          outcomes.succeeded.push(...chunkOutcomes.succeeded);
+          outcomes.unchanged.push(...chunkOutcomes.unchanged);
+          outcomes.failed.push(...chunkOutcomes.failed);
+          chunkOutcomes.succeeded.concat(chunkOutcomes.unchanged).forEach(({ result }) => mergeBatchCollection(result));
+        } catch (error) {
+          outcomes.failed.push(...chunk.map((collection) => ({ collection, error })));
+        }
+        state.batchRunning.completed = Math.min(collections.length, offset + chunk.length);
+        updateBatchProgress(operation.title, state.batchRunning.completed, collections.length, "後端正在處理批次要求");
+        renderActivityCenter();
       }
+      updateBatchProgress(operation.title, collections.length, collections.length, outcomes.failed.length ? "批次要求部分完成" : "批次要求已完成");
+      const failedCollections = outcomes.failed.map(({ collection }) => collection);
+      state.batchRetry = failedCollections.length ? { ...operation, collections: failedCollections } : null;
+      renderWorkbenchSelection();
+      renderClientBatchResult(operation.title, outcomes);
+      await synchronizeLibraryAfterBatch();
+      return true;
+    } finally {
+      state.batchRunning = null;
+      renderActivityCenter();
+      submitters.forEach((button) => { button.disabled = false; });
     }
-    submitters.forEach((button) => { button.disabled = false; });
-    return { succeeded, failed };
+  }
+
+  function batchOutcomes(report, collections) {
+    const originals = new Map(collections.map((collection) => [collection.id, collection]));
+    const outcomes = { succeeded: [], unchanged: [], failed: [] };
+    report.items.forEach((item) => {
+      const collection = item.collection || originals.get(item.collection_id) || { id: item.collection_id, title: `收藏 #${item.collection_id}` };
+      if (item.status === "succeeded") outcomes.succeeded.push({ collection, result: item.collection });
+      else if (item.status === "unchanged") outcomes.unchanged.push({ collection, result: item.collection });
+      else outcomes.failed.push({ collection, error: item.error || { message: "批次操作失敗" } });
+    });
+    return outcomes;
+  }
+
+  function mergeBatchCollection(collection) {
+    if (!collection) return;
+    if (state.selectedIds.has(collection.id)) state.selectedRecords.set(collection.id, collection);
+    const index = state.items.findIndex((item) => item.id === collection.id);
+    if (index >= 0) state.items[index] = collection;
+    if (state.selected?.id === collection.id) state.selected = collection;
+  }
+
+  async function synchronizeLibraryAfterBatch() {
+    invalidateDerivedData({ library: true });
+    state.libraryFocusId = null;
+    if (state.route === "library") {
+      await loadCollections({ preserveSelection: true });
+    }
+  }
+
+  function updateBatchProgress(title, completed, total, label) {
+    ui.batchProgress.hidden = false;
+    ui.batchProgressLabel.textContent = `${title} · ${label}`;
+    ui.batchProgressCount.textContent = `${formatNumber(completed)} / ${formatNumber(total)}`;
+    ui.batchProgressBar.max = Math.max(1, total);
+    ui.batchProgressBar.value = completed;
   }
 
   function renderClientBatchResult(title, outcomes) {
-    const unchanged = outcomes.unchanged || [];
-    const summary = `更新 ${outcomes.succeeded.length} 筆，未變更 ${unchanged.length} 筆，失敗 ${outcomes.failed.length} 筆`;
+    const summary = `更新 ${outcomes.succeeded.length} 筆，未變更 ${outcomes.unchanged.length} 筆，失敗 ${outcomes.failed.length} 筆`;
     ui.batchResult.hidden = false;
+    ui.retryBatchFailures.hidden = outcomes.failed.length === 0;
     ui.batchResultSummary.replaceChildren();
     ui.batchResultSummary.append(
       el("strong", "", title),
@@ -2542,7 +2627,7 @@
     );
     ui.batchResultItems.replaceChildren();
     outcomes.succeeded.forEach(({ collection }) => ui.batchResultItems.append(batchResultItem(collection, "succeeded", "完成")));
-    unchanged.forEach((collection) => ui.batchResultItems.append(batchResultItem(collection, "unchanged", "已具有相同值")));
+    outcomes.unchanged.forEach(({ collection }) => ui.batchResultItems.append(batchResultItem(collection, "unchanged", "已具有相同值")));
     outcomes.failed.forEach(({ collection, error }) => ui.batchResultItems.append(batchResultItem(collection, "failed", error.message)));
     recordBatchActivity(title, summary, outcomes.failed.length);
     toast(outcomes.failed.length ? `${title}部分完成` : `${title}完成`, outcomes.failed.length > 0);

@@ -284,7 +284,7 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("src=\"/assets/app.js?v=40\" defer"));
+    assert!(document.contains("src=\"/assets/app.js?v=41\" defer"));
     assert!(document.contains("id=\"library-scroll-sentinel\""));
     assert!(document.contains("id=\"library-load-more\""));
     assert!(document.contains("id=\"library-load-announcer\""));
@@ -299,6 +299,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("在目前結果中搜尋"));
     assert!(document.contains("id=\"filter-draft-status\""));
     assert!(document.contains("id=\"discard-filter-dialog\""));
+    assert!(document.contains("id=\"batch-progress\""));
+    assert!(document.contains("id=\"retry-batch-failures\""));
     assert!(document.contains("id=\"shelf-view\""));
     assert!(document.contains("data-route=\"shelf\""));
     assert!(document.contains("id=\"workbench-view\""));
@@ -339,6 +341,7 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(stylesheet.contains("--muted: #786e60;"));
     assert!(stylesheet.contains("outline: 3px solid var(--focus);"));
     assert!(stylesheet.contains(".filter-draft-status"));
+    assert!(stylesheet.contains(".batch-progress"));
     assert!(!stylesheet.contains("font-size: 0.6875rem;"));
     assert!(!stylesheet.contains("font-size: 0.625rem;"));
     assert!(!stylesheet.contains("font-size: 0.5625rem;"));
@@ -363,7 +366,9 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("function moveLibraryFocus"));
     assert!(script.contains("button?.scrollIntoView({ block: \"nearest\" })"));
     assert!(script.contains("已顯示全部 ${formatNumber(state.total)} 筆收藏"));
-    assert!(script.contains("已載入 ${formatNumber(additions.length)} 筆，尚有 ${formatNumber(remaining)} 筆"));
+    assert!(script.contains(
+        "已載入 ${formatNumber(additions.length)} 筆，尚有 ${formatNumber(remaining)} 筆"
+    ));
     assert!(script.contains("rootMargin: \"1200px 0px\""));
     assert!(script.contains("/api/collections"));
     assert!(script.contains("rememberLaunch(state.selected, kind)"));
@@ -409,7 +414,17 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("function applyFilterDraft"));
     assert!(script.contains("function filterDraftChanged"));
     assert!(script.contains("function applyHeaderSearch"));
-    assert!(script.contains("state.route === \"library\" && ui.headerSearchScope.value === \"current\""));
+    assert!(script.contains("function runBatchOperation"));
+    assert!(script.contains("const BATCH_REQUEST_SIZE = 100"));
+    assert!(!script.contains("function runSelectedRequests"));
+    assert!(script.contains("/api/batch/tags"));
+    assert!(script.contains("/api/batch/metadata/${field}"));
+    assert!(script.contains("function retryFailedBatch"));
+    assert!(script.contains("invalidateDerivedData({ library: true })"));
+    assert!(
+        script
+            .contains("state.route === \"library\" && ui.headerSearchScope.value === \"current\"")
+    );
     assert!(script.contains("item.addEventListener(\"click\", () => selectFacetOption"));
     assert!(!script.contains("item.addEventListener(\"pointerdown\""));
     assert!(script.contains("function decodeLibraryParams"));
@@ -822,6 +837,106 @@ async fn collection_filters_require_all_metadata_and_tags_over_loopback() {
         .await;
     assert_eq!(400, duplicate.status);
     assert_eq!("invalid_query", duplicate.json["error"]["code"]);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn batch_tag_and_metadata_report_each_item_and_refresh_filtered_reads() {
+    let tree = TestTree::new("batch-mutations");
+    tree.zip("[AlphaCircle] First Story.zip");
+    tree.zip("[BetaCircle] Second Story.zip");
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    repository
+        .register_library_root(&tree.library(), SourceKind::Archive, "歸檔區")
+        .expect("register root");
+    let roots = repository.active_scan_roots().expect("active roots");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application.run_scan(&roots).expect("scan collections");
+    let first_id = application
+        .repository()
+        .collection_id_for_current_path(&tree.library().join("[AlphaCircle] First Story.zip"))
+        .expect("first lookup")
+        .expect("first ID");
+    let second_id = application
+        .repository()
+        .collection_id_for_current_path(&tree.library().join("[BetaCircle] Second Story.zip"))
+        .expect("second lookup")
+        .expect("second ID");
+    let server = RunningServer::start(application).await;
+
+    let before = server
+        .request("GET", "/api/collections?untagged=1", &[])
+        .await;
+    assert_eq!(2, before.json["pagination"]["total"]);
+
+    let tagged = server
+        .request_json(
+            "POST",
+            "/api/batch/tags",
+            &serde_json::json!({
+                "collection_ids": [first_id, second_id, 999_999],
+                "name": "favorite"
+            }),
+        )
+        .await;
+    assert_eq!(200, tagged.status);
+    assert_eq!(3, tagged.json["summary"]["total"]);
+    assert_eq!(3, tagged.json["summary"]["completed"]);
+    assert_eq!(2, tagged.json["summary"]["succeeded"]);
+    assert_eq!(1, tagged.json["summary"]["failed"]);
+    assert_eq!("succeeded", tagged.json["items"][0]["status"]);
+    assert_eq!(
+        "collection_not_found",
+        tagged.json["items"][2]["error"]["code"]
+    );
+
+    let repeated = server
+        .request_json(
+            "POST",
+            "/api/batch/tags",
+            &serde_json::json!({
+                "collection_ids": [first_id, second_id],
+                "name": "favorite"
+            }),
+        )
+        .await;
+    assert_eq!(2, repeated.json["summary"]["unchanged"]);
+
+    let after = server
+        .request("GET", "/api/collections?untagged=1", &[])
+        .await;
+    assert_eq!(0, after.json["pagination"]["total"]);
+
+    let metadata = server
+        .request_json(
+            "PUT",
+            "/api/batch/metadata/parody",
+            &serde_json::json!({
+                "collection_ids": [first_id, 999_999],
+                "value": "東方Project"
+            }),
+        )
+        .await;
+    assert_eq!(200, metadata.status);
+    assert_eq!(1, metadata.json["summary"]["succeeded"]);
+    assert_eq!(1, metadata.json["summary"]["failed"]);
+    assert_eq!(
+        "東方Project",
+        metadata.json["items"][0]["collection"]["parody"]
+    );
+
+    let invalid = server
+        .request_json(
+            "PUT",
+            "/api/batch/metadata/title",
+            &serde_json::json!({"collection_ids": [first_id], "value": "new title"}),
+        )
+        .await;
+    assert_eq!(400, invalid.status);
+    assert_eq!(
+        "unsupported_batch_metadata_field",
+        invalid.json["error"]["code"]
+    );
     server.stop().await;
 }
 
