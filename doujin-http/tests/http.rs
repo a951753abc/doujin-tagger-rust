@@ -284,7 +284,7 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("src=\"/assets/app.js?v=36\" defer"));
+    assert!(document.contains("src=\"/assets/app.js?v=37\" defer"));
     assert!(document.contains("id=\"library-scroll-sentinel\""));
     assert!(document.contains("id=\"library-load-more\""));
     assert!(document.contains("全選已載入"));
@@ -297,6 +297,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("id=\"shelf-view\""));
     assert!(document.contains("data-route=\"shelf\""));
     assert!(document.contains("id=\"workbench-view\""));
+    assert!(document.contains("id=\"return-to-library-context\""));
+    assert!(document.contains("返回原本的藏書位置調整選取"));
     assert!(document.contains("id=\"metadata-evidence\""));
     assert!(document.contains("id=\"mobile-detail-dialog\""));
     assert!(document.contains("id=\"close-mobile-detail\""));
@@ -393,6 +395,11 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("aria-activedescendant"));
     assert!(script.contains("function decodeLibraryParams"));
     assert!(script.contains("function rememberLibraryContext"));
+    assert!(script.contains("function returnToLibraryContext"));
+    assert!(script.contains("restoreThroughPage: state.libraryRestorePage"));
+    assert!(script.contains("if (!preserveSelection) clearSelection()"));
+    assert!(script.contains("renderCollections({ deferFocus })"));
+    assert!(script.contains("if (deferFocus) resolveLibraryFocus()"));
     assert!(script.contains("function confirmSelectionClear"));
     assert!(script.contains("這會清除目前"));
     assert!(script.contains("event.key === \"Escape\" && !ui.filterPanel.hidden"));

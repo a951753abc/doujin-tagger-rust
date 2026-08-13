@@ -76,6 +76,7 @@
     libraryDataKey: null,
     libraryRouteHash: "#library",
     libraryScrollY: 0,
+    libraryRestorePage: 1,
     libraryFocusId: null,
     pendingLibraryCollection: null,
     restoreLibraryContext: false,
@@ -293,6 +294,10 @@
         state.leavingLibraryContextCaptured = true;
       });
     });
+    byId("return-to-library-context").addEventListener("click", (event) => {
+      event.preventDefault();
+      returnToLibraryContext();
+    });
     ui.searchForm.addEventListener("submit", (event) => {
       event.preventDefault();
       state.libraryFocusId = null;
@@ -400,11 +405,13 @@
       state.leavingLibraryContextCaptured = false;
     }
     let libraryNeedsLoad = false;
+    let preserveLibrarySelection = false;
     if (nextRoute === "library") {
       const decoded = decodeLibraryParams(parsedRoute.params);
       const dataChanged = state.libraryDataKey !== decoded.dataKey;
       libraryNeedsLoad = dataChanged || !state.libraryLoaded;
-      if (libraryNeedsLoad && state.selectedIds.size > 0 && !confirmSelectionClear()) {
+      preserveLibrarySelection = libraryNeedsLoad && !dataChanged;
+      if (dataChanged && state.selectedIds.size > 0 && !confirmSelectionClear()) {
         const rollbackHash = previousRoute === "library" ? state.libraryRouteHash : `#${previousRoute}`;
         history.replaceState(null, "", rollbackHash);
         if (previousRoute === "library") {
@@ -412,7 +419,10 @@
         }
         return Promise.resolve(false);
       }
-      if (dataChanged) state.libraryScrollY = 0;
+      if (dataChanged) {
+        state.libraryScrollY = 0;
+        state.libraryRestorePage = 1;
+      }
       applyDecodedLibraryState(decoded);
       state.libraryRouteHash = location.hash || "#library";
       updateLibraryNavHref();
@@ -435,8 +445,12 @@
     });
     if (state.route === "shelf") loadShelf();
     let libraryReady = Promise.resolve(true);
-    if (state.route === "library" && libraryNeedsLoad) libraryReady = loadCollections();
-    else if (state.route === "library") {
+    if (state.route === "library" && libraryNeedsLoad) {
+      libraryReady = loadCollections({
+        preserveSelection: preserveLibrarySelection,
+        restoreThroughPage: state.libraryRestorePage,
+      });
+    } else if (state.route === "library") {
       if (!applyLibraryFocus()) clearDetail();
       if (state.restoreLibraryContext) restoreLibraryWorkContext();
       scheduleLibraryLoadCheck();
@@ -535,11 +549,17 @@
 
   function rememberLibraryContext() {
     state.libraryScrollY = window.scrollY;
+    state.libraryRestorePage = Math.max(1, state.page);
     state.libraryFocusId = Number(document.activeElement?.dataset?.collectionId) || state.selected?.id || state.libraryFocusId;
   }
 
   function updateLibraryNavHref() {
     document.querySelector('[data-route="library"]')?.setAttribute("href", state.libraryRouteHash);
+    document.querySelectorAll("[data-library-context-link]").forEach((link) => link.setAttribute("href", state.libraryRouteHash));
+  }
+
+  function returnToLibraryContext() {
+    location.hash = state.libraryRouteHash;
   }
 
   function restoreLibraryWorkContext() {
@@ -1133,8 +1153,8 @@
     return params;
   }
 
-  async function loadCollections() {
-    clearSelection();
+  async function loadCollections({ preserveSelection = false, restoreThroughPage = 1 } = {}) {
+    if (!preserveSelection) clearSelection();
     state.page = 1;
     state.totalPages = 0;
     state.total = 0;
@@ -1156,7 +1176,13 @@
       state.totalPages = data.pagination.total_pages;
       state.libraryLoaded = true;
       ui.loading.hidden = true;
-      renderCollections();
+      const deferFocus = restoreThroughPage > 1;
+      renderCollections({ deferFocus });
+      state.libraryLoading = false;
+      renderLibraryLoadState();
+      if (preserveSelection) refreshLoadedSelectionRecords();
+      await restoreLibraryLoadedWindow(restoreThroughPage);
+      if (deferFocus) resolveLibraryFocus();
       if (state.route === "library" && state.restoreLibraryContext) restoreLibraryWorkContext();
       setServiceState("online", "本機服務正常");
       return true;
@@ -1177,6 +1203,19 @@
         scheduleLibraryLoadCheck();
       }
     }
+  }
+
+  async function restoreLibraryLoadedWindow(targetPage) {
+    const finalPage = Math.min(Math.max(1, Number(targetPage) || 1), state.totalPages);
+    while (state.page < finalPage) {
+      if (!await loadMoreCollections()) break;
+    }
+  }
+
+  function refreshLoadedSelectionRecords() {
+    state.items.forEach((collection) => {
+      if (state.selectedIds.has(collection.id)) state.selectedRecords.set(collection.id, collection);
+    });
   }
 
   function initializeLibraryInfiniteScroll() {
@@ -1217,6 +1256,7 @@
       state.page = data.pagination.page;
       state.total = data.pagination.total;
       state.totalPages = data.pagination.total_pages;
+      refreshLoadedSelectionRecords();
       appendCollectionItems(additions, startIndex);
       updateLibrarySummary();
       updateSelectionUI();
@@ -1237,7 +1277,7 @@
     }
   }
 
-  function renderCollections() {
+  function renderCollections({ deferFocus = false } = {}) {
     unbindThumbnailsWithin(ui.results);
     ui.results.replaceChildren();
     ui.results.hidden = state.items.length === 0;
@@ -1246,6 +1286,11 @@
 
     appendCollectionItems(state.items, 0);
 
+    if (!deferFocus) resolveLibraryFocus();
+    updateSelectionUI();
+  }
+
+  function resolveLibraryFocus() {
     if (!applyLibraryFocus()) {
       if (state.items[0] && !window.matchMedia("(max-width: 899px)").matches) selectCollection(state.items[0]);
       else {
@@ -1253,7 +1298,6 @@
         clearDetail();
       }
     }
-    updateSelectionUI();
   }
 
   function appendCollectionItems(collections, startIndex) {
