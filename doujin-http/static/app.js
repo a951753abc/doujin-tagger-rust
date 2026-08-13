@@ -7,7 +7,7 @@
   const RECENT_LIMIT = 20;
   const PER_PAGE = 96;
   const SHELF_LIMIT = 8;
-  const THUMBNAIL_REQUEST_CONCURRENCY = 1;
+  const THUMBNAIL_REQUEST_CONCURRENCY = 4;
   const THUMBNAIL_POLL_DELAYS = [1000, 2000, 3000, 5000];
   const THUMBNAIL_NETWORK_DELAYS = [1000, 2000, 5000, 10000, 30000];
   const FILTER_NAMES = ["source", "classification", "missing", "event", "circle", "author", "parody", "subcategory", "tag", "untagged"];
@@ -72,6 +72,13 @@
     items: [],
     selected: null,
     filters: {},
+    filterTags: [],
+    libraryDataKey: null,
+    libraryRouteHash: "#library",
+    libraryScrollY: 0,
+    libraryFocusId: null,
+    restoreLibraryContext: false,
+    leavingLibraryContextCaptured: false,
     selectedIds: new Set(),
     selectedRecords: new Map(),
     layout: readStorage(LAYOUT_KEY, "grid"),
@@ -94,6 +101,13 @@
     externalJobRefs: readStorage(EXTERNAL_JOB_KEY, {}),
     externalJob: null,
     externalJobTimer: null,
+    serviceOnline: null,
+    activityExternalJobs: new Map(),
+    activityScan: null,
+    activityThumbnailFailures: new Set(),
+    lastBatchActivity: null,
+    activityTimer: null,
+    activitySignature: null,
   };
 
   if (!Array.isArray(state.recent)) state.recent = [];
@@ -101,11 +115,17 @@
   if (!state.externalJobRefs || typeof state.externalJobRefs !== "object" || Array.isArray(state.externalJobRefs)) state.externalJobRefs = {};
 
   const ui = {};
+  const mobileDetailMedia = window.matchMedia("(max-width: 899px)");
+  const facetControllers = new Map();
   const thumbnailBindings = new WeakMap();
   const thumbnailTrackers = new Map();
   const thumbnailRequestQueue = [];
   let thumbnailRequestsInFlight = 0;
   let lastThumbnailRequestEpoch = 0;
+  let lastThumbnailStatusId = 0;
+  let mobileDetailReturnId = null;
+  let mobileDetailScrollPosition = 0;
+  let mobileDetailRestoreFocus = true;
   const thumbnailObserver = typeof window.IntersectionObserver === "function"
     ? new IntersectionObserver((entries) => {
         entries.forEach((entry) => {
@@ -121,6 +141,16 @@
   function init() {
     Object.assign(ui, {
       serviceState: byId("service-state"),
+      activityTrigger: byId("activity-trigger"),
+      activitySummary: byId("activity-summary"),
+      activityCount: byId("activity-count"),
+      activityPanel: byId("activity-panel"),
+      activityService: byId("activity-service"),
+      activityServiceLabel: byId("activity-service-label"),
+      activityServiceAdvice: byId("activity-service-advice"),
+      activityList: byId("activity-list"),
+      activityEmpty: byId("activity-empty"),
+      activityAnnouncer: byId("activity-announcer"),
       shelfLoading: byId("shelf-loading"),
       shelfContent: byId("shelf-content"),
       recentShelfBooks: byId("recent-shelf-books"),
@@ -132,6 +162,7 @@
       filterToggle: byId("filter-toggle"),
       activeFilterCount: byId("active-filter-count"),
       activeFilterChips: byId("active-filter-chips"),
+      filterTagChips: byId("filter-tag-chips"),
       results: byId("collection-results"),
       loading: byId("library-loading"),
       empty: byId("library-empty"),
@@ -140,8 +171,12 @@
       previousPage: byId("previous-page"),
       nextPage: byId("next-page"),
       pageLabel: byId("page-label"),
+      detailPane: byId("detail-pane"),
       detailPlaceholder: byId("detail-placeholder"),
       collectionDetail: byId("collection-detail"),
+      mobileDetailDialog: byId("mobile-detail-dialog"),
+      mobileDetailContent: byId("mobile-detail-content"),
+      mobileDetailClose: byId("close-mobile-detail"),
       detailCover: byId("detail-cover"),
       detailSource: byId("detail-source"),
       detailKicker: byId("detail-kicker"),
@@ -149,6 +184,7 @@
       detailFilename: byId("detail-filename"),
       metadataList: byId("metadata-list"),
       metadataEvidence: byId("metadata-evidence"),
+      dataQualitySummary: byId("data-quality-summary"),
       evidenceSummaryCount: byId("evidence-summary-count"),
       evidenceLoading: byId("evidence-loading"),
       evidenceError: byId("evidence-error"),
@@ -214,18 +250,40 @@
     renderRecent();
     setLayout(state.layout);
     routeFromHash();
-    checkHealth();
+    startActivityMonitoring();
   }
 
   function bindEvents() {
+    initializeFacetComboboxes();
     window.addEventListener("hashchange", routeFromHash);
+    ui.activityTrigger.addEventListener("click", () => setActivityPanelOpen(ui.activityPanel.hidden));
+    byId("close-activity").addEventListener("click", () => setActivityPanelOpen(false));
+    byId("refresh-activity").addEventListener("click", () => refreshActivityCenter(true));
+    document.addEventListener("pointerdown", (event) => {
+      if (ui.activityPanel.hidden || ui.activityPanel.contains(event.target) || ui.activityTrigger.contains(event.target)) return;
+      setActivityPanelOpen(false);
+    });
+    document.querySelectorAll("[data-route]").forEach((link) => {
+      link.addEventListener("click", (event) => {
+        if (state.route !== "library" && link.dataset.route === "library") {
+          event.preventDefault();
+          location.hash = state.libraryRouteHash;
+          return;
+        }
+        if (state.route !== "library" || link.dataset.route === "library") return;
+        rememberLibraryContext();
+        state.libraryRouteHash = location.hash || libraryHash();
+        updateLibraryNavHref();
+        state.leavingLibraryContextCaptured = true;
+      });
+    });
     ui.searchForm.addEventListener("submit", (event) => {
       event.preventDefault();
       state.page = 1;
+      state.libraryFocusId = null;
       readFilters();
       setFilterPanelOpen(false);
-      location.hash = "library";
-      loadCollections();
+      navigateLibrary();
     });
     ui.filterToggle.addEventListener("click", () => {
       setFilterPanelOpen(ui.filterPanel.hidden);
@@ -267,6 +325,7 @@
         else showShelfFilter(null, null);
       });
     });
+    initializeShelfScrollControls();
     byId("clear-recent").addEventListener("click", clearRecent);
     ui.metadataField.addEventListener("change", syncMetadataEditor);
     ui.metadataForm.addEventListener("submit", saveMetadata);
@@ -290,6 +349,10 @@
     ui.consolidationForm.addEventListener("input", syncConsolidationConfirmation);
     ui.consolidationForm.addEventListener("change", syncConsolidationConfirmation);
     ui.consolidationForm.addEventListener("submit", executeConsolidation);
+    ui.mobileDetailDialog.addEventListener("close", finishMobileDetailClose);
+    mobileDetailMedia.addEventListener("change", (event) => {
+      if (!event.matches) closeMobileDetail({ restoreFocus: false });
+    });
 
     document.querySelectorAll("[data-close-dialog]").forEach((button) => {
       button.addEventListener("click", () => button.closest("dialog")?.close());
@@ -306,12 +369,42 @@
     ui.filterPanel.hidden = !open;
     ui.filterToggle.setAttribute("aria-expanded", String(open));
     if (open) ui.filterPanel.querySelector("select, input")?.focus();
-    else if (restoreFocus) ui.filterToggle.focus();
+    else {
+      closeAllFacetOptions();
+      if (restoreFocus) ui.filterToggle.focus();
+    }
   }
 
   function routeFromHash() {
-    const route = location.hash.replace("#", "") || "shelf";
-    state.route = ["shelf", "library", "workbench", "stats", "settings"].includes(route) ? route : "shelf";
+    const previousRoute = state.route;
+    const parsedRoute = parseRouteHash();
+    const route = parsedRoute.route;
+    const nextRoute = ["shelf", "library", "workbench", "stats", "settings"].includes(route) ? route : "shelf";
+    if (previousRoute === "library" && nextRoute !== "library") {
+      if (!state.leavingLibraryContextCaptured) rememberLibraryContext();
+      state.leavingLibraryContextCaptured = false;
+    }
+    let libraryNeedsLoad = false;
+    if (nextRoute === "library") {
+      const decoded = decodeLibraryParams(parsedRoute.params);
+      const dataChanged = state.libraryDataKey !== decoded.dataKey;
+      libraryNeedsLoad = dataChanged || !state.libraryLoaded;
+      if (libraryNeedsLoad && state.selectedIds.size > 0 && !confirmSelectionClear()) {
+        const rollbackHash = previousRoute === "library" ? state.libraryRouteHash : `#${previousRoute}`;
+        history.replaceState(null, "", rollbackHash);
+        if (previousRoute === "library") {
+          applyDecodedLibraryState(decodeLibraryParams(parseRouteHash().params));
+        }
+        return;
+      }
+      if (dataChanged) state.libraryScrollY = 0;
+      applyDecodedLibraryState(decoded);
+      state.libraryRouteHash = location.hash || "#library";
+      updateLibraryNavHref();
+      state.restoreLibraryContext = previousRoute !== "library" || libraryNeedsLoad;
+    }
+    state.route = nextRoute;
+    if (state.route !== "library") closeMobileDetail({ restoreFocus: false });
     if (state.route !== "library" && !ui.filterPanel.hidden) setFilterPanelOpen(false);
     document.documentElement.dataset.route = state.route;
     document.querySelectorAll("[data-view]").forEach((view) => {
@@ -325,30 +418,269 @@
       else link.removeAttribute("aria-current");
     });
     if (state.route === "shelf") loadShelf();
-    if (state.route === "library" && !state.libraryLoaded && !state.libraryLoading) loadCollections();
+    if (state.route === "library" && libraryNeedsLoad) loadCollections();
+    else if (state.route === "library" && state.restoreLibraryContext) restoreLibraryWorkContext();
     if (state.route === "workbench") loadWorkbench();
     if (state.route === "stats") loadStats();
     if (state.route === "settings") loadSettingsPage();
-    window.scrollTo({ top: 0, behavior: "auto" });
+    if (state.route !== "library") window.scrollTo({ top: 0, behavior: "auto" });
     document.title = `${routeTitle(state.route)}｜私藏編目室`;
+  }
+
+  function parseRouteHash() {
+    const hash = location.hash.slice(1);
+    const separator = hash.indexOf("?");
+    const route = (separator >= 0 ? hash.slice(0, separator) : hash) || "shelf";
+    const query = separator >= 0 ? hash.slice(separator + 1) : "";
+    return { route, params: new URLSearchParams(query) };
+  }
+
+  function decodeLibraryParams(params) {
+    const values = {};
+    const query = String(params.get("q") || "").trim();
+    if (query) values.q = query;
+    FILTER_NAMES.forEach((name) => {
+      if (name === "tag") return;
+      const value = String(params.get(name) || "").trim();
+      if (value) values[name] = value;
+    });
+    const tags = params.getAll("tag").map((tag) => tag.trim()).filter(Boolean);
+    if (tags.length) values.tag = tags;
+    const page = Math.max(1, Number.parseInt(params.get("page") || "1", 10) || 1);
+    const focusId = Number.parseInt(params.get("focus") || "", 10);
+    const dataParams = libraryParams(values, page, null);
+    return { values, tags, page, focusId: Number.isSafeInteger(focusId) && focusId > 0 ? focusId : null, dataKey: dataParams.toString() };
+  }
+
+  function applyDecodedLibraryState(decoded) {
+    ui.searchForm.reset();
+    Object.entries(decoded.values).forEach(([name, value]) => {
+      if (name === "tag") return;
+      const control = ui.searchForm.elements[name];
+      if (control) control.value = value;
+    });
+    state.filterTags = [...decoded.tags];
+    state.filters = { ...decoded.values, ...(decoded.tags.length ? { tag: [...decoded.tags] } : {}) };
+    state.page = decoded.page;
+    state.libraryFocusId = decoded.focusId;
+    state.libraryDataKey = decoded.dataKey;
+    renderFilterTagChips();
+    updateFilterCount();
+  }
+
+  function libraryParams(filters = state.filters, page = state.page, focusId = state.libraryFocusId) {
+    const params = new URLSearchParams();
+    if (filters.q) params.set("q", filters.q);
+    FILTER_NAMES.forEach((name) => {
+      const value = filters[name];
+      if (Array.isArray(value)) value.forEach((entry) => params.append(name, entry));
+      else if (value) params.set(name, value);
+    });
+    if (page > 1) params.set("page", String(page));
+    if (focusId) params.set("focus", String(focusId));
+    return params;
+  }
+
+  function libraryHash() {
+    const query = libraryParams().toString();
+    return `#library${query ? `?${query}` : ""}`;
+  }
+
+  function navigateLibrary({ replace = false } = {}) {
+    const hash = libraryHash();
+    if (location.hash === hash) return;
+    if (replace) {
+      history.replaceState(null, "", hash);
+      state.libraryRouteHash = hash;
+      updateLibraryNavHref();
+      return;
+    }
+    location.hash = hash;
+  }
+
+  function confirmSelectionClear() {
+    return window.confirm(`這會清除目前 ${formatNumber(state.selectedIds.size)} 筆批次選取。要繼續嗎？`);
+  }
+
+  function rememberLibraryContext() {
+    state.libraryScrollY = window.scrollY;
+    state.libraryFocusId = Number(document.activeElement?.dataset?.collectionId) || state.selected?.id || state.libraryFocusId;
+  }
+
+  function updateLibraryNavHref() {
+    document.querySelector('[data-route="library"]')?.setAttribute("href", state.libraryRouteHash);
+  }
+
+  function restoreLibraryWorkContext() {
+    state.restoreLibraryContext = false;
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: state.libraryScrollY, behavior: "auto" });
+      if (!state.libraryFocusId) return;
+      document.querySelector(`[data-collection-id="${state.libraryFocusId}"]`)?.focus({ preventScroll: true });
+    });
   }
 
   function routeTitle(route) {
     return { shelf: "書架", library: "全部藏書", workbench: "工作台", stats: "統計", settings: "設定" }[route];
   }
 
-  async function checkHealth() {
+  function startActivityMonitoring() {
+    renderActivityCenter();
+    refreshActivityCenter(true);
+  }
+
+  async function refreshActivityCenter(forceJobs = false) {
+    if (state.activityTimer != null) window.clearTimeout(state.activityTimer);
+    state.activityTimer = null;
     try {
       await api("/api/health");
+      state.serviceOnline = true;
       setServiceState("online", "本機服務正常");
     } catch (_) {
+      state.serviceOnline = false;
       setServiceState("offline", "本機服務無回應");
     }
+
+    if (state.serviceOnline) {
+      const storedIds = Object.values(state.externalJobRefs).map(Number).filter((id) => Number.isSafeInteger(id) && id > 0).reverse();
+      const activeIds = [...state.activityExternalJobs.values()]
+        .filter((job) => ["pending", "running"].includes(job.status))
+        .map((job) => job.id);
+      const jobIds = [...new Set([
+        ...activeIds,
+        ...storedIds.slice(0, forceJobs || state.activityExternalJobs.size === 0 ? 12 : 3),
+      ])];
+      for (let index = 0; index < jobIds.length; index += 4) {
+        const jobs = await Promise.all(jobIds.slice(index, index + 4).map(async (jobId) => {
+          try {
+            return await api(`/api/external-search-jobs/${jobId}`);
+          } catch (_) {
+            return null;
+          }
+        }));
+        jobs.filter(Boolean).forEach((job) => state.activityExternalJobs.set(job.id, job));
+      }
+    }
+
+    renderActivityCenter();
+    const active = state.activityScan?.status === "running"
+      || [...state.activityExternalJobs.values()].some((job) => ["pending", "running"].includes(job.status));
+    state.activityTimer = window.setTimeout(() => refreshActivityCenter(), active ? 4000 : 15000);
   }
 
   function setServiceState(status, label) {
     ui.serviceState.className = `service-state ${status}`;
     ui.serviceState.lastChild.textContent = ` ${label}`;
+  }
+
+  function setActivityPanelOpen(open) {
+    ui.activityPanel.hidden = !open;
+    ui.activityTrigger.setAttribute("aria-expanded", String(open));
+    if (open) {
+      renderActivityCenter();
+      refreshActivityCenter(true);
+      byId("close-activity").focus({ preventScroll: true });
+    }
+  }
+
+  function renderActivityCenter() {
+    if (!ui.activityTrigger) return;
+    const jobs = [...state.activityExternalJobs.values()].sort((left, right) => right.id - left.id);
+    const activeJobs = jobs.filter((job) => ["pending", "running"].includes(job.status));
+    const failedJobs = jobs.filter((job) => ["partial", "failed"].includes(job.status));
+    const scanNeedsAttention = ["partial", "failed"].includes(state.activityScan?.status);
+    const scanRunning = state.activityScan?.status === "running";
+    const batchFailures = state.lastBatchActivity?.failed || 0;
+    const attentionCount = failedJobs.length + state.activityThumbnailFailures.size + Number(scanNeedsAttention) + batchFailures;
+    const runningCount = activeJobs.length + Number(scanRunning);
+
+    let summary = "本機服務正常";
+    let mode = "is-online";
+    if (state.serviceOnline == null) {
+      summary = "狀態檢查中";
+      mode = "is-checking";
+    } else if (!state.serviceOnline) {
+      summary = "本機服務離線";
+      mode = "has-attention";
+    } else if (attentionCount > 0) {
+      summary = `${formatNumber(attentionCount)} 項需要處理`;
+      mode = "has-attention";
+    } else if (scanRunning) {
+      summary = "掃描中";
+      mode = "is-running";
+    } else if (activeJobs.length) {
+      summary = `外部搜尋 ${formatNumber(activeJobs.length)}`;
+      mode = "is-running";
+    }
+    ui.activityTrigger.className = `activity-trigger ${mode}`;
+    ui.activitySummary.textContent = summary;
+    ui.activityCount.hidden = attentionCount === 0;
+    ui.activityCount.textContent = String(attentionCount);
+    ui.activityTrigger.setAttribute("aria-label", `系統狀態：${summary}`);
+
+    ui.activityService.className = `activity-service ${state.serviceOnline === false ? "offline" : state.serviceOnline ? "online" : "checking"}`;
+    ui.activityServiceLabel.textContent = state.serviceOnline === false ? "本機 Rust service 無回應" : state.serviceOnline ? "本機 Rust service 正常" : "正在確認本機服務…";
+    ui.activityServiceAdvice.textContent = state.serviceOnline === false ? "請確認 doujin-http 仍在執行，然後重新整理狀態。" : "";
+
+    ui.activityList.replaceChildren();
+    if (state.activityScan) {
+      const scan = state.activityScan;
+      const detail = scan.status === "running"
+        ? "正在掃描已登記的資料夾來源；目前沒有可用的百分比。"
+        : scan.message || "掃描已完成。";
+      ui.activityList.append(activityItem(`scan ${scan.status}`, scan.status === "running" ? "重新掃描進行中" : "最近一次掃描", detail, scan.status === "partial" ? "部分完成" : scan.status === "failed" ? "失敗" : scan.status === "succeeded" ? "完成" : "進行中", "查看設定", () => {
+        setActivityPanelOpen(false);
+        location.hash = "settings";
+      }));
+    }
+    [...activeJobs, ...failedJobs].slice(0, 8).forEach((job) => {
+      const fields = job.fields.map((field) => METADATA_LABELS[field] || field).join("、");
+      ui.activityList.append(activityItem(`external ${job.status}`, `外部資料搜尋 #${job.id}`, `${fields} · 收藏 #${job.collection_id}`, EXTERNAL_JOB_STATUS_LABELS[job.status] || job.status, "查看收藏", () => openActivityCollection(job.collection_id)));
+    });
+    if (state.activityThumbnailFailures.size) {
+      ui.activityList.append(activityItem("thumbnail failed", "縮圖生成失敗", `${formatNumber(state.activityThumbnailFailures.size)} 冊需要從收藏詳細資料重建縮圖。`, "需要處理", "查看藏書", () => {
+        setActivityPanelOpen(false);
+        location.hash = state.libraryRouteHash;
+      }));
+    }
+    if (state.lastBatchActivity) {
+      const batch = state.lastBatchActivity;
+      ui.activityList.append(activityItem(`batch ${batch.failed ? "failed" : "succeeded"}`, batch.title, `${batch.summary} · ${formatMetadataTime(batch.updatedAt)}`, batch.failed ? "部分完成" : "完成", "查看工作台", () => {
+        setActivityPanelOpen(false);
+        location.hash = "workbench";
+      }));
+    }
+    ui.activityEmpty.hidden = ui.activityList.children.length > 0;
+
+    const signature = [state.serviceOnline, runningCount, attentionCount, state.activityScan?.status || "", ...activeJobs.map((job) => `${job.id}:${job.status}`), ...failedJobs.map((job) => `${job.id}:${job.status}`)].join("|");
+    if (state.activitySignature != null && signature !== state.activitySignature) {
+      ui.activityAnnouncer.textContent = summary;
+    }
+    state.activitySignature = signature;
+  }
+
+  function activityItem(className, title, detail, status, actionLabel, action) {
+    const item = el("li", `activity-item ${className}`);
+    const copy = el("div", "");
+    copy.append(el("strong", "", title), el("p", "", detail));
+    const badge = el("span", "activity-status", status);
+    const button = el("button", "text-button", actionLabel);
+    button.type = "button";
+    button.addEventListener("click", action);
+    item.append(copy, badge, button);
+    return item;
+  }
+
+  async function openActivityCollection(collectionId) {
+    try {
+      const collection = await api(`/api/collections/${collectionId}`);
+      setActivityPanelOpen(false);
+      if (state.route !== "library") location.hash = state.libraryRouteHash;
+      selectCollection(collection);
+      if (mobileDetailMedia.matches) openMobileDetail();
+    } catch (error) {
+      toast(`無法開啟這筆收藏：${error.message}`, true);
+    }
   }
 
   async function loadShelf() {
@@ -424,6 +756,7 @@
     const books = (page.items || []).slice(0, 7);
     if (!books.length) {
       container.append(el("li", "shelf-empty", "這座書架目前沒有收藏。"));
+      updateShelfScrollControls(container.closest(".shelf-scroll-shell"));
       return;
     }
     books.forEach((collection) => {
@@ -455,6 +788,36 @@
       more.append(button);
       container.append(more);
     }
+    requestAnimationFrame(() => updateShelfScrollControls(container.closest(".shelf-scroll-shell")));
+  }
+
+  function initializeShelfScrollControls() {
+    document.querySelectorAll(".shelf-scroll-shell").forEach((shell) => {
+      const scroller = shell.querySelector(".shelf-books");
+      shell.querySelectorAll("[data-shelf-scroll]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const direction = button.dataset.shelfScroll === "previous" ? -1 : 1;
+          const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+          scroller.scrollBy({ left: direction * Math.max(193, scroller.clientWidth * 0.82), behavior: reducedMotion ? "auto" : "smooth" });
+        });
+      });
+      scroller.addEventListener("scroll", () => updateShelfScrollControls(shell), { passive: true });
+      updateShelfScrollControls(shell);
+    });
+    window.addEventListener("resize", () => document.querySelectorAll(".shelf-scroll-shell").forEach(updateShelfScrollControls), { passive: true });
+  }
+
+  function updateShelfScrollControls(shell) {
+    if (!shell) return;
+    const scroller = shell.querySelector(".shelf-books");
+    const canScrollLeft = scroller.scrollLeft > 2;
+    const canScrollRight = scroller.scrollLeft + scroller.clientWidth < scroller.scrollWidth - 2;
+    shell.classList.toggle("can-scroll-left", canScrollLeft);
+    shell.classList.toggle("can-scroll-right", canScrollRight);
+    const previous = shell.querySelector('[data-shelf-scroll="previous"]');
+    const next = shell.querySelector('[data-shelf-scroll="next"]');
+    previous.hidden = !canScrollLeft;
+    next.hidden = !canScrollRight;
   }
 
   function openShelfBook(collection, filterName, filterValue) {
@@ -462,18 +825,18 @@
     if (filterName && filterValue) ui.searchForm.elements[filterName].value = filterValue;
     readFilters();
     state.selected = collection;
+    state.libraryFocusId = collection.id;
     state.page = 1;
-    location.hash = "library";
-    loadCollections();
+    navigateLibrary();
   }
 
   function showShelfFilter(name, value) {
     resetSearch(false);
     if (name && value && ui.searchForm.elements[name]) ui.searchForm.elements[name].value = value;
     readFilters();
+    state.libraryFocusId = null;
     state.page = 1;
-    location.hash = "library";
-    loadCollections();
+    navigateLibrary();
   }
 
   function readFilters() {
@@ -482,14 +845,19 @@
     const query = String(data.get("q") || "").trim();
     if (query) state.filters.q = query;
     FILTER_NAMES.forEach((name) => {
+      if (name === "tag") return;
       const value = String(data.get(name) || "").trim();
       if (value) state.filters[name] = value;
     });
+    if (state.filterTags.length) state.filters.tag = [...state.filterTags];
     updateFilterCount();
   }
 
   function updateFilterCount() {
-    const count = FILTER_NAMES.filter((name) => state.filters[name]).length;
+    const count = Object.values(state.filters).reduce(
+      (total, value) => total + (Array.isArray(value) ? value.length : value ? 1 : 0),
+      0,
+    );
     ui.activeFilterCount.textContent = String(count);
     renderActiveFilterChips();
   }
@@ -498,30 +866,214 @@
     if (!ui.activeFilterChips) return;
     ui.activeFilterChips.replaceChildren();
     Object.entries(state.filters).forEach(([name, value]) => {
-      const chip = el("button", "active-filter-chip");
-      chip.type = "button";
-      chip.title = `移除${FILTER_LABELS[name] || name}篩選`;
-      const displayValue = name === "untagged" ? "尚無標籤" : name === "missing" && value === "any" ? "缺少 metadata" : value;
-      chip.append(document.createTextNode(`${FILTER_LABELS[name] || name}：${displayValue} `), el("span", "", "×"));
-      chip.addEventListener("click", () => removeFilter(name));
-      ui.activeFilterChips.append(chip);
+      if (Array.isArray(value)) {
+        value.forEach((entry) => appendActiveFilterChip(name, entry));
+        return;
+      }
+      appendActiveFilterChip(name, value);
     });
   }
 
-  function removeFilter(name) {
+  function appendActiveFilterChip(name, value) {
+    const chip = el("button", "active-filter-chip");
+    chip.type = "button";
+    chip.title = `移除${FILTER_LABELS[name] || name}篩選`;
+    const standaloneLabel = name === "untagged" || name === "missing" && value === "any";
+    const displayValue = name === "untagged" ? "尚無標籤" : standaloneLabel ? "缺少 metadata" : value;
+    chip.append(document.createTextNode(`${standaloneLabel ? displayValue : `${FILTER_LABELS[name] || name}：${displayValue}`} `), el("span", "", "×"));
+    chip.addEventListener("click", () => removeFilter(name, value));
+    ui.activeFilterChips.append(chip);
+  }
+
+  function removeFilter(name, value = null) {
+    if (name === "tag") {
+      removeFilterTag(value);
+      return;
+    }
     const control = ui.searchForm.elements[name];
     if (control) control.value = "";
     readFilters();
+    state.libraryFocusId = null;
     state.page = 1;
-    loadCollections();
+    navigateLibrary();
   }
 
   function resetSearch(load) {
     ui.searchForm.reset();
+    state.filterTags = [];
+    renderFilterTagChips();
     state.filters = {};
+    state.libraryFocusId = null;
     state.page = 1;
     updateFilterCount();
-    if (load) loadCollections();
+    if (load) navigateLibrary();
+  }
+
+  function initializeFacetComboboxes() {
+    ui.filterPanel.querySelectorAll("[data-facet-field]").forEach((fieldElement) => {
+      const field = fieldElement.dataset.facetField;
+      const input = fieldElement.querySelector('[role="combobox"]');
+      const listbox = fieldElement.querySelector('[role="listbox"]');
+      const controller = { field, input, listbox, options: [], activeIndex: -1, requestNumber: 0, timer: null };
+      facetControllers.set(field, controller);
+      input.addEventListener("focus", () => queueFacetSearch(controller, 0));
+      input.addEventListener("input", () => queueFacetSearch(controller, 140));
+      input.addEventListener("blur", () => setTimeout(() => closeFacetOptions(controller), 0));
+      input.addEventListener("keydown", (event) => handleFacetKeydown(event, controller));
+    });
+    renderFilterTagChips();
+  }
+
+  function queueFacetSearch(controller, delay) {
+    clearTimeout(controller.timer);
+    controller.timer = setTimeout(() => loadFacetOptions(controller), delay);
+  }
+
+  async function loadFacetOptions(controller) {
+    const requestNumber = ++controller.requestNumber;
+    const params = new URLSearchParams({ field: controller.field, q: controller.input.value.trim(), limit: "20" });
+    try {
+      const data = await api(`/api/facets?${params}`);
+      if (requestNumber !== controller.requestNumber) return;
+      const selectedTags = new Set(state.filterTags.map((tag) => tag.toLocaleLowerCase()));
+      controller.options = (data.items || []).filter(
+        (option) => controller.field !== "tag" || !selectedTags.has(option.name.toLocaleLowerCase()),
+      );
+      renderFacetOptions(controller);
+    } catch (_) {
+      if (requestNumber === controller.requestNumber) closeFacetOptions(controller);
+    }
+  }
+
+  function renderFacetOptions(controller) {
+    controller.listbox.replaceChildren();
+    controller.activeIndex = -1;
+    controller.input.removeAttribute("aria-activedescendant");
+    if (!controller.options.length) {
+      controller.listbox.append(el("li", "facet-empty", "沒有符合的選項"));
+    } else {
+      controller.options.forEach((option, index) => {
+        const item = el("li", "facet-option");
+        item.id = `facet-${controller.field}-option-${index}`;
+        item.setAttribute("role", "option");
+        item.setAttribute("aria-selected", "false");
+        item.setAttribute("aria-label", option.name);
+        item.append(el("span", "", option.name), el("small", "", formatNumber(option.count)));
+        item.addEventListener("pointerdown", (event) => {
+          event.preventDefault();
+          selectFacetOption(controller, index);
+        });
+        item.addEventListener("pointermove", () => setFacetActive(controller, index));
+        controller.listbox.append(item);
+      });
+    }
+    controller.listbox.hidden = false;
+    controller.input.setAttribute("aria-expanded", "true");
+  }
+
+  function handleFacetKeydown(event, controller) {
+    if (event.key === "Escape" && !controller.listbox.hidden) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeFacetOptions(controller);
+      return;
+    }
+    if (["ArrowDown", "ArrowUp"].includes(event.key)) {
+      event.preventDefault();
+      if (controller.listbox.hidden || !controller.options.length) {
+        queueFacetSearch(controller, 0);
+        return;
+      }
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      const start = controller.activeIndex < 0 ? (direction > 0 ? -1 : 0) : controller.activeIndex;
+      setFacetActive(controller, (start + direction + controller.options.length) % controller.options.length);
+      return;
+    }
+    if (event.key !== "Enter") return;
+    if (!controller.listbox.hidden && controller.activeIndex >= 0) {
+      event.preventDefault();
+      selectFacetOption(controller, controller.activeIndex);
+    } else if (controller.field === "tag" && controller.input.value.trim()) {
+      event.preventDefault();
+      addFilterTag(controller.input.value, true);
+      controller.input.value = "";
+      closeFacetOptions(controller);
+    }
+  }
+
+  function setFacetActive(controller, index) {
+    controller.activeIndex = index;
+    controller.listbox.querySelectorAll('[role="option"]').forEach((option, optionIndex) => {
+      const active = optionIndex === index;
+      option.classList.toggle("is-active", active);
+      option.setAttribute("aria-selected", String(active));
+    });
+    const activeOption = controller.listbox.querySelectorAll('[role="option"]')[index];
+    if (!activeOption) return;
+    controller.input.setAttribute("aria-activedescendant", activeOption.id);
+    activeOption.scrollIntoView({ block: "nearest" });
+  }
+
+  function selectFacetOption(controller, index) {
+    const option = controller.options[index];
+    if (!option) return;
+    if (controller.field === "tag") {
+      addFilterTag(option.name, true);
+      controller.input.value = "";
+    } else {
+      controller.input.value = option.name;
+      readFilters();
+      state.libraryFocusId = null;
+      state.page = 1;
+      navigateLibrary();
+    }
+    closeFacetOptions(controller);
+    controller.input.focus({ preventScroll: true });
+  }
+
+  function closeFacetOptions(controller) {
+    clearTimeout(controller.timer);
+    controller.listbox.hidden = true;
+    controller.activeIndex = -1;
+    controller.input.setAttribute("aria-expanded", "false");
+    controller.input.removeAttribute("aria-activedescendant");
+  }
+
+  function closeAllFacetOptions() {
+    facetControllers.forEach(closeFacetOptions);
+  }
+
+  function addFilterTag(value, load = true) {
+    const tag = String(value || "").trim();
+    if (!tag || state.filterTags.some((existing) => existing.toLocaleLowerCase() === tag.toLocaleLowerCase())) return;
+    state.filterTags.push(tag);
+    renderFilterTagChips();
+    readFilters();
+    state.libraryFocusId = null;
+    state.page = 1;
+    if (load) navigateLibrary();
+  }
+
+  function removeFilterTag(value, load = true) {
+    state.filterTags = state.filterTags.filter((tag) => tag !== value);
+    renderFilterTagChips();
+    readFilters();
+    state.libraryFocusId = null;
+    state.page = 1;
+    if (load) navigateLibrary();
+  }
+
+  function renderFilterTagChips() {
+    if (!ui.filterTagChips) return;
+    ui.filterTagChips.replaceChildren();
+    state.filterTags.forEach((tag) => {
+      const chip = el("button", "filter-tag-chip");
+      chip.type = "button";
+      chip.setAttribute("aria-label", `移除標籤篩選 ${tag}`);
+      chip.append(document.createTextNode(tag), el("span", "", "×"));
+      chip.addEventListener("click", () => removeFilterTag(tag));
+      ui.filterTagChips.append(chip);
+    });
   }
 
   async function loadCollections() {
@@ -533,7 +1085,10 @@
     ui.results.hidden = true;
     ui.pagination.hidden = true;
     const params = new URLSearchParams({ page: String(state.page), per_page: String(PER_PAGE) });
-    Object.entries(state.filters).forEach(([name, value]) => params.set(name, value));
+    Object.entries(state.filters).forEach(([name, value]) => {
+      if (Array.isArray(value)) value.forEach((entry) => params.append(name, entry));
+      else params.set(name, value);
+    });
     try {
       const data = await api(`/api/collections?${params}`);
       if (requestNumber !== state.requestNumber) return;
@@ -544,6 +1099,7 @@
       ui.loading.hidden = true;
       renderCollections();
       renderPagination();
+      if (state.route === "library" && state.restoreLibraryContext) restoreLibraryWorkContext();
       setServiceState("online", "本機服務正常");
     } catch (error) {
       if (requestNumber !== state.requestNumber) return;
@@ -571,21 +1127,26 @@
       const selection = document.createElement("input");
       selection.type = "checkbox";
       selection.className = "collection-checkbox";
-      selection.checked = state.selectedIds.has(collection.id);
-      selection.setAttribute("aria-label", `將 ${displayTitle(collection)} 加入批次選取`);
-      selection.addEventListener("change", () => toggleCollectionSelection(collection, selection.checked));
+      selection.dataset.collectionTitle = displayTitle(collection);
+      updateSelectionCheckbox(selection, state.selectedIds.has(collection.id));
+      selection.addEventListener("change", () => {
+        updateSelectionCheckbox(selection);
+        toggleCollectionSelection(collection, selection.checked);
+      });
       const selectionControl = el("label", "collection-select-control");
-      selectionControl.append(selection, el("span", "selection-mark", "✓"));
+      selectionControl.addEventListener("click", (event) => event.stopPropagation());
+      const selectionMark = el("span", "selection-mark", "✓");
+      selectionMark.setAttribute("aria-hidden", "true");
+      selectionControl.append(selection, selectionMark);
       const button = el("button", "collection-item-button");
       button.type = "button";
       button.dataset.collectionId = String(collection.id);
       button.setAttribute("aria-current", String(state.selected?.id === collection.id));
       button.setAttribute("aria-label", `選取 ${displayTitle(collection)}`);
       button.addEventListener("click", () => {
+        const scrollPosition = window.scrollY;
         selectCollection(collection);
-        if (window.matchMedia("(max-width: 899px)").matches) {
-          byId("detail-pane").scrollIntoView({ behavior: "smooth", block: "start" });
-        }
+        openMobileDetail(button, scrollPosition);
       });
 
       const cover = document.createElement("img");
@@ -612,10 +1173,14 @@
       ui.results.append(item);
     });
 
-    const onPage = state.selected && state.items.find((item) => item.id === state.selected.id);
+    const preferredId = state.libraryFocusId || state.selected?.id;
+    const onPage = preferredId && state.items.find((item) => item.id === preferredId);
     if (onPage) selectCollection(onPage, false);
     else if (state.items[0] && !window.matchMedia("(max-width: 899px)").matches) selectCollection(state.items[0], false);
-    else clearDetail();
+    else {
+      state.libraryFocusId = null;
+      clearDetail();
+    }
     updateSelectionUI();
   }
 
@@ -629,8 +1194,9 @@
   function changePage(page) {
     if (page < 1 || page > state.totalPages || page === state.page) return;
     state.page = page;
-    loadCollections();
-    document.querySelector(".library-toolbar")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    state.libraryFocusId = null;
+    state.libraryScrollY = 0;
+    navigateLibrary();
   }
 
   function setLayout(layout) {
@@ -645,10 +1211,12 @@
 
   function selectCollection(collection, focus = false) {
     state.selected = collection;
+    state.libraryFocusId = collection.id;
     document.querySelectorAll(".collection-item-button").forEach((button) => {
       button.setAttribute("aria-current", String(Number(button.dataset.collectionId) === collection.id));
     });
     renderDetail(collection);
+    if (state.route === "library") navigateLibrary({ replace: true });
     if (focus) {
       document.querySelector(`[data-collection-id="${collection.id}"]`)?.focus({ preventScroll: true });
     }
@@ -697,10 +1265,93 @@
       ui.metadataList.append(term, description);
     });
     renderTags(collection);
+    renderDataQualitySummary();
     prepareMetadataEvidence(collection);
   }
 
+  function missingMetadataLabels(collection) {
+    if (!collection) return [];
+    return [
+      ["標題", collection.title],
+      ["社團", collection.circle],
+      ["作者", collection.authors?.length],
+      ["原作", collection.parody || collection.parody_raw],
+      ["場次", collection.event],
+      ["種類", collection.classification_top],
+      ["版本", collection.is_dl != null],
+    ].filter(([, value]) => !value).map(([label]) => label);
+  }
+
+  function renderDataQualitySummary() {
+    if (!ui.dataQualitySummary || !ui.evidenceSummaryCount) return;
+    const missing = missingMetadataLabels(state.selected);
+    const assertions = (state.metadataHistory?.fields || []).flatMap((field) => field.assertions || []);
+    const pending = assertions.filter((assertion) => assertion.status === "candidate").length;
+    const externalStatus = state.externalJob?.status;
+    const thumbnailFailed = ui.detailCover?.dataset.thumbnailStatus === "failed";
+    const parts = [];
+    if (missing.length) parts.push(`缺少 ${missing.length} 欄（${missing.join("、")}）`);
+    if (pending) parts.push(`${pending} 筆 assertion 待裁決`);
+    if (["pending", "running"].includes(externalStatus)) parts.push("外部搜尋進行中");
+    if (externalStatus === "partial") parts.push("外部搜尋部分完成");
+    if (externalStatus === "failed") parts.push("外部搜尋失敗");
+    if (thumbnailFailed) parts.push("縮圖失敗");
+
+    const attentionCount = missing.length + pending + Number(["partial", "failed"].includes(externalStatus)) + Number(thumbnailFailed);
+    const checking = !state.metadataHistory && state.metadataHistoryCollectionId === state.selected?.id;
+    ui.metadataEvidence.classList.toggle("has-data-quality-issues", attentionCount > 0);
+    ui.metadataEvidence.classList.toggle("has-data-quality-work", ["pending", "running"].includes(externalStatus));
+    if (parts.length) {
+      ui.dataQualitySummary.textContent = `${parts.join(" · ")}。展開可查看來源與處理工具。`;
+      ui.evidenceSummaryCount.textContent = attentionCount > 0 ? `待處理 ${attentionCount}` : "處理中";
+    } else if (checking) {
+      ui.dataQualitySummary.textContent = "正在檢查編目資料與來源紀錄…";
+      ui.evidenceSummaryCount.textContent = "檢查中";
+    } else {
+      ui.dataQualitySummary.textContent = "目前沒有待處理問題；展開可檢視完整來源與歷史。";
+      ui.evidenceSummaryCount.textContent = "狀態良好";
+    }
+  }
+
+  function openMobileDetail(originButton, scrollPosition = window.scrollY) {
+    if (!mobileDetailMedia.matches || !state.selected || ui.mobileDetailDialog.open) return;
+    mobileDetailReturnId = originButton?.dataset.collectionId || String(state.selected.id);
+    mobileDetailScrollPosition = scrollPosition;
+    mobileDetailRestoreFocus = true;
+    ui.mobileDetailContent.append(ui.collectionDetail);
+    document.body.style.setProperty("--mobile-detail-scroll-offset", `-${mobileDetailScrollPosition}px`);
+    document.body.classList.add("mobile-detail-open");
+    ui.mobileDetailDialog.showModal();
+    ui.mobileDetailClose.focus({ preventScroll: true });
+  }
+
+  function closeMobileDetail({ restoreFocus = true } = {}) {
+    if (!ui.mobileDetailDialog?.open) return;
+    mobileDetailRestoreFocus = restoreFocus;
+    ui.mobileDetailDialog.close();
+  }
+
+  function finishMobileDetailClose() {
+    if (ui.collectionDetail.parentElement !== ui.detailPane) ui.detailPane.append(ui.collectionDetail);
+    const returnId = mobileDetailReturnId;
+    const restoreFocus = mobileDetailRestoreFocus;
+    const scrollPosition = mobileDetailScrollPosition;
+    mobileDetailReturnId = null;
+    mobileDetailRestoreFocus = true;
+    document.body.classList.remove("mobile-detail-open");
+    document.body.style.removeProperty("--mobile-detail-scroll-offset");
+    const restoreContext = restoreFocus && state.route === "library" && mobileDetailMedia.matches;
+    if (restoreContext) window.scrollTo({ top: scrollPosition, behavior: "auto" });
+    requestAnimationFrame(() => {
+      if (restoreFocus && returnId) {
+        document.querySelector(`[data-collection-id="${returnId}"]`)?.focus({ preventScroll: true });
+      }
+      if (restoreContext) window.scrollTo({ top: scrollPosition, behavior: "auto" });
+    });
+  }
+
   function clearDetail() {
+    closeMobileDetail({ restoreFocus: false });
     state.selected = null;
     resetMetadataEvidence();
     unbindThumbnail(ui.detailCover);
@@ -714,12 +1365,14 @@
 
   function applyFilter(name, value) {
     const control = ui.searchForm.elements[name];
-    if (!control) return;
-    control.value = value;
+    if (name === "tag") addFilterTag(value, false);
+    else if (control) control.value = value;
+    else return;
+    closeMobileDetail({ restoreFocus: false });
     readFilters();
+    state.libraryFocusId = null;
     state.page = 1;
-    location.hash = "library";
-    loadCollections();
+    navigateLibrary();
     toast(`已加入篩選：${value}`);
   }
 
@@ -809,7 +1462,8 @@
       location.hash = "library";
       selectCollection(collection);
       ui.recentDialog.close();
-      byId("detail-pane").scrollIntoView({ behavior: "smooth", block: "start" });
+      if (mobileDetailMedia.matches) openMobileDetail();
+      else ui.detailPane.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (error) {
       toast(`無法載入這筆最近紀錄：${error.message}`, true);
     }
@@ -984,10 +1638,8 @@
     if (state.metadataHistoryCollectionId !== collection.id) {
       resetMetadataEvidence(collection.id);
     }
-    if (ui.metadataEvidence.open) {
-      loadMetadataEvidence();
-      loadKnownExternalJob();
-    }
+    loadMetadataEvidence();
+    loadKnownExternalJob();
   }
 
   function resetMetadataEvidence(collectionId = null) {
@@ -1003,11 +1655,11 @@
     ui.evidenceError.hidden = true;
     ui.externalJobStatus.hidden = true;
     ui.externalJobStatus.replaceChildren();
+    renderDataQualitySummary();
   }
 
   function toggleMetadataEvidence() {
     if (!ui.metadataEvidence.open) {
-      stopExternalJobPolling();
       return;
     }
     loadMetadataEvidence();
@@ -1034,6 +1686,7 @@
       ui.evidenceErrorMessage.textContent = `${error.message}。請確認收藏仍是有效項目後再試一次。`;
       ui.evidenceError.hidden = false;
       ui.evidenceSummaryCount.textContent = "載入失敗";
+      ui.dataQualitySummary.textContent = "無法檢查資料品質；展開後可再試一次。";
     } finally {
       if (requestNumber === state.metadataRequestNumber) ui.evidenceLoading.hidden = true;
     }
@@ -1046,6 +1699,7 @@
     ui.evidenceSummaryCount.textContent = pending > 0 ? `待裁決 ${pending} · 證據 ${assertions.length}` : `證據 ${assertions.length}`;
     ui.evidenceFields.replaceChildren();
     fields.forEach((field) => ui.evidenceFields.append(metadataFieldEvidence(field)));
+    renderDataQualitySummary();
   }
 
   function metadataFieldEvidence(field) {
@@ -1224,6 +1878,8 @@
     const keys = Object.keys(state.externalJobRefs);
     keys.slice(0, Math.max(0, keys.length - 200)).forEach((oldKey) => delete state.externalJobRefs[oldKey]);
     writeStorage(EXTERNAL_JOB_KEY, state.externalJobRefs);
+    state.activityExternalJobs.set(job.id, job);
+    renderActivityCenter();
   }
 
   function loadKnownExternalJob() {
@@ -1236,10 +1892,12 @@
   async function loadExternalJob(jobId, collectionId) {
     try {
       const job = await api(`/api/external-search-jobs/${jobId}`);
-      if (state.selected?.id !== collectionId || !ui.metadataEvidence.open) return;
+      if (state.selected?.id !== collectionId) return;
       const previousStatus = state.externalJob?.id === job.id ? state.externalJob.status : null;
       state.externalJob = job;
+      state.activityExternalJobs.set(job.id, job);
       renderExternalJob(job);
+      renderActivityCenter();
       scheduleExternalJobPoll(job);
       if (["pending", "running"].includes(previousStatus) && !["pending", "running"].includes(job.status)) {
         refreshAfterExternalJob(collectionId);
@@ -1249,7 +1907,9 @@
       if (error.status === 404) {
         delete state.externalJobRefs[String(collectionId)];
         writeStorage(EXTERNAL_JOB_KEY, state.externalJobRefs);
+        state.externalJob = null;
         ui.externalJobStatus.hidden = true;
+        renderDataQualitySummary();
         return;
       }
       if (error.code === "application_busy") {
@@ -1299,11 +1959,12 @@
     refresh.type = "button";
     refresh.addEventListener("click", () => loadExternalJob(job.id, job.collection_id));
     ui.externalJobStatus.append(refresh);
+    renderDataQualitySummary();
   }
 
   function scheduleExternalJobPoll(job) {
     stopExternalJobPolling();
-    if (!["pending", "running"].includes(job.status) || !ui.metadataEvidence.open) return;
+    if (!["pending", "running"].includes(job.status)) return;
     let delay = 1400;
     if (job.next_retry_at) {
       const remaining = new Date(job.next_retry_at).getTime() - Date.now();
@@ -1337,7 +1998,9 @@
     button.disabled = true;
     try {
       await api(`/api/collections/${state.selected.id}/thumbnail/rebuild`, { method: "POST" });
+      state.activityThumbnailFailures.delete(state.selected.id);
       restartThumbnailCollection(state.selected.id);
+      renderActivityCenter();
       toast("縮圖已排入重建");
     } catch (error) {
       toast(error.message, true);
@@ -1395,10 +2058,16 @@
     updateSelectionUI();
   }
 
+  function updateSelectionCheckbox(checkbox, checked = checkbox.checked) {
+    checkbox.checked = checked;
+    const title = checkbox.dataset.collectionTitle || "這本收藏";
+    checkbox.setAttribute("aria-label", checked ? `從批次選取移除 ${title}` : `將 ${title} 加入批次選取`);
+  }
+
   function syncResultCheckboxes() {
     document.querySelectorAll(".collection-checkbox").forEach((checkbox) => {
       const id = Number(checkbox.closest(".collection-item")?.querySelector("[data-collection-id]")?.dataset.collectionId);
-      checkbox.checked = state.selectedIds.has(id);
+      updateSelectionCheckbox(checkbox, state.selectedIds.has(id));
     });
   }
 
@@ -1531,17 +2200,24 @@
 
   function renderClientBatchResult(title, outcomes) {
     const unchanged = outcomes.unchanged || [];
+    const summary = `更新 ${outcomes.succeeded.length} 筆，未變更 ${unchanged.length} 筆，失敗 ${outcomes.failed.length} 筆`;
     ui.batchResult.hidden = false;
     ui.batchResultSummary.replaceChildren();
     ui.batchResultSummary.append(
       el("strong", "", title),
-      el("span", "", `更新 ${outcomes.succeeded.length} 筆，未變更 ${unchanged.length} 筆，失敗 ${outcomes.failed.length} 筆`),
+      el("span", "", summary),
     );
     ui.batchResultItems.replaceChildren();
     outcomes.succeeded.forEach(({ collection }) => ui.batchResultItems.append(batchResultItem(collection, "succeeded", "完成")));
     unchanged.forEach((collection) => ui.batchResultItems.append(batchResultItem(collection, "unchanged", "已具有相同值")));
     outcomes.failed.forEach(({ collection, error }) => ui.batchResultItems.append(batchResultItem(collection, "failed", error.message)));
+    recordBatchActivity(title, summary, outcomes.failed.length);
     toast(outcomes.failed.length ? `${title}部分完成` : `${title}完成`, outcomes.failed.length > 0);
+  }
+
+  function recordBatchActivity(title, summary, failed) {
+    state.lastBatchActivity = { title, summary, failed, updatedAt: new Date().toISOString() };
+    renderActivityCenter();
   }
 
   function batchResultItem(collection, status, message) {
@@ -1677,6 +2353,7 @@
     state.selected = null;
     invalidateDerivedData({ library: true });
     updateSelectionUI();
+    recordBatchActivity(`${action}結果`, `成功 ${report.succeeded}、失敗 ${report.failed}、待復原 ${report.pending_recovery}`, report.failed + report.pending_recovery);
     toast(report.failed || report.pending_recovery ? `${action}部分完成，請查看逐筆結果` : `${action}完成`, Boolean(report.failed || report.pending_recovery));
   }
 
@@ -2108,28 +2785,51 @@
   }
 
   async function startScan() {
+    if (state.selectedIds.size > 0 && !confirmSelectionClear()) return;
+    if (state.selectedIds.size > 0) clearSelection();
     const original = ui.scanButton.textContent;
     ui.scanButton.disabled = true;
     ui.scanButton.textContent = "掃描中…";
+    state.activityScan = { status: "running", message: "正在掃描資料夾來源", updatedAt: new Date().toISOString() };
+    renderActivityCenter();
     try {
       const report = await api("/api/scans", { method: "POST" });
       const summary = report.summary;
       const prefix = report.status === "partial" ? "掃描部分完成" : "掃描完成";
+      state.activityScan = {
+        status: report.status === "partial" ? "partial" : "succeeded",
+        message: `新增 ${formatNumber(summary.added)}、略過 ${formatNumber(summary.skipped)}、問題 ${formatNumber(report.issues.length)}`,
+        updatedAt: new Date().toISOString(),
+      };
       toast(`${prefix}：新增 ${formatNumber(summary.added)}、略過 ${formatNumber(summary.skipped)}、問題 ${formatNumber(report.issues.length)}`, report.status === "partial");
       invalidateDerivedData({ library: true });
       state.page = 1;
-      loadCollections();
+      state.libraryFocusId = null;
+      state.libraryDataKey = null;
     } catch (error) {
+      state.activityScan = { status: "failed", message: error.message, updatedAt: new Date().toISOString() };
       toast(error.message, true);
     } finally {
       ui.scanButton.disabled = false;
       ui.scanButton.textContent = original;
+      renderActivityCenter();
     }
   }
 
   function handleKeyboard(event) {
     const target = event.target;
     const isTyping = target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement || target?.isContentEditable;
+    if (event.key === "Escape" && !ui.activityPanel.hidden) {
+      event.preventDefault();
+      setActivityPanelOpen(false);
+      ui.activityTrigger.focus({ preventScroll: true });
+      return;
+    }
+    if (event.key === "Escape" && ui.mobileDetailDialog.open && !document.querySelector("dialog[open]:not(#mobile-detail-dialog)")) {
+      event.preventDefault();
+      closeMobileDetail();
+      return;
+    }
     if (event.key === "Escape" && !ui.filterPanel.hidden && !isDialogOpen()) {
       event.preventDefault();
       setFilterPanelOpen(false, { restoreFocus: true });
@@ -2137,7 +2837,7 @@
     }
     if (event.key === "/" && !isTyping && !isDialogOpen()) {
       event.preventDefault();
-      location.hash = "library";
+      if (state.route !== "library") location.hash = state.libraryRouteHash;
       ui.searchInput.focus();
       return;
     }
@@ -2147,12 +2847,13 @@
       return;
     }
     if (state.route !== "library" || isTyping || isDialogOpen()) return;
-    if (event.key === "Enter" && state.selected && !target.closest("button, a")) {
+    const isCollectionButton = Boolean(target.closest?.(".collection-item-button"));
+    if (event.key === "Enter" && state.selected && (!target.closest("button, a") || isCollectionButton)) {
       event.preventDefault();
       launchSelected("read");
       return;
     }
-    if (event.key === " " && state.selected && !target.closest("button, a")) {
+    if (event.key === " " && state.selected && (!target.closest("button, a") || isCollectionButton)) {
       event.preventDefault();
       toggleCollectionSelection(state.selected, !state.selectedIds.has(state.selected.id));
       syncResultCheckboxes();
@@ -2216,12 +2917,15 @@
 
   function bindThumbnail(image, collectionId, requestEpoch = nextThumbnailRequestEpoch()) {
     unbindThumbnail(image);
-    const binding = { collectionId: Number(collectionId), requestEpoch, active: false };
+    const binding = { collectionId: Number(collectionId), requestEpoch, active: false, statusLabel: null };
     thumbnailBindings.set(image, binding);
     image.dataset.thumbnailCollectionId = String(binding.collectionId);
     image.dataset.thumbnailStatus = "pending";
     image.setAttribute("aria-busy", "true");
     image.removeAttribute("src");
+    window.queueMicrotask(() => {
+      if (thumbnailBindings.get(image) === binding) setThumbnailElementStatus(image, "pending", null, false);
+    });
     if (thumbnailObserver) thumbnailObserver.observe(image);
     else window.queueMicrotask(() => activateThumbnailElement(image));
   }
@@ -2270,8 +2974,10 @@
       if (tracker && tracker.elements.size === 0) disposeThumbnailTracker(tracker);
     }
     thumbnailBindings.delete(image);
+    binding.statusLabel?.remove();
     delete image.dataset.thumbnailCollectionId;
     delete image.dataset.thumbnailStatus;
+    image.removeAttribute("aria-describedby");
     image.removeAttribute("aria-busy");
     image.removeAttribute("title");
     image.removeAttribute("src");
@@ -2410,19 +3116,53 @@
   function setThumbnailElementStatus(image, status, errorKind, terminal) {
     image.dataset.thumbnailStatus = terminal ? "failed" : status;
     image.setAttribute("aria-busy", String(!terminal));
+    const label = ensureThumbnailStatusLabel(image);
+    if (label) {
+      label.hidden = false;
+      label.className = `thumbnail-state-label ${terminal ? "failed" : "pending"}`;
+      label.textContent = terminal ? "縮圖失敗" : status === "failed" ? "縮圖重試中" : "縮圖產生中";
+    }
     if (terminal) {
       image.title = `縮圖無法產生${errorKind ? `（${errorKind}）` : ""}；可從詳細資料手動重建`;
     } else {
       image.removeAttribute("title");
     }
+    if (terminal) {
+      const before = state.activityThumbnailFailures.size;
+      state.activityThumbnailFailures.add(Number(image.dataset.thumbnailCollectionId));
+      if (state.activityThumbnailFailures.size !== before) renderActivityCenter();
+    }
+    if (image === ui.detailCover) renderDataQualitySummary();
   }
 
   function showReadyThumbnail(image, readyUrl) {
+    const collectionId = Number(image.dataset.thumbnailCollectionId);
     image.dataset.thumbnailStatus = "ready";
     image.setAttribute("aria-busy", "false");
     image.removeAttribute("title");
     image.loading = "eager";
     image.src = readyUrl;
+    const label = ensureThumbnailStatusLabel(image);
+    if (label) {
+      label.hidden = true;
+      label.textContent = "";
+    }
+    if (state.activityThumbnailFailures.delete(collectionId)) renderActivityCenter();
+    if (image === ui.detailCover) renderDataQualitySummary();
+  }
+
+  function ensureThumbnailStatusLabel(image) {
+    if (!image.matches(".item-cover, .shelf-cover, #detail-cover, .selected-cover, .candidate-item > img")) return null;
+    const binding = thumbnailBindings.get(image);
+    if (!binding || !image.parentElement) return null;
+    if (!binding.statusLabel) {
+      const label = el("span", "thumbnail-state-label");
+      label.id = `thumbnail-state-${++lastThumbnailStatusId}`;
+      image.insertAdjacentElement("afterend", label);
+      image.setAttribute("aria-describedby", label.id);
+      binding.statusLabel = label;
+    }
+    return binding.statusLabel;
   }
 
   function blobAsDataUrl(blob) {

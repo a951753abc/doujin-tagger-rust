@@ -22,6 +22,7 @@ use doujin_storage::metadata::{
     ExternalTag, ExternalTagOutcome, MetadataAssertionDecision, MetadataAssertionStatus,
     MetadataField, MetadataSource, MetadataValue,
 };
+use doujin_storage::statistics::CollectionFacet;
 use doujin_storage::thumbnails::{
     BACKGROUND_THUMBNAIL_PRIORITY, ThumbnailErrorKind, ThumbnailStatus,
 };
@@ -1394,6 +1395,23 @@ fn collection_statistics_count_only_active_library_values_and_split_authors() {
     assert_eq!(2, statistics.top_events[0].count);
     assert_eq!("favorite", statistics.top_tags[0].name);
     assert_eq!(2, statistics.top_tags[0].count);
+
+    let authors = repository
+        .collection_facets(CollectionFacet::Author, "har", 20)
+        .expect("author facets");
+    assert_eq!("Shared", authors[0].name);
+    assert_eq!(2, authors[0].count);
+    let tags = repository
+        .collection_facets(CollectionFacet::Tag, "fav", 20)
+        .expect("tag facets");
+    assert_eq!("favorite", tags[0].name);
+    assert_eq!(2, tags[0].count);
+    assert!(
+        repository
+            .collection_facets(CollectionFacet::Event, "%", 20)
+            .expect("escaped facet search")
+            .is_empty()
+    );
 }
 
 fn collection_ids(collections: &[doujin_storage::collections::CollectionSnapshot]) -> Vec<i64> {

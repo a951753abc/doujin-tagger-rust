@@ -284,14 +284,25 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("src=\"/assets/app.js?v=26\" defer"));
+    assert!(document.contains("src=\"/assets/app.js?v=34\" defer"));
     assert!(document.contains("id=\"close-filter-panel\""));
     assert!(document.contains("id=\"shelf-view\""));
     assert!(document.contains("data-route=\"shelf\""));
     assert!(document.contains("id=\"workbench-view\""));
     assert!(document.contains("id=\"metadata-evidence\""));
+    assert!(document.contains("id=\"mobile-detail-dialog\""));
+    assert!(document.contains("id=\"close-mobile-detail\""));
+    assert!(document.contains("id=\"activity-trigger\""));
+    assert!(document.contains("id=\"activity-panel\""));
+    assert!(document.contains("id=\"activity-announcer\""));
+    assert!(document.contains("最大原作書架"));
+    assert!(document.contains("data-shelf-scroll=\"next\""));
+    assert!(document.contains("role=\"combobox\""));
+    assert!(document.contains("id=\"filter-tag-chips\""));
+    assert!(document.contains("尚無標籤"));
     assert!(document.contains("id=\"external-job-status\""));
-    assert!(document.contains("證據與裁決"));
+    assert!(document.contains("資料品質與來源"));
+    assert!(document.contains("id=\"data-quality-summary\""));
     assert!(document.contains("id=\"delete-dialog\""));
     assert!(document.contains("id=\"consolidation-dialog\""));
     assert!(document.contains("移到資源回收桶"));
@@ -305,6 +316,19 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(stylesheet.contains("prefers-reduced-motion: reduce"));
     assert!(stylesheet.contains(":focus-visible"));
     assert!(stylesheet.contains("min-width: 320px"));
+    assert!(stylesheet.contains("width: 44px;"));
+    assert!(stylesheet.contains("height: 44px;"));
+    assert!(stylesheet.contains("(pointer: coarse)"));
+    assert!(stylesheet.contains("--muted: #786e60;"));
+    assert!(stylesheet.contains("outline: 3px solid var(--focus);"));
+    assert!(!stylesheet.contains("font-size: 0.6875rem;"));
+    assert!(!stylesheet.contains("font-size: 0.625rem;"));
+    assert!(!stylesheet.contains("font-size: 0.5625rem;"));
+    assert!(!stylesheet.contains("color: var(--faint);"));
+    assert!(stylesheet.starts_with("/* 1. Tokens */"));
+    assert!(stylesheet.contains("/* 10. Responsive, input modality, and reduced motion */"));
+    assert!(!stylesheet.contains("UI redesign v19"));
+    assert!(!stylesheet.contains(".brand-mark"));
 
     let javascript = server.request("GET", "/assets/app.js", &[]).await;
     assert_eq!(200, javascript.status);
@@ -323,12 +347,16 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("/api/tombstone-candidates"));
     assert!(script.contains("executeConsolidation"));
     assert!(script.contains("loadMetadataEvidence"));
+    assert!(script.contains("renderDataQualitySummary"));
+    assert!(script.contains("refreshActivityCenter"));
+    assert!(script.contains("updateShelfScrollControls"));
     assert!(script.contains("decideMetadataAssertion"));
     assert!(script.contains("/metadata/${field}/assertions/${assertion.id}"));
     assert!(script.contains("doujin-library.external-jobs.v1"));
     assert!(script.contains("error.code === \"application_busy\""));
     assert!(script.contains("requestTrackedThumbnail"));
-    assert!(script.contains("const THUMBNAIL_REQUEST_CONCURRENCY = 1"));
+    assert!(script.contains("const THUMBNAIL_REQUEST_CONCURRENCY = 4"));
+    assert!(script.contains("ensureThumbnailStatusLabel"));
     assert!(script.contains("drainThumbnailRequestQueue"));
     assert!(script.contains("rootMargin: \"800px 0px\""));
     assert!(script.contains("nextThumbnailRequestEpoch"));
@@ -338,6 +366,21 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("x-thumbnail-next-retry-at"));
     assert!(script.contains("restartThumbnailCollection"));
     assert!(script.contains("setFilterPanelOpen(false, { restoreFocus: true })"));
+    assert!(script.contains("updateSelectionCheckbox(selection"));
+    assert!(script.contains("從批次選取移除"));
+    assert!(script.contains("const isCollectionButton"));
+    assert!(script.contains("openMobileDetail(button, scrollPosition)"));
+    assert!(script.contains("finishMobileDetailClose"));
+    assert!(script.contains("--mobile-detail-scroll-offset"));
+    assert!(script.contains("dialog[open]:not(#mobile-detail-dialog)"));
+    assert!(!script.contains("byId(\"detail-pane\").scrollIntoView"));
+    assert!(script.contains("/api/facets?${params}"));
+    assert!(script.contains("params.append(name, entry)"));
+    assert!(script.contains("aria-activedescendant"));
+    assert!(script.contains("function decodeLibraryParams"));
+    assert!(script.contains("function rememberLibraryContext"));
+    assert!(script.contains("function confirmSelectionClear"));
+    assert!(script.contains("這會清除目前"));
     assert!(script.contains("event.key === \"Escape\" && !ui.filterPanel.hidden"));
     assert!(script.contains("永久刪除 ${state.selectedIds.size} 筆"));
 
@@ -1725,6 +1768,22 @@ async fn statistics_api_reports_categories_tags_and_common_metadata() {
     assert_eq!(2, statistics.json["top_event"][0]["count"]);
     assert_eq!("favorite", statistics.json["top_tags"][0]["name"]);
     assert_eq!(1, statistics.json["top_tags"][0]["count"]);
+
+    let author_facets = server
+        .request("GET", "/api/facets?field=author&q=Auth", &[])
+        .await;
+    assert_eq!(200, author_facets.status);
+    assert_eq!("Author", author_facets.json["items"][0]["name"]);
+    assert_eq!(2, author_facets.json["items"][0]["count"]);
+    let tag_facets = server
+        .request("GET", "/api/facets?field=tag&q=fav&limit=1", &[])
+        .await;
+    assert_eq!("favorite", tag_facets.json["items"][0]["name"]);
+    assert_eq!(1, tag_facets.json["items"][0]["count"]);
+    for path in ["/api/facets", "/api/facets?field=unknown"] {
+        let invalid = server.request("GET", path, &[]).await;
+        assert_eq!(400, invalid.status);
+    }
     server.stop().await;
 }
 
