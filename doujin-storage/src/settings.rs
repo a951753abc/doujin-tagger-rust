@@ -12,6 +12,7 @@ pub struct StoredApplicationSettings {
     pub thumbnail_width: u32,
     pub thumbnail_height: u32,
     pub thumbnail_quality: u8,
+    pub default_archive_root_id: Option<i64>,
     pub updated_at: String,
 }
 
@@ -27,7 +28,7 @@ impl CatalogRepository {
             .connection
             .query_row(
                 "SELECT reader_path, thumbnail_width, thumbnail_height,
-                        thumbnail_quality, updated_at
+                        thumbnail_quality, default_archive_root_id, updated_at
                  FROM application_settings WHERE singleton = 1",
                 [],
                 |row| {
@@ -36,7 +37,8 @@ impl CatalogRepository {
                         row.get::<_, i64>(1)?,
                         row.get::<_, i64>(2)?,
                         row.get::<_, i64>(3)?,
-                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, String>(5)?,
                     ))
                 },
             )
@@ -51,6 +53,7 @@ impl CatalogRepository {
         thumbnail_height: u32,
         thumbnail_quality: u8,
         effective_thumbnail_fingerprint: &str,
+        default_archive_root_id: Option<i64>,
     ) -> StorageResult<SaveApplicationSettingsOutcome> {
         validate_settings(
             reader_path,
@@ -62,19 +65,22 @@ impl CatalogRepository {
         let transaction = self.connection.transaction()?;
         transaction.execute(
             "INSERT INTO application_settings(
-                 singleton, reader_path, thumbnail_width, thumbnail_height, thumbnail_quality
-             ) VALUES (1, ?1, ?2, ?3, ?4)
+                 singleton, reader_path, thumbnail_width, thumbnail_height, thumbnail_quality,
+                 default_archive_root_id
+             ) VALUES (1, ?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(singleton) DO UPDATE SET
                  reader_path = excluded.reader_path,
                  thumbnail_width = excluded.thumbnail_width,
                  thumbnail_height = excluded.thumbnail_height,
                  thumbnail_quality = excluded.thumbnail_quality,
+                 default_archive_root_id = excluded.default_archive_root_id,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
             params![
                 reader_path.map(super::path_text).transpose()?,
                 i64::from(thumbnail_width),
                 i64::from(thumbnail_height),
                 i64::from(thumbnail_quality),
+                default_archive_root_id,
             ],
         )?;
         let thumbnails_requeued = transaction.execute(
@@ -132,7 +138,7 @@ fn validate_settings(
 }
 
 fn decode_settings(
-    raw: (Option<String>, i64, i64, i64, String),
+    raw: (Option<String>, i64, i64, i64, Option<i64>, String),
 ) -> StorageResult<StoredApplicationSettings> {
     Ok(StoredApplicationSettings {
         reader_path: raw.0.map(PathBuf::from),
@@ -142,6 +148,7 @@ fn decode_settings(
             .map_err(|_| StorageError::InvalidSchema("thumbnail height 超出範圍".to_owned()))?,
         thumbnail_quality: u8::try_from(raw.3)
             .map_err(|_| StorageError::InvalidSchema("thumbnail quality 超出範圍".to_owned()))?,
-        updated_at: raw.4,
+        default_archive_root_id: raw.4,
+        updated_at: raw.5,
     })
 }

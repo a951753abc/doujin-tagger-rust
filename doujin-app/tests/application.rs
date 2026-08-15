@@ -8,6 +8,7 @@ use doujin_app::external_search::{
     ExternalSearchProviderIssue, ExternalSearchProviderResponse, ExternalSearchRequest,
     ExternalTagCandidate,
 };
+use doujin_app::archive::ArchiveMovePreflightStatus;
 use doujin_app::rename::{RenameExpectedItem, RenamePreflightStatus};
 use doujin_app::{
     ApplicationBatchOutcome, ApplicationError, ApplicationScanIssueKind, ApplicationScanMode,
@@ -1374,7 +1375,7 @@ fn environment_overrides_remain_effective_while_user_settings_are_persisted() {
     );
 
     let saved = application
-        .save_application_settings(Some(stored_reader.clone()), 360, 480, 85)
+        .save_application_settings(Some(stored_reader.clone()), 360, 480, 85, None)
         .expect("save overridden settings");
 
     assert_eq!(Some(environment_reader), saved.settings.reader_path);
@@ -1425,7 +1426,7 @@ fn stale_thumbnail_result_is_ignored_after_settings_requeue() {
         .expect("start thumbnail");
 
     let saved = application
-        .save_application_settings(None, 480, 640, 100)
+        .save_application_settings(None, 480, 640, 100, None)
         .expect("save settings");
     assert_eq!(1, saved.thumbnails_requeued);
     let state = application
@@ -1506,7 +1507,7 @@ fn manual_cover_persists_invalidates_cache_survives_settings_and_reports_missing
     assert!(selected_state.source_fingerprint.contains("cover:manual"));
 
     let settings = application
-        .save_application_settings(None, 480, 640, 92)
+        .save_application_settings(None, 480, 640, 92, None)
         .expect("change thumbnail settings");
     assert_eq!(1, settings.thumbnails_requeued);
     let selected_request = application
@@ -1697,5 +1698,94 @@ fn thumbnail_cache_batch_promotes_selected_work_ahead_of_default_queue() {
             .into_iter()
             .map(|state| state.collection_id)
             .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn archive_move_preflight_reports_collision_when_destination_is_existing_directory() {
+    let tree = TestTree::new("archive-preflight-directory-collision");
+    let source_path = tree.zip("[circle] work.zip");
+    let archive_path = tree.path.join("archive");
+    fs::create_dir_all(&archive_path).expect("create archive root");
+
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application.run_scan(&[tree.root()]).expect("scan downloads root");
+    let collection_id = application
+        .repository()
+        .collection_id_for_current_path(&source_path)
+        .expect("collection lookup")
+        .expect("collection id");
+    let filename = application
+        .repository()
+        .collection(collection_id)
+        .expect("collection snapshot")
+        .filename;
+    fs::create_dir_all(archive_path.join("未分類").join(&filename))
+        .expect("create colliding destination directory");
+    let archive_root = application
+        .register_library_root(&archive_path, SourceKind::Archive, "歸檔區")
+        .expect("register archive root");
+
+    let preflight = application
+        .move_preflight(&[collection_id], archive_root.id)
+        .expect("move preflight");
+
+    assert_eq!(1, preflight.items.len());
+    assert_eq!(
+        ArchiveMovePreflightStatus::Collision,
+        preflight.items[0].status
+    );
+    assert_eq!(1, preflight.summary.collision);
+    assert_eq!(0, preflight.summary.ready);
+    assert_eq!(0, preflight.summary.ready_unclassified);
+}
+
+/// dangling symlink（連結目標不存在）作為 move 目的地時，preflight 仍必須回報 collision，
+/// 因為 `Path::exists()` 對 dangling symlink 一律回 false，用它判 collision 會誤放行到 Ready。
+/// symlink 建立在 Windows 需要 Developer Mode 或系統管理員權限；權限不足時略過本測試
+/// （比照 doujin-storage/src/exports.rs 的
+/// `export_root_rejects_directory_symlink_when_creation_is_permitted` 寫法）。
+#[cfg(windows)]
+#[test]
+fn archive_move_preflight_reports_collision_for_dangling_destination_symlink() {
+    use std::os::windows::fs::symlink_file;
+
+    let tree = TestTree::new("archive-preflight-symlink-collision");
+    let source_path = tree.zip("[circle] work.zip");
+    let archive_path = tree.path.join("archive");
+    let event_directory = archive_path.join("未分類");
+    fs::create_dir_all(&event_directory).expect("create archive event directory");
+
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application.run_scan(&[tree.root()]).expect("scan downloads root");
+    let collection_id = application
+        .repository()
+        .collection_id_for_current_path(&source_path)
+        .expect("collection lookup")
+        .expect("collection id");
+    let filename = application
+        .repository()
+        .collection(collection_id)
+        .expect("collection snapshot")
+        .filename;
+    let destination = event_directory.join(&filename);
+    let dangling_target = archive_path.join("does-not-exist.zip");
+    if symlink_file(&dangling_target, &destination).is_err() {
+        return;
+    }
+    let archive_root = application
+        .register_library_root(&archive_path, SourceKind::Archive, "歸檔區")
+        .expect("register archive root");
+
+    let preflight = application
+        .move_preflight(&[collection_id], archive_root.id)
+        .expect("move preflight");
+
+    assert_eq!(1, preflight.items.len());
+    assert_eq!(
+        ArchiveMovePreflightStatus::Collision,
+        preflight.items[0].status
     );
 }

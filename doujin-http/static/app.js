@@ -4,8 +4,10 @@
   const RECENT_KEY = "doujin-library.recent.v1";
   const LAYOUT_KEY = "doujin-library.layout.v1";
   const EXTERNAL_JOB_KEY = "doujin-library.external-jobs.v1";
+  const TRIAGE_AUTO_ADVANCE_KEY = "doujin-library.triage-auto-advance.v1";
   const RECENT_LIMIT = 20;
   const PER_PAGE = 48;
+  const TRIAGE_PER_PAGE = 100;
   const SHELF_LIMIT = 8;
   const SAVED_VIEW_SHELF_LIMIT = 6;
   const BATCH_REQUEST_SIZE = 100;
@@ -28,6 +30,25 @@
     tag: "標籤",
     untagged: "尚無標籤",
   };
+  const QUICK_ARCHIVE_READY_STATUSES = ["ready", "ready_unclassified"];
+  const QUICK_ARCHIVE_STATUS_LABELS = {
+    ready: "可直接歸檔",
+    ready_unclassified: "將進未分類",
+    not_downloads: "不在下載區",
+    source_missing: "來源已遺失",
+    collision: "目的地衝突",
+    blocked: "無法歸檔",
+    collection_missing: "收藏已不存在",
+  };
+  const QUICK_ARCHIVE_SUMMARY_ROWS = [
+    ["ready", "本可直接歸檔"],
+    ["ready_unclassified", "本將進未分類"],
+    ["collision", "本目的地衝突"],
+    ["source_missing", "本來源已遺失"],
+    ["not_downloads", "本不在下載區"],
+    ["blocked", "本無法歸檔"],
+    ["collection_missing", "本收藏已不存在"],
+  ];
   const METADATA_LABELS = {
     title: "標題",
     event: "場次",
@@ -131,6 +152,25 @@
     reviewSkipped: new Set(),
     reviewRequestNumber: 0,
     reviewReturnId: null,
+    triageLoaded: false,
+    triageLoading: false,
+    triageItems: [],
+    triageTotal: 0,
+    triagePage: 1,
+    triageTotalPages: 0,
+    triagePosition: 0,
+    triageSkipped: new Set(),
+    triageRequestNumber: 0,
+    triageReturnId: null,
+    triageArchiveRootId: null,
+    triageArchiveResolving: false,
+    triagePreflight: null,
+    triagePreflightCollectionId: null,
+    triagePreflightLoading: false,
+    triagePreflightRequestNumber: 0,
+    triageArchiving: false,
+    triageArchivedResult: null,
+    triageAutoAdvance: readStorage(TRIAGE_AUTO_ADVANCE_KEY, true) !== false,
     candidates: [],
     duplicateCandidates: [],
     duplicateLoaded: false,
@@ -181,6 +221,8 @@
     coverCandidates: null,
     coverCandidatesCollectionId: null,
     coverCandidateRequestNumber: 0,
+    archivePreflight: null,
+    quickArchivePreflight: null,
   };
 
   if (!Array.isArray(state.recent)) state.recent = [];
@@ -196,6 +238,8 @@
   const thumbnailRequestQueue = [];
   let libraryLoadPromise = null;
   let workBasketPromise = null;
+  let archiveTargetResolver = null;
+  let archiveTargetConfirmed = false;
   let thumbnailRequestsInFlight = 0;
   let lastThumbnailRequestEpoch = 0;
   let lastThumbnailStatusId = 0;
@@ -385,6 +429,7 @@
       selectionCount: byId("selection-count"),
       selectionWorkbenchLink: byId("selection-workbench-link"),
       selectionBasketAdd: byId("selection-basket-add"),
+      selectionQuickArchive: byId("selection-quick-archive"),
       workBasketCount: byId("work-basket-count"),
       detailBasketToggle: byId("detail-basket-toggle"),
       workBasketSummary: byId("work-basket-summary"),
@@ -440,6 +485,35 @@
       reviewDetail: byId("review-detail"),
       reviewPrevious: byId("review-previous"),
       reviewNext: byId("review-next"),
+      triageCount: byId("triage-count"),
+      triageTotal: byId("triage-total"),
+      triagePosition: byId("triage-position"),
+      triageLoading: byId("triage-loading"),
+      triageError: byId("triage-error"),
+      triageErrorMessage: byId("triage-error-message"),
+      triageEmpty: byId("triage-empty"),
+      triageEmptyMessage: byId("triage-empty-message"),
+      resetTriageSkips: byId("reset-triage-skips"),
+      triageDesk: byId("triage-desk"),
+      triageCover: byId("triage-cover"),
+      triageSequence: byId("triage-sequence"),
+      triageTitle: byId("triage-title"),
+      triageFilename: byId("triage-filename"),
+      triageContext: byId("triage-context"),
+      triageTags: byId("triage-tags"),
+      triageStatus: byId("triage-status"),
+      triageDestinationLabel: byId("triage-destination-label"),
+      triageDestinationPath: byId("triage-destination-path"),
+      triageQualitySummary: byId("triage-quality-summary"),
+      triageQualityActions: byId("triage-quality-actions"),
+      triageArchive: byId("triage-archive"),
+      triageEdit: byId("triage-edit"),
+      triageSearch: byId("triage-search"),
+      triageSkip: byId("triage-skip"),
+      triageDetail: byId("triage-detail"),
+      triagePrevious: byId("triage-previous"),
+      triageNext: byId("triage-next"),
+      triageAutoAdvance: byId("triage-auto-advance"),
       workbenchSelectionSummary: byId("workbench-selection-summary"),
       selectedCollectionList: byId("selected-collection-list"),
       selectionEmpty: byId("selection-empty"),
@@ -466,6 +540,23 @@
       moveDialog: byId("move-dialog"),
       moveForm: byId("move-form"),
       archiveRootSelect: byId("archive-root-select"),
+      archiveButton: byId("archive-button"),
+      archiveTargetDialog: byId("archive-target-dialog"),
+      archiveTargetForm: byId("archive-target-form"),
+      archiveTargetSelect: byId("archive-target-select"),
+      archiveTargetSetDefault: byId("archive-target-set-default"),
+      archiveConfirmDialog: byId("archive-confirm-dialog"),
+      archiveConfirmForm: byId("archive-confirm-form"),
+      archiveConfirmMessage: byId("archive-confirm-message"),
+      archiveConfirmSubmit: byId("archive-confirm-submit"),
+      quickArchiveDialog: byId("quick-archive-dialog"),
+      quickArchiveForm: byId("quick-archive-form"),
+      quickArchiveIntro: byId("quick-archive-intro"),
+      quickArchiveSummary: byId("quick-archive-summary"),
+      quickArchiveItems: byId("quick-archive-items"),
+      quickArchiveSubmit: byId("quick-archive-submit"),
+      defaultArchiveRoot: byId("default-archive-root"),
+      defaultArchiveRootNote: byId("default-archive-root-note"),
       exportDialog: byId("export-dialog"),
       exportForm: byId("export-form"),
       exportRootSelect: byId("export-root-select"),
@@ -656,6 +747,12 @@
     ui.exportRootSelect.addEventListener("change", clearExportPreflight);
     ui.exportPackageName.addEventListener("input", clearExportPreflight);
     ui.moveForm.addEventListener("submit", executeMove);
+    ui.archiveButton.addEventListener("click", archiveSelectedToLibrary);
+    ui.archiveTargetForm.addEventListener("submit", submitArchiveTargetDialog);
+    ui.archiveTargetDialog.addEventListener("close", handleArchiveTargetDialogClose);
+    ui.archiveConfirmForm.addEventListener("submit", executeArchiveToLibrary);
+    ui.selectionQuickArchive.addEventListener("click", prepareQuickArchive);
+    ui.quickArchiveForm.addEventListener("submit", executeQuickArchive);
     byId("prepare-delete").addEventListener("click", prepareDelete);
     ui.deleteForm.addEventListener("change", syncDeleteMode);
     ui.deleteForm.addEventListener("input", syncDeleteMode);
@@ -679,6 +776,20 @@
     ui.reviewDetail.addEventListener("click", openReviewDetail);
     ui.reviewPrevious.addEventListener("click", () => moveReviewPosition(-1));
     ui.reviewNext.addEventListener("click", () => moveReviewPosition(1));
+    byId("refresh-triage").addEventListener("click", () => loadTriageQueue({ preferredId: currentTriageItem()?.id }));
+    byId("retry-triage").addEventListener("click", () => loadTriageQueue({ preferredId: currentTriageItem()?.id }));
+    ui.resetTriageSkips.addEventListener("click", resetTriageSkips);
+    ui.triageArchive.addEventListener("click", archiveCurrentTriageItem);
+    ui.triageEdit.addEventListener("click", openTriageEditor);
+    ui.triageSearch.addEventListener("click", enqueueTriageExternalSearch);
+    ui.triageSkip.addEventListener("click", skipCurrentTriageItem);
+    ui.triageDetail.addEventListener("click", openTriageDetail);
+    ui.triagePrevious.addEventListener("click", () => moveTriagePosition(-1));
+    ui.triageNext.addEventListener("click", () => moveTriagePosition(1));
+    ui.triageAutoAdvance.addEventListener("change", () => {
+      state.triageAutoAdvance = ui.triageAutoAdvance.checked;
+      writeStorage(TRIAGE_AUTO_ADVANCE_KEY, state.triageAutoAdvance);
+    });
     ui.consolidationForm.addEventListener("input", syncConsolidationConfirmation);
     ui.consolidationForm.addEventListener("change", syncConsolidationConfirmation);
     ui.consolidationForm.addEventListener("submit", executeConsolidation);
@@ -731,7 +842,7 @@
     const previousRoute = state.route;
     const parsedRoute = parseRouteHash();
     const route = parsedRoute.route;
-    const nextRoute = ["shelf", "library", "basket", "review", "duplicates", "workbench", "stats", "settings"].includes(route) ? route : "shelf";
+    const nextRoute = ["shelf", "library", "triage", "basket", "review", "duplicates", "workbench", "stats", "settings"].includes(route) ? route : "shelf";
     if (previousRoute === "library" && nextRoute !== "library") {
       if (!state.leavingLibraryContextCaptured) rememberLibraryContext();
       state.leavingLibraryContextCaptured = false;
@@ -809,6 +920,7 @@
       state.reviewReturnId = null;
       loadReviewQueue({ preferredId });
     }
+    if (state.route === "triage") enterTriage();
     if (state.route === "stats") loadStats();
     if (state.route === "settings") loadSettingsPage();
     if (state.route !== "library") window.scrollTo({ top: 0, behavior: "auto" });
@@ -962,7 +1074,7 @@
   }
 
   function routeTitle(route) {
-    return { shelf: "書架", library: "全部藏書", basket: "工作籃", review: "品質審核", duplicates: "重複作品", workbench: "工作台", stats: "統計", settings: "設定" }[route];
+    return { shelf: "書架", library: "全部藏書", triage: "待歸檔", basket: "工作籃", review: "品質審核", duplicates: "重複作品", workbench: "工作台", stats: "統計", settings: "設定" }[route];
   }
 
   function startActivityMonitoring() {
@@ -2751,6 +2863,7 @@
     ui.detailCover.alt = `${displayTitle(collection)}的封面`;
     bindThumbnail(ui.detailCover, collection.id);
     ui.detailSource.textContent = collection.root?.source === "downloads" ? "新收藏" : "典藏庫";
+    ui.archiveButton.hidden = collection.root?.source !== "downloads";
     ui.detailKicker.textContent = [collection.event, collection.classification_top, collection.classification_subcategory].filter(Boolean).join(" · ") || "尚未分類";
     ui.detailTitle.textContent = displayTitle(collection);
     ui.detailFilename.textContent = collection.filename;
@@ -3128,6 +3241,10 @@
         await loadReviewQueue({ preferredId: target.id });
         const remains = state.reviewItems.some((item) => item.collection.id === target.id);
         toast(`已儲存${METADATA_LABELS[field]}的手動值${remains ? "；這本收藏仍有其他待審問題" : "；已前進下一筆"}`);
+      } else if (state.route === "triage") {
+        invalidateDerivedData({ library: true });
+        replaceTriageItem(collection);
+        toast(`已儲存${METADATA_LABELS[field]}的手動值；已重新預檢這本收藏`);
       } else {
         replaceSelected(collection);
         if (ui.metadataEvidence.open) loadMetadataEvidence(true);
@@ -3153,6 +3270,10 @@
         invalidateDerivedData({ library: true });
         await loadReviewQueue({ preferredId: target.id });
         toast(`已清除${METADATA_LABELS[field]}的手動值；Queue 已依最新狀態更新`);
+      } else if (state.route === "triage") {
+        invalidateDerivedData({ library: true });
+        replaceTriageItem(collection);
+        toast(`已清除${METADATA_LABELS[field]}的手動值；已重新預檢這本收藏`);
       } else {
         replaceSelected(collection);
         if (ui.metadataEvidence.open) loadMetadataEvidence(true);
@@ -3163,9 +3284,7 @@
     }
   }
 
-  async function enqueueExternalSearch() {
-    if (!state.selected) return;
-    const collection = state.selected;
+  function externalSearchFields(collection) {
     const missing = [];
     if (!collection.title) missing.push("title");
     if (!collection.event) missing.push("event");
@@ -3173,7 +3292,13 @@
     if (!collection.authors?.length) missing.push("authors");
     if (!collection.parody) missing.push("parody");
     if (!collection.classification_top) missing.push("classification");
-    const fields = missing.length ? missing : ["title", "event", "circle", "authors", "parody", "classification"];
+    return missing.length ? missing : ["title", "event", "circle", "authors", "parody", "classification"];
+  }
+
+  async function enqueueExternalSearch() {
+    if (!state.selected) return;
+    const collection = state.selected;
+    const fields = externalSearchFields(collection);
     const button = byId("external-search-button");
     button.disabled = true;
     try {
@@ -3788,6 +3913,8 @@
     ui.selectionCount.textContent = String(count);
     ui.selectionBasketAdd.textContent = `將已選 ${formatNumber(count)} 本加入工作籃`;
     ui.selectionBasketAdd.disabled = count === 0 || state.workBasketLoading;
+    ui.selectionQuickArchive.textContent = `快速歸檔 ${formatNumber(count)} 本`;
+    ui.selectionQuickArchive.disabled = count === 0;
     ui.selectionWorkbenchLink.textContent = `前往工作台處理 ${formatNumber(count)} 筆`;
     updateLibrarySummary();
     updateWorkbenchBadge();
@@ -4277,6 +4404,433 @@
       state.reviewPage -= 1;
       state.reviewPosition = 99;
       loadReviewQueue();
+    }
+  }
+
+  async function enterTriage() {
+    const preferredId = state.triageReturnId || currentTriageItem()?.id || null;
+    state.triageReturnId = null;
+    state.triageArchiveRootId = null;
+    state.triagePreflight = null;
+    state.triagePreflightCollectionId = null;
+    ui.triageAutoAdvance.checked = state.triageAutoAdvance;
+    await loadTriageQueue({ preferredId });
+    if (state.route !== "triage") return;
+    await ensureTriageArchiveRoot();
+  }
+
+  async function loadTriageQueue({ preferredId = null } = {}) {
+    if (state.triageLoading) return;
+    const requestNumber = ++state.triageRequestNumber;
+    state.triageLoading = true;
+    ui.triageLoading.hidden = false;
+    ui.triageError.hidden = true;
+    try {
+      const params = new URLSearchParams({
+        source: "downloads",
+        page: String(state.triagePage),
+        per_page: String(TRIAGE_PER_PAGE),
+        sort: "created",
+        direction: "desc",
+      });
+      const data = await api(`/api/collections?${params}`);
+      if (requestNumber !== state.triageRequestNumber) return;
+      state.triageItems = data.items || [];
+      state.triageTotal = data.pagination?.total || 0;
+      state.triageTotalPages = data.pagination?.total_pages || 0;
+      if (!state.triageItems.length && state.triagePage > Math.max(1, state.triageTotalPages)) {
+        state.triagePage = Math.max(1, state.triageTotalPages);
+        state.triageLoading = false;
+        return loadTriageQueue({ preferredId });
+      }
+      const preferredIndex = preferredId == null
+        ? -1
+        : state.triageItems.findIndex((collection) => collection.id === preferredId && !state.triageSkipped.has(collection.id));
+      if (preferredIndex >= 0) state.triagePosition = preferredIndex;
+      else state.triagePosition = Math.min(state.triagePosition, Math.max(0, state.triageItems.length - 1));
+      state.triageLoaded = true;
+      updateTriageBadge();
+      renderTriageQueue();
+    } catch (error) {
+      if (requestNumber !== state.triageRequestNumber) return;
+      ui.triageError.hidden = false;
+      ui.triageErrorMessage.textContent = error.message;
+      ui.triageDesk.hidden = true;
+      ui.triageEmpty.hidden = true;
+    } finally {
+      if (requestNumber === state.triageRequestNumber) {
+        state.triageLoading = false;
+        ui.triageLoading.hidden = true;
+      }
+    }
+  }
+
+  function updateTriageBadge() {
+    ui.triageCount.textContent = String(state.triageTotal);
+    ui.triageCount.hidden = state.triageTotal === 0;
+  }
+
+  function availableTriageIndices() {
+    const indices = [];
+    state.triageItems.forEach((collection, index) => {
+      if (!state.triageSkipped.has(collection.id)) indices.push(index);
+    });
+    return indices;
+  }
+
+  function currentTriageItem() {
+    return state.triageItems[state.triagePosition] || null;
+  }
+
+  function renderTriageQueue() {
+    clearTriageArchivedResult();
+    const available = availableTriageIndices();
+    const skippedCount = state.triageSkipped.size;
+    ui.triageTotal.textContent = `${formatNumber(state.triageTotal)} 本收藏還在下載區等待歸檔`;
+    ui.triagePosition.textContent = skippedCount
+      ? `本次已略過 ${formatNumber(skippedCount)} 本`
+      : "歸檔後這本會從清單移除，並依最新狀態更新計數";
+    ui.resetTriageSkips.hidden = skippedCount === 0;
+    ui.triageEmpty.hidden = available.length > 0;
+    ui.triageDesk.hidden = available.length === 0;
+    if (!available.length) {
+      ui.triageEmptyMessage.textContent = state.triageTotal > 0
+        ? "目前頁面的收藏都在本次 session 略過清單中；重設略過後可再次處理。"
+        : "新掃描進來的收藏會出現在這裡，等你決定去向。";
+      unbindThumbnail(ui.triageCover);
+      ui.triageArchive.disabled = true;
+      return;
+    }
+    if (!available.includes(state.triagePosition)) {
+      state.triagePosition = available.find((index) => index >= state.triagePosition) ?? available[available.length - 1];
+    }
+    const collection = currentTriageItem();
+    bindThumbnail(ui.triageCover, collection.id);
+    ui.triageCover.alt = `${displayTitle(collection)}封面`;
+    const globalPosition = (state.triagePage - 1) * TRIAGE_PER_PAGE + state.triagePosition + 1;
+    ui.triageSequence.textContent = `INBOX ${String(globalPosition).padStart(3, "0")} / ${String(state.triageTotal).padStart(3, "0")}`;
+    ui.triageTitle.textContent = displayTitle(collection);
+    ui.triageFilename.textContent = collection.filename;
+    ui.triageContext.replaceChildren();
+    [["場次", collection.event], ["社團", collection.circle], ["作者", collection.authors?.join("、")], ["原作", collection.parody || collection.parody_raw]].forEach(([label, value]) => {
+      ui.triageContext.append(el("dt", "", label), el("dd", value ? "" : "metadata-missing", value || "未設定"));
+    });
+    renderTriageTags(collection);
+    renderTriageQuality(collection);
+    ui.triagePrevious.disabled = state.triagePage === 1 && state.triagePosition === available[0];
+    ui.triageNext.disabled = state.triagePage >= state.triageTotalPages && state.triagePosition === available[available.length - 1];
+    syncTriagePreflight();
+  }
+
+  function renderTriageTags(collection) {
+    ui.triageTags.replaceChildren();
+    if (!collection.tags?.length) {
+      ui.triageTags.append(el("span", "tag-empty", "尚未加入標籤"));
+      return;
+    }
+    collection.tags.forEach((tag) => ui.triageTags.append(el("span", "tag-chip", tag)));
+  }
+
+  function renderTriageQuality(collection) {
+    const missing = missingMetadataFields(collection);
+    ui.triageQualitySummary.textContent = missing.length
+      ? `缺少 ${formatNumber(missing.length)} 欄（${missing.map(({ label }) => label).join("、")}）；歸檔目的地會依現有欄位決定。`
+      : "主要欄位都已填寫，歸檔後可直接進入對應分類。";
+    ui.triageQualityActions.replaceChildren();
+    missing.slice(0, 4).forEach(({ field, label }) => {
+      const button = el("button", "text-button", `補上${label}`);
+      button.type = "button";
+      button.addEventListener("click", () => openMetadataDialog(field, collection));
+      ui.triageQualityActions.append(button);
+    });
+  }
+
+  async function ensureTriageArchiveRoot() {
+    if (state.triageArchiveRootId != null || state.triageArchiveResolving) return state.triageArchiveRootId;
+    state.triageArchiveResolving = true;
+    renderTriageReadiness();
+    try {
+      state.triageArchiveRootId = await resolveQuickArchiveTarget();
+    } finally {
+      state.triageArchiveResolving = false;
+    }
+    if (state.triageArchiveRootId == null) {
+      renderTriageReadiness();
+      return null;
+    }
+    state.triagePreflightCollectionId = null;
+    syncTriagePreflight();
+    return state.triageArchiveRootId;
+  }
+
+  function syncTriagePreflight() {
+    const collection = currentTriageItem();
+    if (!collection || state.triageArchiveRootId == null) {
+      renderTriageReadiness();
+      return;
+    }
+    if (state.triagePreflightCollectionId === collection.id) {
+      renderTriageReadiness();
+      return;
+    }
+    refreshTriagePreflight();
+  }
+
+  async function refreshTriagePreflight() {
+    const collection = currentTriageItem();
+    const requestNumber = ++state.triagePreflightRequestNumber;
+    state.triagePreflight = null;
+    state.triagePreflightCollectionId = collection?.id ?? null;
+    state.triagePreflightLoading = Boolean(collection) && state.triageArchiveRootId != null;
+    renderTriageReadiness();
+    if (!state.triagePreflightLoading) return;
+    try {
+      const preflight = await api("/api/file-actions/move/preflight", {
+        method: "POST",
+        body: { collection_ids: [collection.id], archive_root_id: state.triageArchiveRootId },
+      });
+      if (requestNumber !== state.triagePreflightRequestNumber) return;
+      state.triagePreflight = preflight.items?.[0] || { status: "blocked", message: "無法取得歸檔預檢結果" };
+    } catch (error) {
+      if (requestNumber !== state.triagePreflightRequestNumber) return;
+      state.triagePreflight = { status: "blocked", message: error.message };
+    } finally {
+      if (requestNumber === state.triagePreflightRequestNumber) state.triagePreflightLoading = false;
+    }
+    renderTriageReadiness();
+  }
+
+  function renderTriageReadiness() {
+    const collection = currentTriageItem();
+    ui.triageStatus.classList.remove("is-ready", "is-warning", "is-blocked");
+    ui.triageDestinationPath.hidden = true;
+    ui.triageDestinationPath.textContent = "";
+    if (!collection) {
+      ui.triageStatus.textContent = "待選收藏";
+      ui.triageDestinationLabel.textContent = "沒有正在處理的收藏。";
+      ui.triageArchive.disabled = true;
+      return;
+    }
+    if (state.triageArchiveRootId == null) {
+      const resolving = state.triageArchiveResolving;
+      ui.triageStatus.textContent = resolving ? "確認典藏庫" : "缺少典藏庫";
+      if (!resolving) ui.triageStatus.classList.add("is-blocked");
+      ui.triageDestinationLabel.textContent = resolving
+        ? "正在確認要歸檔到哪一座典藏庫…"
+        : "尚未選定可用的典藏庫，因此無法歸檔。到設定登記並啟用典藏庫後，重新進入待歸檔即可解析。";
+      ui.triageArchive.disabled = true;
+      return;
+    }
+    if (state.triagePreflightLoading) {
+      ui.triageStatus.textContent = "預檢中";
+      ui.triageDestinationLabel.textContent = "正在取得這本收藏的歸檔預檢結果…";
+      ui.triageArchive.disabled = true;
+      return;
+    }
+    const entry = state.triagePreflight;
+    if (!entry) {
+      ui.triageStatus.textContent = "尚未預檢";
+      ui.triageDestinationLabel.textContent = "還沒有這本收藏的預檢結果。";
+      ui.triageArchive.disabled = true;
+      return;
+    }
+    const ready = QUICK_ARCHIVE_READY_STATUSES.includes(entry.status);
+    ui.triageStatus.textContent = QUICK_ARCHIVE_STATUS_LABELS[entry.status] || entry.status;
+    ui.triageStatus.classList.add(entry.status === "ready" ? "is-ready" : entry.status === "ready_unclassified" ? "is-warning" : "is-blocked");
+    if (entry.status === "ready") ui.triageDestinationLabel.textContent = "可直接歸檔，目的地如下。";
+    else if (entry.status === "ready_unclassified") ui.triageDestinationLabel.textContent = "可歸檔，但分類資料不足，將進未分類。";
+    else ui.triageDestinationLabel.textContent = entry.message || `${QUICK_ARCHIVE_STATUS_LABELS[entry.status] || entry.status}，目前無法歸檔這本收藏。`;
+    if (entry.destination && (ready || entry.status === "collision")) {
+      ui.triageDestinationPath.textContent = entry.destination;
+      ui.triageDestinationPath.hidden = false;
+    }
+    ui.triageArchive.disabled = !ready || state.triageArchiving;
+  }
+
+  async function archiveCurrentTriageItem() {
+    const collection = currentTriageItem();
+    const entry = state.triagePreflight;
+    if (!collection || state.triageArchiving) return;
+    if (state.triageArchiveRootId == null || !QUICK_ARCHIVE_READY_STATUSES.includes(entry?.status)) return;
+    state.triageArchiving = true;
+    ui.triageArchive.disabled = true;
+    try {
+      const report = await api("/api/file-actions/move", {
+        method: "POST",
+        body: { collection_ids: [collection.id], archive_root_id: state.triageArchiveRootId },
+      });
+      const result = report.items?.[0];
+      if (result?.status !== "succeeded") {
+        toast(result?.error || (result?.status === "pending_recovery" ? "狀態待人工復原，這本先留在待歸檔" : "歸檔未完成"), true);
+        state.triageArchiving = false;
+        state.triagePreflightCollectionId = null;
+        syncTriagePreflight();
+        return;
+      }
+      state.triageArchiving = false;
+      toast(`已歸檔「${displayTitle(collection)}」`);
+      if (state.triageAutoAdvance) {
+        removeTriageItem(collection.id);
+      } else {
+        // 偏好關閉：清單資料照樣移除，但畫面停在這筆的歸檔結果，等使用者自己前進。
+        state.triageArchivedResult = { title: displayTitle(collection), destination: entry.destination || "" };
+        removeTriageItem(collection.id, { advance: false });
+      }
+      invalidateDerivedData();
+      await removeArchivedFromLibrary([collection.id]);
+    } catch (error) {
+      state.triageArchiving = false;
+      toast(error.message, true);
+      renderTriageReadiness();
+    }
+  }
+
+  function removeTriageItem(collectionId, { advance = true } = {}) {
+    const index = state.triageItems.findIndex((collection) => collection.id === collectionId);
+    if (index < 0) return;
+    state.triageItems.splice(index, 1);
+    state.triageSkipped.delete(collectionId);
+    state.triageTotal = Math.max(0, state.triageTotal - 1);
+    state.triageTotalPages = Math.ceil(state.triageTotal / TRIAGE_PER_PAGE);
+    state.triagePreflight = null;
+    state.triagePreflightCollectionId = null;
+    updateTriageBadge();
+    state.triagePosition = Math.min(index, Math.max(0, state.triageItems.length - 1));
+    if (!advance) {
+      renderTriageArchivedResult();
+      return;
+    }
+    if (!state.triageItems.length && state.triageTotal > 0) {
+      state.triagePage = Math.max(1, Math.min(state.triagePage, state.triageTotalPages));
+      loadTriageQueue();
+      return;
+    }
+    renderTriageQueue();
+    if (state.triageAutoAdvance && !ui.triageDesk.hidden) {
+      ui.triageDesk.scrollIntoView({ block: "start", behavior: "smooth" });
+    }
+  }
+
+  // 偏好關閉時的歸檔結果畫面：沿用桌面上這筆已渲染的書籍區塊，只改預檢面板與可用動作。
+  function renderTriageArchivedResult() {
+    const result = state.triageArchivedResult;
+    if (!result) return;
+    setTriageItemActionsEnabled(false);
+    ui.triageTotal.textContent = `${formatNumber(state.triageTotal)} 本收藏還在下載區等待歸檔`;
+    ui.triagePosition.textContent = "已歸檔這本，按 J 或「下一本」再處理下一筆。";
+    ui.triageStatus.classList.remove("is-warning", "is-blocked");
+    ui.triageStatus.classList.add("is-ready");
+    ui.triageStatus.textContent = "已歸檔";
+    ui.triageDestinationLabel.textContent = `已歸檔「${result.title}」到典藏庫，畫面停在這筆結果。`;
+    ui.triageDestinationPath.textContent = result.destination;
+    ui.triageDestinationPath.hidden = !result.destination;
+    ui.triageNext.disabled = false;
+  }
+
+  function clearTriageArchivedResult() {
+    if (!state.triageArchivedResult) return;
+    state.triageArchivedResult = null;
+    setTriageItemActionsEnabled(true);
+  }
+
+  function setTriageItemActionsEnabled(enabled) {
+    ui.triageArchive.disabled = !enabled;
+    ui.triageEdit.disabled = !enabled;
+    ui.triageSearch.disabled = !enabled;
+    ui.triageSkip.disabled = !enabled;
+    ui.triageDetail.disabled = !enabled;
+  }
+
+  function replaceTriageItem(collection) {
+    const index = state.triageItems.findIndex((item) => item.id === collection.id);
+    if (index < 0) return;
+    state.triageItems[index] = collection;
+    state.triagePreflightCollectionId = null;
+    if (index === state.triagePosition) renderTriageQueue();
+  }
+
+  function openTriageEditor() {
+    const collection = currentTriageItem();
+    if (!collection) return;
+    openMetadataDialog(missingMetadataFields(collection)[0]?.field || "title", collection);
+  }
+
+  async function enqueueTriageExternalSearch() {
+    const collection = currentTriageItem();
+    if (!collection) return;
+    const fields = externalSearchFields(collection);
+    ui.triageSearch.disabled = true;
+    try {
+      const result = await api(`/api/collections/${collection.id}/external-search-jobs`, {
+        method: "POST",
+        body: { fields },
+      });
+      rememberExternalJob(result.job);
+      toast(result.created ? `已排入外部資料搜尋（${fields.map((field) => METADATA_LABELS[field]).join("、")}）` : "相同搜尋已在佇列中");
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      ui.triageSearch.disabled = Boolean(state.triageArchivedResult);
+    }
+  }
+
+  function skipCurrentTriageItem() {
+    const collection = currentTriageItem();
+    if (!collection) return;
+    state.triageSkipped.add(collection.id);
+    const next = availableTriageIndices().find((index) => index > state.triagePosition);
+    if (next != null) {
+      state.triagePosition = next;
+      renderTriageQueue();
+    } else if (state.triagePage < state.triageTotalPages) {
+      state.triagePage += 1;
+      state.triagePosition = 0;
+      loadTriageQueue();
+    } else renderTriageQueue();
+  }
+
+  function resetTriageSkips() {
+    state.triageSkipped.clear();
+    state.triagePage = 1;
+    state.triagePosition = 0;
+    loadTriageQueue();
+  }
+
+  function openTriageDetail() {
+    const collection = currentTriageItem();
+    if (!collection) return;
+    state.triageReturnId = collection.id;
+    navigateToCollection(collection);
+  }
+
+  function moveTriagePosition(direction) {
+    if (state.triageArchivedResult) {
+      // 結果狀態下的第一次導航只負責離開結果畫面：位置早已指向下一筆，往前不需再移動。
+      clearTriageArchivedResult();
+      if (!state.triageItems.length && state.triageTotal > 0) {
+        state.triagePage = Math.max(1, Math.min(state.triagePage, state.triageTotalPages));
+        loadTriageQueue();
+        return;
+      }
+      if (direction > 0) {
+        renderTriageQueue();
+        return;
+      }
+    }
+    const available = availableTriageIndices();
+    const next = available.indexOf(state.triagePosition) + direction;
+    if (next >= 0 && next < available.length) {
+      state.triagePosition = available[next];
+      renderTriageQueue();
+      ui.triageDesk.scrollIntoView({ block: "start", behavior: "smooth" });
+    } else if (direction > 0 && state.triagePage < state.triageTotalPages) {
+      state.triagePage += 1;
+      state.triagePosition = 0;
+      loadTriageQueue();
+    } else if (direction < 0 && state.triagePage > 1) {
+      state.triagePage -= 1;
+      state.triagePosition = TRIAGE_PER_PAGE - 1;
+      loadTriageQueue();
     }
   }
 
@@ -5255,6 +5809,335 @@
     }
   }
 
+  async function resolveQuickArchiveTarget() {
+    let data;
+    try {
+      data = await api("/api/library-roots");
+    } catch (error) {
+      toast(error.message, true);
+      return null;
+    }
+    const roots = (data.roots || []).filter((root) => root.active && root.source === "archive");
+    if (!roots.length) {
+      toast("尚未設定啟用中的典藏庫。請先到設定登記典藏庫。", true);
+      openLibraryRootSettings("archive");
+      return null;
+    }
+    if (roots.length === 1) return roots[0].id;
+    let defaultId = null;
+    try {
+      const settings = await api("/api/settings");
+      defaultId = settings.default_archive_root_id;
+    } catch (_) {
+      defaultId = null;
+    }
+    if (defaultId != null && roots.some((root) => root.id === defaultId)) return defaultId;
+    return openArchiveTargetDialog(roots);
+  }
+
+  function openArchiveTargetDialog(roots) {
+    return new Promise((resolve) => {
+      archiveTargetResolver = resolve;
+      archiveTargetConfirmed = false;
+      ui.archiveTargetSelect.replaceChildren();
+      roots.forEach((root) => {
+        const option = document.createElement("option");
+        option.value = String(root.id);
+        option.textContent = `${root.label} — ${root.path}`;
+        ui.archiveTargetSelect.append(option);
+      });
+      ui.archiveTargetSetDefault.checked = false;
+      ui.archiveTargetDialog.showModal();
+    });
+  }
+
+  async function submitArchiveTargetDialog(event) {
+    event.preventDefault();
+    archiveTargetConfirmed = true;
+    const rootId = Number(ui.archiveTargetSelect.value);
+    const setDefault = ui.archiveTargetSetDefault.checked;
+    ui.archiveTargetDialog.close();
+    if (setDefault) await persistDefaultArchiveRoot(rootId);
+    const resolve = archiveTargetResolver;
+    archiveTargetResolver = null;
+    resolve?.(rootId);
+  }
+
+  function handleArchiveTargetDialogClose() {
+    if (archiveTargetConfirmed) return;
+    const resolve = archiveTargetResolver;
+    archiveTargetResolver = null;
+    resolve?.(null);
+  }
+
+  async function persistDefaultArchiveRoot(rootId) {
+    try {
+      const current = await api("/api/settings");
+      await api("/api/settings", {
+        method: "PUT",
+        body: {
+          viewer_path: current.overrides.viewer_path ? current.saved_viewer_path : current.viewer_path,
+          thumb_size: current.overrides.thumb_size ? current.saved_thumb_size : current.thumb_size,
+          thumb_quality: current.overrides.thumb_quality ? current.saved_thumb_quality : current.thumb_quality,
+          default_archive_root_id: rootId,
+        },
+      });
+    } catch (error) {
+      toast(`預設未儲存：${error.message}`, true);
+    }
+  }
+
+  async function archiveSelectedToLibrary() {
+    const collection = state.selected;
+    if (!collection) return;
+    const button = ui.archiveButton;
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = "正在準備歸檔…";
+    try {
+      const archiveRootId = await resolveQuickArchiveTarget();
+      if (archiveRootId == null) return;
+      const preflight = await api("/api/file-actions/move/preflight", {
+        method: "POST",
+        body: { collection_ids: [collection.id], archive_root_id: archiveRootId },
+      });
+      openArchiveConfirmDialog(collection, preflight);
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
+
+  function openArchiveConfirmDialog(collection, preflight) {
+    const item = preflight.items?.[0];
+    if (!item) {
+      toast("無法取得歸檔預檢結果", true);
+      return;
+    }
+    state.archivePreflight = { collectionId: collection.id, archiveRootId: preflight.archive_root_id, status: item.status };
+    ui.archiveConfirmMessage.textContent = item.status === "ready"
+      ? `將歸檔到：${item.destination}`
+      : item.status === "ready_unclassified"
+        ? `可歸檔，將歸入未分類：${item.destination}`
+        : item.message || "目前無法歸檔這本收藏。";
+    ui.archiveConfirmSubmit.disabled = !["ready", "ready_unclassified"].includes(item.status);
+    ui.archiveConfirmDialog.showModal();
+  }
+
+  async function executeArchiveToLibrary(event) {
+    event.preventDefault();
+    const pending = state.archivePreflight;
+    if (!pending || !["ready", "ready_unclassified"].includes(pending.status)) return;
+    const submit = ui.archiveConfirmSubmit;
+    submit.disabled = true;
+    submit.textContent = "正在歸檔…";
+    try {
+      const report = await api("/api/file-actions/move", {
+        method: "POST",
+        body: { collection_ids: [pending.collectionId], archive_root_id: pending.archiveRootId },
+      });
+      const entry = report.items?.[0];
+      ui.archiveConfirmDialog.close();
+      if (entry?.status === "succeeded") {
+        await removeArchivedFromLibrary([pending.collectionId]);
+        toast("已歸檔到收藏區");
+      } else {
+        toast(entry?.error || (entry?.status === "pending_recovery" ? "狀態待人工復原" : "歸檔未完成"), true);
+      }
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      submit.disabled = false;
+      submit.textContent = "確認歸檔";
+      state.archivePreflight = null;
+    }
+  }
+
+  async function prepareQuickArchive() {
+    const collectionIds = Array.from(state.selectedIds);
+    if (!collectionIds.length) return;
+    const button = ui.selectionQuickArchive;
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = "正在預檢…";
+    try {
+      const archiveRootId = await resolveQuickArchiveTarget();
+      if (archiveRootId == null) return;
+      const preflight = await api("/api/file-actions/move/preflight", {
+        method: "POST",
+        body: { collection_ids: collectionIds, archive_root_id: archiveRootId },
+      });
+      openQuickArchiveDialog(archiveRootId, preflight);
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      button.textContent = original;
+      button.disabled = state.selectedIds.size === 0;
+    }
+  }
+
+  function openQuickArchiveDialog(archiveRootId, preflight) {
+    const items = preflight.items || [];
+    const summary = preflight.summary || {};
+    const readyIds = items.filter((item) => QUICK_ARCHIVE_READY_STATUSES.includes(item.status)).map((item) => item.collection_id);
+    const skipped = items.filter((item) => !QUICK_ARCHIVE_READY_STATUSES.includes(item.status));
+    state.quickArchivePreflight = { archiveRootId, readyIds, skipped };
+    ui.quickArchiveIntro.textContent = `已選 ${formatNumber(Number(summary.total) || items.length)} 本，以下為歸檔預檢結果。`;
+    ui.quickArchiveSummary.replaceChildren();
+    QUICK_ARCHIVE_SUMMARY_ROWS.forEach(([key, label]) => {
+      const count = Number(summary[key]) || 0;
+      if (!count) return;
+      ui.quickArchiveSummary.append(el("li", `quick-archive-tally status-${key}`, `${formatNumber(count)} ${label}`));
+    });
+    ui.quickArchiveItems.replaceChildren();
+    items.forEach((item) => ui.quickArchiveItems.append(quickArchivePreflightItem(item)));
+    ui.quickArchiveSubmit.textContent = `歸檔 ${formatNumber(readyIds.length)} 本`;
+    ui.quickArchiveSubmit.disabled = readyIds.length === 0;
+    ui.quickArchiveDialog.showModal();
+  }
+
+  function quickArchivePreflightItem(item) {
+    const record = state.selectedRecords.get(item.collection_id);
+    const row = el("li", `quick-archive-item status-${item.status}`);
+    const title = el("strong", "quick-archive-item-title", record ? displayTitle(record) : `收藏 #${item.collection_id}`);
+    const status = el("span", "quick-archive-item-status", QUICK_ARCHIVE_STATUS_LABELS[item.status] || item.status);
+    const showDestination = QUICK_ARCHIVE_READY_STATUSES.includes(item.status) || item.status === "collision";
+    const detail = el("small", "quick-archive-item-detail", [showDestination ? item.destination : null, item.message].filter(Boolean).join(" · "));
+    detail.hidden = !detail.textContent;
+    row.append(title, status, detail);
+    return row;
+  }
+
+  async function executeQuickArchive(event) {
+    event.preventDefault();
+    const pending = state.quickArchivePreflight;
+    if (!pending?.readyIds.length) return;
+    const submit = ui.quickArchiveSubmit;
+    const original = submit.textContent;
+    submit.disabled = true;
+    submit.textContent = "正在歸檔…";
+    try {
+      const report = await api("/api/file-actions/move", {
+        method: "POST",
+        body: { collection_ids: pending.readyIds, archive_root_id: pending.archiveRootId },
+      });
+      const skipped = pending.skipped || [];
+      ui.quickArchiveDialog.close();
+      state.quickArchivePreflight = null;
+      await applyQuickArchiveReport(report, skipped);
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      submit.textContent = original;
+      submit.disabled = !state.quickArchivePreflight;
+    }
+  }
+
+  async function applyQuickArchiveReport(report, skipped = []) {
+    const entries = report.items || [];
+    const summary = `成功 ${report.succeeded}、失敗 ${report.failed}、待復原 ${report.pending_recovery}、未執行 ${skipped.length}`;
+    const unfinished = Number(report.failed || 0) + Number(report.pending_recovery || 0) + skipped.length;
+    ui.batchResult.hidden = false;
+    ui.batchResultSummary.replaceChildren(el("strong", "", "快速歸檔結果"), el("span", "", summary));
+    ui.batchResultItems.replaceChildren();
+    entries.forEach((entry) => {
+      const collection = state.selectedRecords.get(entry.collection_id) || { id: entry.collection_id, title: `收藏 #${entry.collection_id}` };
+      const message = entry.status === "succeeded" ? "完成" : entry.error || (entry.status === "pending_recovery" ? "狀態待人工復原" : "歸檔失敗");
+      ui.batchResultItems.append(batchResultItem(collection, entry.status, message));
+    });
+    skipped.forEach((item) => {
+      const collection = state.selectedRecords.get(item.collection_id) || { id: item.collection_id, title: `收藏 #${item.collection_id}` };
+      const reason = [
+        QUICK_ARCHIVE_STATUS_LABELS[item.status] || item.status,
+        item.message,
+        item.status === "collision" ? item.destination : null,
+      ].filter(Boolean).join(" · ");
+      ui.batchResultItems.append(batchResultItem(collection, "skipped", `未執行 · ${reason}`));
+    });
+    recordBatchActivity("快速歸檔結果", summary, unfinished);
+    await removeArchivedFromLibrary(entries.filter((entry) => entry.status === "succeeded").map((entry) => entry.collection_id));
+    toast(unfinished ? "快速歸檔部分完成，請查看逐筆結果" : "快速歸檔完成", unfinished > 0);
+  }
+
+  async function removeArchivedFromLibrary(succeededIds) {
+    const removal = new Set((succeededIds || []).filter((id) => id != null));
+    if (!removal.size) return;
+    removal.forEach((id) => {
+      state.selectedIds.delete(id);
+      state.selectedRecords.delete(id);
+    });
+    if (state.selectedIds.size === 0) state.selectionContext = null;
+    if (state.route !== "library" || state.filters.source !== "downloads") {
+      await refreshArchivedInPlace(Array.from(removal));
+      return;
+    }
+    // 在途分頁請求（libraryLoadPromise 不為 null 時才有）會帶著移除前的 items／pagination 回來，
+    // 先讓它失效，避免已歸檔項目被 append 回清單。失效後那筆請求的 finally 不會重置 libraryLoading
+    // 也不會補排載入檢查，這裡自行重置旗標，並在它結束後補一次 scheduleLibraryLoadCheck。
+    if (libraryLoadPromise) {
+      state.requestNumber += 1;
+      state.libraryLoading = false;
+      libraryLoadPromise.then(scheduleLibraryLoadCheck, scheduleLibraryLoadCheck);
+    }
+    invalidateDerivedData();
+    const survivorsBefore = (index) => state.items
+      .slice(0, Math.max(0, index))
+      .reduce((count, item) => count + (removal.has(item.id) ? 0 : 1), 0);
+    const focusIndex = state.items.findIndex((item) => item.id === state.libraryFocusId);
+    const focusRemoved = focusIndex >= 0 && removal.has(state.items[focusIndex].id);
+    const detailRemoved = state.selected != null && removal.has(state.selected.id);
+    const anchor = survivorsBefore(focusIndex >= 0 ? focusIndex : estimatedVisibleCollectionIndex());
+    const remaining = state.items.filter((item) => !removal.has(item.id));
+    const loadedRemoved = state.items.length - remaining.length;
+    const anchorId = remaining.length ? remaining[Math.min(anchor, remaining.length - 1)].id : null;
+    const anchorOffset = anchorId == null
+      ? null
+      : ui.results.querySelector(`[data-collection-id="${anchorId}"]`)?.getBoundingClientRect().top;
+    state.items = remaining;
+    state.total = Math.max(0, (Number(state.total) || 0) - removal.size);
+    state.page = Math.floor(state.items.length / PER_PAGE);
+    state.totalPages = state.items.length >= state.total ? state.page : Math.max(state.page + 1, Math.ceil(state.total / PER_PAGE));
+    if (state.items.length && loadedRemoved) {
+      const nextIndex = Math.min(anchor, state.items.length - 1);
+      renderCollectionWindow({ anchorIndex: nextIndex, force: true });
+      const anchorShift = ui.results.querySelector(`[data-collection-id="${anchorId}"]`)?.getBoundingClientRect().top;
+      if (anchorOffset != null && anchorShift != null) window.scrollBy(0, anchorShift - anchorOffset);
+      if (focusRemoved) selectCollection(state.items[nextIndex], { focus: true });
+      else if (detailRemoved && !applyLibraryFocus()) clearDetail();
+      syncResultCheckboxes();
+    } else if (!state.items.length) {
+      state.libraryFocusId = null;
+      if (state.total > 0) {
+        await loadCollections({ preserveSelection: true });
+        return;
+      }
+      clearDetail();
+      renderCollections();
+    }
+    updateSelectionUI();
+    renderLibraryLoadState();
+    scheduleLibraryLoadCheck();
+  }
+
+  async function refreshArchivedInPlace(ids) {
+    if (state.route === "library" && ids.length === 1 && state.selected?.id === ids[0]) {
+      invalidateDerivedData();
+      try {
+        replaceSelected(await api(`/api/collections/${ids[0]}`));
+        syncResultCheckboxes();
+        updateSelectionUI();
+        return;
+      } catch (error) {
+        toast(`歸檔已完成，但無法更新這筆顯示：${error.message}`, true);
+      }
+    }
+    invalidateDerivedData({ library: true });
+    if (state.route === "library") await loadCollections({ preserveSelection: true });
+    else updateSelectionUI();
+  }
+
   function prepareDelete() {
     const collections = selectedCollections();
     if (!collections.length) return;
@@ -5893,6 +6776,7 @@
       ui.settingsForm.elements.viewer_path.value = settings.viewer_path;
       ui.settingsForm.elements.thumb_size.value = settings.thumb_size;
       ui.settingsForm.elements.thumb_quality.value = settings.thumb_quality;
+      ui.triageAutoAdvance.checked = state.triageAutoAdvance;
       state.settingsSnapshot = settings;
       syncSettingsOverride("viewer_path", ui.viewerPathOverride, settings.overrides.viewer_path, settings.viewer_path, settings.saved_viewer_path);
       syncSettingsOverride("thumb_size", ui.thumbSizeOverride, settings.overrides.thumb_size, settings.thumb_size, settings.saved_thumb_size);
@@ -5902,6 +6786,7 @@
         : "目前沒有環境變數覆寫；這裡儲存的值會直接生效。";
       state.settingsRoots = roots.roots;
       state.exportRoots = exportRoots.roots || [];
+      renderDefaultArchiveRootSelect(settings.default_archive_root_id, roots.roots);
       renderFirstRun(settings, roots.roots);
       ui.rootRescanNote.hidden = !state.rootsNeedScan;
       updateThumbnailCacheJob(cacheJobs.job, { announce: false });
@@ -5959,6 +6844,7 @@
             : customReader ? String(form.get("viewer_path") || "").trim() : "",
           thumb_size: settingsSnapshot.saved_thumb_size,
           thumb_quality: settingsSnapshot.saved_thumb_quality,
+          default_archive_root_id: settingsSnapshot.default_archive_root_id ?? null,
         },
       });
       const activeSources = new Set(state.settingsRoots.filter((root) => root.active).map((root) => root.source));
@@ -6009,6 +6895,26 @@
       return;
     }
     note.textContent = `${environmentName} 控制中：目前有效值為「${effectiveValue || "系統預設"}」；UI 已儲存值為「${savedValue || "系統預設"}」。儲存本頁不會改變目前有效值。`;
+  }
+
+  function renderDefaultArchiveRootSelect(defaultArchiveRootId, roots) {
+    const archiveRoots = (roots || []).filter((root) => root.active && root.source === "archive");
+    ui.defaultArchiveRoot.replaceChildren();
+    const noneOption = document.createElement("option");
+    noneOption.value = "";
+    noneOption.textContent = "未設定";
+    ui.defaultArchiveRoot.append(noneOption);
+    archiveRoots.forEach((root) => {
+      const option = document.createElement("option");
+      option.value = String(root.id);
+      option.textContent = `${root.label} — ${root.path}`;
+      ui.defaultArchiveRoot.append(option);
+    });
+    const isValid = defaultArchiveRootId != null && archiveRoots.some((root) => root.id === defaultArchiveRootId);
+    ui.defaultArchiveRoot.value = isValid ? String(defaultArchiveRootId) : "";
+    const stale = defaultArchiveRootId != null && !isValid;
+    ui.defaultArchiveRootNote.hidden = !stale;
+    ui.defaultArchiveRootNote.textContent = stale ? "原設定的典藏庫已停用或移除，已顯示為「未設定」；再次儲存會清除這項設定。" : "";
   }
 
   function renderThumbnailCacheRoots() {
@@ -6278,6 +7184,9 @@
           thumb_quality: settingsSnapshot?.overrides.thumb_quality
             ? settingsSnapshot.saved_thumb_quality
             : Number(form.get("thumb_quality")),
+          default_archive_root_id: form.get("default_archive_root_id")
+            ? Number(form.get("default_archive_root_id"))
+            : null,
         },
       });
       const requeued = settings.thumbnails_requeued || 0;
@@ -6623,6 +7532,20 @@
         else if (key === "s" && !ui.reviewSkip.disabled) skipCurrentReviewItem();
         else if (key === "j") moveReviewPosition(1);
         else if (key === "k") moveReviewPosition(-1);
+      }
+      return;
+    }
+    if (state.route === "triage" && !isTyping && !isDialogOpen() && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      const key = event.key.toLowerCase();
+      if (["a", "e", "w", "s", "j", "k", "o"].includes(key)) {
+        event.preventDefault();
+        if (key === "a" && !ui.triageArchive.disabled) archiveCurrentTriageItem();
+        else if (key === "e" && !ui.triageEdit.disabled) openTriageEditor();
+        else if (key === "w" && !ui.triageSearch.disabled) enqueueTriageExternalSearch();
+        else if (key === "s" && !ui.triageSkip.disabled) skipCurrentTriageItem();
+        else if (key === "o" && !ui.triageDetail.disabled) openTriageDetail();
+        else if (key === "j") moveTriagePosition(1);
+        else if (key === "k") moveTriagePosition(-1);
       }
       return;
     }

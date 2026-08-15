@@ -787,6 +787,7 @@ mod tests {
             thumbnail_width: 300,
             thumbnail_height: 400,
             thumbnail_quality: 70,
+            default_archive_root_id: None,
             updated_at: "2026-08-12T00:00:00.000Z".to_owned(),
         };
         let environment = EnvironmentSettings {

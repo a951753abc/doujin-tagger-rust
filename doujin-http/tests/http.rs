@@ -749,7 +749,16 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("id=\"selection-workbench-link\""));
     assert!(document.contains("id=\"work-basket-count\""));
     assert!(document.contains("id=\"detail-basket-toggle\""));
+    assert!(document.contains("id=\"archive-button\""));
+    assert!(document.contains("id=\"archive-target-dialog\""));
+    assert!(document.contains("id=\"archive-target-select\""));
+    assert!(document.contains("id=\"archive-confirm-dialog\""));
+    assert!(document.contains("id=\"default-archive-root\""));
     assert!(document.contains("id=\"selection-basket-add\""));
+    assert!(document.contains("id=\"selection-quick-archive\""));
+    assert!(document.contains("id=\"quick-archive-dialog\""));
+    assert!(document.contains("id=\"quick-archive-items\""));
+    assert!(document.contains("id=\"quick-archive-submit\""));
     assert!(document.contains("id=\"basket-view\""));
     assert!(document.contains("id=\"work-basket-list\""));
     assert!(document.contains("勾選只決定這次送往工作台的範圍"));
@@ -757,6 +766,30 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("切換目前查看收藏的批次選取"));
     assert!(!document.contains(">加標籤</a>"));
     assert!(!document.contains(">寫入手動值</a>"));
+    assert!(document.contains("id=\"triage-view\""));
+    assert!(document.contains("data-view=\"triage\""));
+    assert!(document.contains("data-route=\"triage\""));
+    assert!(document.contains("id=\"triage-count\""));
+    assert!(document.contains("id=\"triage-desk\""));
+    assert!(document.contains("id=\"triage-sequence\""));
+    assert!(document.contains("id=\"triage-status\""));
+    assert!(document.contains("id=\"triage-destination-label\""));
+    assert!(document.contains("id=\"triage-destination-path\""));
+    assert!(document.contains("id=\"triage-quality-summary\""));
+    assert!(document.contains("id=\"triage-archive\""));
+    assert!(document.contains("id=\"triage-edit\""));
+    assert!(document.contains("id=\"triage-search\""));
+    assert!(document.contains("id=\"triage-skip\""));
+    assert!(document.contains("id=\"triage-detail\""));
+    assert!(document.contains("id=\"triage-previous\""));
+    assert!(document.contains("id=\"triage-next\""));
+    assert!(document.contains("id=\"triage-empty-message\""));
+    assert!(document.contains("下載區沒有待歸檔的收藏"));
+    assert!(document.contains("name=\"triage_auto_advance\""));
+    assert!(document.contains("id=\"triage-auto-advance\""));
+    assert!(document.contains("待歸檔：歸檔成功後自動前進下一本"));
+    assert!(document.contains("僅在待歸檔模式：歸檔／編輯 metadata／外部搜尋"));
+    assert!(document.contains("僅在待歸檔模式：本次略過／打開完整 Detail"));
     assert!(document.contains("id=\"delete-dialog\""));
     assert!(document.contains("id=\"consolidation-dialog\""));
     assert!(document.contains("移到資源回收桶"));
@@ -975,6 +1008,96 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("後續操作仍使用既有確認、進度與後端安全驗證"));
     assert!(script.contains("event.key === \"Escape\" && !ui.filterPanel.hidden"));
     assert!(script.contains("永久刪除 ${state.selectedIds.size} 筆"));
+    assert!(script.contains("/api/file-actions/move/preflight"));
+    assert!(script.contains("async function resolveQuickArchiveTarget"));
+    assert!(script.contains("default_archive_root_id"));
+    assert!(script.contains("async function archiveSelectedToLibrary"));
+    assert!(script.contains("async function executeArchiveToLibrary"));
+    assert!(script.contains("function renderDefaultArchiveRootSelect"));
+    assert!(script.contains("async function prepareQuickArchive"));
+    assert!(script.contains("function openQuickArchiveDialog"));
+    assert!(script.contains("async function executeQuickArchive"));
+    assert!(script.contains(
+        "body: { collection_ids: pending.readyIds, archive_root_id: pending.archiveRootId }"
+    ));
+    assert!(script.contains(
+        "items.filter((item) => QUICK_ARCHIVE_READY_STATUSES.includes(item.status)).map((item) => item.collection_id)"
+    ));
+    assert!(script.contains("async function removeArchivedFromLibrary"));
+    assert!(
+        script.contains("state.route !== \"library\" || state.filters.source !== \"downloads\"")
+    );
+    assert!(
+        script.contains("state.total = Math.max(0, (Number(state.total) || 0) - removal.size)")
+    );
+    assert!(
+        script.contains(
+            "if (focusRemoved) selectCollection(state.items[nextIndex], { focus: true })"
+        )
+    );
+    assert!(script.contains("await removeArchivedFromLibrary([pending.collectionId])"));
+    assert!(script.contains("快速歸檔 ${formatNumber(count)} 本"));
+    assert!(stylesheet.contains(".quick-archive-item"));
+    assert!(script.contains(
+        "const skipped = items.filter((item) => !QUICK_ARCHIVE_READY_STATUSES.includes(item.status))"
+    ));
+    assert!(script.contains("state.quickArchivePreflight = { archiveRootId, readyIds, skipped }"));
+    assert!(script.contains("async function applyQuickArchiveReport(report, skipped = [])"));
+    assert!(script.contains("待復原 ${report.pending_recovery}、未執行 ${skipped.length}"));
+    assert!(script.contains("batchResultItem(collection, \"skipped\", `未執行 · ${reason}`)"));
+    assert!(stylesheet.contains(".batch-result .result-skipped span"));
+    assert!(script.contains("state.requestNumber += 1;"));
+    assert!(script.contains(
+        "libraryLoadPromise.then(scheduleLibraryLoadCheck, scheduleLibraryLoadCheck)"
+    ));
+    assert!(script.contains("const current = await api(\"/api/settings\");"));
+    assert!(!script.contains("state.settingsSnapshot || await api"));
+
+    assert!(script.contains("doujin-library.triage-auto-advance.v1"));
+    assert!(script.contains("const TRIAGE_PER_PAGE = 100"));
+    assert!(script.contains("\"shelf\", \"library\", \"triage\", \"basket\""));
+    assert!(script.contains("triage: \"待歸檔\""));
+    assert!(script.contains("if (state.route === \"triage\") enterTriage()"));
+    assert!(script.contains("async function loadTriageQueue"));
+    assert!(script.contains("source: \"downloads\","));
+    assert!(script.contains("per_page: String(TRIAGE_PER_PAGE)"));
+    assert!(script.contains("function updateTriageBadge"));
+    assert!(script.contains("ui.triageCount.hidden = state.triageTotal === 0"));
+    assert!(script.contains("function availableTriageIndices"));
+    assert!(script.contains("async function ensureTriageArchiveRoot"));
+    assert!(script.contains("state.triageArchiveRootId = await resolveQuickArchiveTarget()"));
+    assert!(script.contains("async function refreshTriagePreflight"));
+    assert!(script.contains(
+        "body: { collection_ids: [collection.id], archive_root_id: state.triageArchiveRootId }"
+    ));
+    assert!(script.contains("function renderTriageReadiness"));
+    assert!(script.contains("可直接歸檔，目的地如下。"));
+    assert!(script.contains("可歸檔，但分類資料不足，將進未分類。"));
+    assert!(script.contains("ui.triageArchive.disabled = !ready || state.triageArchiving"));
+    assert!(script.contains("async function archiveCurrentTriageItem"));
+    assert!(script.contains("await removeArchivedFromLibrary([collection.id])"));
+    assert!(script.contains("function removeTriageItem"));
+    assert!(script.contains("if (state.triageAutoAdvance && !ui.triageDesk.hidden)"));
+    assert!(script.contains("function removeTriageItem(collectionId, { advance = true } = {})"));
+    assert!(script.contains("removeTriageItem(collection.id, { advance: false })"));
+    assert!(script.contains("function renderTriageArchivedResult"));
+    assert!(script.contains("function clearTriageArchivedResult"));
+    assert!(script.contains("function setTriageItemActionsEnabled"));
+    assert!(script.contains("已歸檔這本，按 J 或「下一本」再處理下一筆。"));
+    assert!(script.contains("state.triageSkipped.add(collection.id)"));
+    assert!(script.contains("state.triageReturnId = collection.id"));
+    assert!(script.contains("function moveTriagePosition"));
+    assert!(script.contains("async function enqueueTriageExternalSearch"));
+    assert!(script.contains("function externalSearchFields"));
+    assert!(script.contains("state.triageAutoAdvance = ui.triageAutoAdvance.checked"));
+    assert!(script.contains("writeStorage(TRIAGE_AUTO_ADVANCE_KEY, state.triageAutoAdvance)"));
+    assert!(script.contains(
+        "state.route === \"triage\" && !isTyping && !isDialogOpen() && !event.altKey"
+    ));
+    assert!(script.contains("[\"a\", \"e\", \"w\", \"s\", \"j\", \"k\", \"o\"].includes(key)"));
+    assert!(stylesheet.contains(".triage-desk"));
+    assert!(stylesheet.contains(".triage-status-badge"));
+    assert!(stylesheet.contains(".triage-readiness"));
 
     let unknown_asset = server.request("GET", "/assets/unknown.css", &[]).await;
     assert_eq!(404, unknown_asset.status);
@@ -3579,7 +3702,7 @@ async fn settings_api_identifies_each_environment_override_and_saved_fallback() 
         },
     );
     application
-        .save_application_settings(Some(saved_reader.clone()), 360, 480, 85)
+        .save_application_settings(Some(saved_reader.clone()), 360, 480, 85, None)
         .expect("save fallback settings");
     let server = RunningServer::start(application).await;
 
@@ -3609,6 +3732,136 @@ async fn settings_api_identifies_each_environment_override_and_saved_fallback() 
         "DOUJIN_THUMB_QUALITY",
         response.json["overrides"]["thumb_quality"]
     );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn settings_api_manages_default_archive_root_and_pins_stored_value_after_deactivation() {
+    let tree = TestTree::new("settings-default-archive-root");
+    fs::create_dir_all(tree.library()).expect("create archive library");
+    let downloads_path = tree.path.join("downloads-library");
+    fs::create_dir_all(&downloads_path).expect("create downloads library");
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let thumbnail_config =
+        ThumbnailConfig::new(tree.path.join("cache"), 300, 400, 80).expect("thumbnail config");
+    let application = ApplicationService::with_thumbnails(repository, NoopRecycleBin, thumbnail_config);
+    let server = RunningServer::start(application).await;
+
+    let archive_root = server
+        .request_json(
+            "POST",
+            "/api/library-roots",
+            &serde_json::json!({
+                "path": tree.library(),
+                "source": "archive",
+                "label": "典藏區"
+            }),
+        )
+        .await;
+    assert_eq!(200, archive_root.status);
+    let archive_root_id = archive_root.json["id"].as_i64().expect("archive root ID");
+
+    let downloads_root = server
+        .request_json(
+            "POST",
+            "/api/library-roots",
+            &serde_json::json!({
+                "path": downloads_path,
+                "source": "downloads",
+                "label": "下載區"
+            }),
+        )
+        .await;
+    assert_eq!(200, downloads_root.status);
+    let downloads_root_id = downloads_root.json["id"].as_i64().expect("downloads root ID");
+
+    let settings_payload = |default_archive_root_id: Option<i64>| {
+        serde_json::json!({
+            "viewer_path": "",
+            "thumb_size": "300x400",
+            "thumb_quality": 80,
+            "default_archive_root_id": default_archive_root_id
+        })
+    };
+
+    let initial = server.request("GET", "/api/settings", &[]).await;
+    assert_eq!(200, initial.status);
+    assert_eq!(Value::Null, initial.json["default_archive_root_id"]);
+
+    let set = server
+        .request_json(
+            "PUT",
+            "/api/settings",
+            &settings_payload(Some(archive_root_id)),
+        )
+        .await;
+    assert_eq!(200, set.status);
+    assert_eq!(archive_root_id, set.json["default_archive_root_id"]);
+
+    let confirmed = server.request("GET", "/api/settings", &[]).await;
+    assert_eq!(200, confirmed.status);
+    assert_eq!(archive_root_id, confirmed.json["default_archive_root_id"]);
+
+    let downloads_rejected = server
+        .request_json(
+            "PUT",
+            "/api/settings",
+            &settings_payload(Some(downloads_root_id)),
+        )
+        .await;
+    assert_eq!(400, downloads_rejected.status);
+    assert_eq!(
+        "invalid_settings",
+        downloads_rejected.json["error"]["code"]
+    );
+
+    let missing_rejected = server
+        .request_json("PUT", "/api/settings", &settings_payload(Some(999)))
+        .await;
+    assert_eq!(400, missing_rejected.status);
+    assert_eq!("invalid_settings", missing_rejected.json["error"]["code"]);
+
+    let unchanged = server.request("GET", "/api/settings", &[]).await;
+    assert_eq!(200, unchanged.status);
+    assert_eq!(archive_root_id, unchanged.json["default_archive_root_id"]);
+
+    let cleared = server
+        .request_json("PUT", "/api/settings", &settings_payload(None))
+        .await;
+    assert_eq!(200, cleared.status);
+    assert_eq!(Value::Null, cleared.json["default_archive_root_id"]);
+
+    let cleared_confirmed = server.request("GET", "/api/settings", &[]).await;
+    assert_eq!(200, cleared_confirmed.status);
+    assert_eq!(Value::Null, cleared_confirmed.json["default_archive_root_id"]);
+
+    let reset = server
+        .request_json(
+            "PUT",
+            "/api/settings",
+            &settings_payload(Some(archive_root_id)),
+        )
+        .await;
+    assert_eq!(200, reset.status);
+    assert_eq!(archive_root_id, reset.json["default_archive_root_id"]);
+
+    let deactivated = server
+        .request(
+            "DELETE",
+            &format!("/api/library-roots/{archive_root_id}"),
+            &[],
+        )
+        .await;
+    assert_eq!(200, deactivated.status);
+    assert_eq!(false, deactivated.json["active"]);
+
+    let after_deactivation = server.request("GET", "/api/settings", &[]).await;
+    assert_eq!(200, after_deactivation.status);
+    assert_eq!(
+        archive_root_id,
+        after_deactivation.json["default_archive_root_id"]
+    );
+
     server.stop().await;
 }
 
@@ -4625,6 +4878,234 @@ async fn move_api_derives_safe_destinations_and_reports_each_item() {
     assert_eq!(1, missing_source.json["failed"]);
     assert_eq!("failed", missing_source.json["items"][0]["status"]);
     server.stop().await;
+}
+
+#[tokio::test]
+async fn move_preflight_reports_readiness_and_destinations_without_touching_files() {
+    fn collection_id(application: &ApplicationService<NoopRecycleBin>, path: &Path) -> i64 {
+        application
+            .repository()
+            .collection_id_for_current_path(path)
+            .expect("collection lookup")
+            .expect("collection")
+    }
+
+    let tree = TestTree::new("file-move-preflight");
+    tree.zip_in("downloads", "ready.zip");
+    tree.zip_in("downloads", "unclassified.zip");
+    tree.zip_in("downloads", "collision.zip");
+    tree.zip_in("downloads", "gone.zip");
+    tree.zip_in("archive", "already-archived.zip");
+    let downloads = tree.root("downloads");
+    let archive = tree.root("archive");
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application
+        .run_scan(&[
+            ScanRoot {
+                path: downloads.clone(),
+                source: SourceKind::Downloads,
+                label: "下載區".to_owned(),
+            },
+            ScanRoot {
+                path: archive.clone(),
+                source: SourceKind::Archive,
+                label: "歸檔區".to_owned(),
+            },
+        ])
+        .expect("scan roots");
+    let ready_id = collection_id(&application, &downloads.join("ready.zip"));
+    let unclassified_id = collection_id(&application, &downloads.join("unclassified.zip"));
+    let collision_id = collection_id(&application, &downloads.join("collision.zip"));
+    let gone_id = collection_id(&application, &downloads.join("gone.zip"));
+    let archived_id = collection_id(&application, &archive.join("already-archived.zip"));
+    for (collection, event) in [
+        (ready_id, "C106"),
+        (collision_id, "C105"),
+        (gone_id, "C104"),
+    ] {
+        application
+            .set_manual_metadata(
+                collection,
+                MetadataField::Event,
+                MetadataValue::Text(event.to_owned()),
+            )
+            .expect("set event");
+    }
+    assert!(
+        application
+            .collection(unclassified_id)
+            .expect("unclassified snapshot")
+            .event
+            .is_none()
+    );
+    let archive_root_id = application
+        .library_roots()
+        .expect("library roots")
+        .into_iter()
+        .find(|library_root| library_root.source == SourceKind::Archive)
+        .expect("archive root")
+        .id;
+    let downloads_root_id = application
+        .library_roots()
+        .expect("library roots")
+        .into_iter()
+        .find(|library_root| library_root.source == SourceKind::Downloads)
+        .expect("downloads root")
+        .id;
+    fs::remove_file(downloads.join("gone.zip")).expect("remove source before preflight");
+    let collision_directory = archive.join("C105");
+    fs::create_dir(&collision_directory).expect("create collision directory");
+    let collision_target = collision_directory.join("collision.zip");
+    fs::write(&collision_target, b"existing archive file").expect("create collision file");
+    let missing_collection_id = 999_999;
+    let shared = share_application(application);
+    let server = RunningServer::start_shared(Arc::clone(&shared)).await;
+
+    let arbitrary_path = server
+        .request_json(
+            "POST",
+            "/api/file-actions/move/preflight",
+            &serde_json::json!({
+                "collection_ids": [ready_id],
+                "archive_root_id": archive_root_id,
+                "destination": tree.root("outside")
+            }),
+        )
+        .await;
+    assert_eq!(400, arbitrary_path.status);
+    assert_eq!("invalid_json", arbitrary_path.json["error"]["code"]);
+
+    let preflight = server
+        .request_json(
+            "POST",
+            "/api/file-actions/move/preflight",
+            &serde_json::json!({
+                "collection_ids": [
+                    ready_id,
+                    unclassified_id,
+                    collision_id,
+                    gone_id,
+                    archived_id,
+                    missing_collection_id
+                ],
+                "archive_root_id": archive_root_id
+            }),
+        )
+        .await;
+    assert_eq!(200, preflight.status);
+    assert_eq!(archive_root_id, preflight.json["archive_root_id"]);
+    assert_eq!(6, preflight.json["summary"]["total"]);
+    assert_eq!(1, preflight.json["summary"]["ready"]);
+    assert_eq!(1, preflight.json["summary"]["ready_unclassified"]);
+    assert_eq!(1, preflight.json["summary"]["collision"]);
+    assert_eq!(1, preflight.json["summary"]["source_missing"]);
+    assert_eq!(1, preflight.json["summary"]["not_downloads"]);
+    assert_eq!(1, preflight.json["summary"]["collection_missing"]);
+    assert_eq!(0, preflight.json["summary"]["blocked"]);
+    let items = preflight.json["items"]
+        .as_array()
+        .expect("preflight items")
+        .clone();
+    assert_eq!(6, items.len());
+    assert_eq!(ready_id, items[0]["collection_id"]);
+    assert_eq!("ready", items[0]["status"]);
+    assert_eq!(
+        archive
+            .join("C106")
+            .join("ready.zip")
+            .to_string_lossy()
+            .into_owned(),
+        items[0]["destination"]
+    );
+    assert!(items[0]["message"].is_null());
+    assert_eq!(unclassified_id, items[1]["collection_id"]);
+    assert_eq!("ready_unclassified", items[1]["status"]);
+    assert_eq!(
+        archive
+            .join("未分類")
+            .join("unclassified.zip")
+            .to_string_lossy()
+            .into_owned(),
+        items[1]["destination"]
+    );
+    assert_eq!(collision_id, items[2]["collection_id"]);
+    assert_eq!("collision", items[2]["status"]);
+    assert_eq!(
+        collision_target.to_string_lossy().into_owned(),
+        items[2]["destination"]
+    );
+    assert!(
+        items[2]["message"]
+            .as_str()
+            .expect("collision message")
+            .contains("collision.zip")
+    );
+    assert_eq!(gone_id, items[3]["collection_id"]);
+    assert_eq!("source_missing", items[3]["status"]);
+    assert_eq!(
+        archive
+            .join("C104")
+            .join("gone.zip")
+            .to_string_lossy()
+            .into_owned(),
+        items[3]["destination"]
+    );
+    assert_eq!(archived_id, items[4]["collection_id"]);
+    assert_eq!("not_downloads", items[4]["status"]);
+    assert!(items[4]["destination"].is_null());
+    assert_eq!(missing_collection_id, items[5]["collection_id"]);
+    assert_eq!("collection_missing", items[5]["status"]);
+
+    assert!(!archive.join("C106").exists());
+    assert!(!archive.join("C104").exists());
+    assert!(!archive.join("未分類").exists());
+    assert!(downloads.join("ready.zip").is_file());
+    assert!(downloads.join("unclassified.zip").is_file());
+    assert!(downloads.join("collision.zip").is_file());
+    assert!(archive.join("already-archived.zip").is_file());
+    assert_eq!(
+        b"existing archive file",
+        fs::read(&collision_target)
+            .expect("read collision target")
+            .as_slice()
+    );
+
+    let downloads_target = server
+        .request_json(
+            "POST",
+            "/api/file-actions/move/preflight",
+            &serde_json::json!({
+                "collection_ids": [ready_id],
+                "archive_root_id": downloads_root_id
+            }),
+        )
+        .await;
+    assert_eq!(400, downloads_target.status);
+    assert_eq!("invalid_settings", downloads_target.json["error"]["code"]);
+
+    let missing_root = server
+        .request_json(
+            "POST",
+            "/api/file-actions/move/preflight",
+            &serde_json::json!({
+                "collection_ids": [ready_id],
+                "archive_root_id": 999_999
+            }),
+        )
+        .await;
+    assert_eq!(404, missing_root.status);
+    assert_eq!("library_root_not_found", missing_root.json["error"]["code"]);
+    server.stop().await;
+
+    let application = shared.lock().expect("application lock");
+    assert_eq!(
+        0,
+        application
+            .repository()
+            .file_operation_count()
+            .expect("file operation count")
+    );
 }
 
 #[tokio::test]

@@ -1,5 +1,6 @@
 //! Application use cases over the scanner, repository, and file-operation service.
 
+pub mod archive;
 pub mod duplicates;
 pub mod export;
 pub mod external_search;
@@ -316,6 +317,7 @@ pub struct ApplicationSettingsSnapshot {
     pub reader_overridden_by_environment: bool,
     pub thumbnail_size_overridden_by_environment: bool,
     pub thumbnail_quality_overridden_by_environment: bool,
+    pub default_archive_root_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1207,6 +1209,9 @@ impl<R: RecycleBin> ApplicationService<R> {
             .as_ref()
             .map(|settings| settings.thumbnail_quality)
             .unwrap_or(config.quality);
+        let default_archive_root_id = stored
+            .as_ref()
+            .and_then(|settings| settings.default_archive_root_id);
         Ok(ApplicationSettingsSnapshot {
             reader_path: self.reader_path.clone(),
             thumbnail_width: config.width,
@@ -1225,6 +1230,7 @@ impl<R: RecycleBin> ApplicationService<R> {
                 .settings_overrides
                 .thumbnail_quality
                 .is_some(),
+            default_archive_root_id,
         })
     }
 
@@ -1234,6 +1240,7 @@ impl<R: RecycleBin> ApplicationService<R> {
         thumbnail_width: u32,
         thumbnail_height: u32,
         thumbnail_quality: u8,
+        default_archive_root_id: Option<i64>,
     ) -> ApplicationResult<SaveSettingsOutcome> {
         if reader_path
             .as_deref()
@@ -1271,12 +1278,34 @@ impl<R: RecycleBin> ApplicationService<R> {
             effective_quality,
         )
         .map_err(|error| ApplicationError::InvalidSettings(error.to_string()))?;
+        if let Some(root_id) = default_archive_root_id {
+            let root = self
+                .repository
+                .library_root(root_id)
+                .map_err(|error| match error {
+                    StorageError::LibraryRootNotFound(id) => ApplicationError::InvalidSettings(
+                        format!("找不到 library root {id}，無法設為預設典藏庫"),
+                    ),
+                    other => ApplicationError::from(other),
+                })?;
+            if root.source != SourceKind::Archive {
+                return Err(ApplicationError::InvalidSettings(
+                    "預設典藏庫必須是 archive 來源的 library root".to_owned(),
+                ));
+            }
+            if !root.active {
+                return Err(ApplicationError::InvalidSettings(
+                    "預設典藏庫必須是啟用中的 library root".to_owned(),
+                ));
+            }
+        }
         let saved = self.repository.save_application_settings(
             reader_path.as_deref(),
             thumbnail_width,
             thumbnail_height,
             thumbnail_quality,
             &effective_thumbnail.settings_fingerprint(),
+            default_archive_root_id,
         )?;
         self.reader_path = effective_reader;
         self.thumbnail_config = Some(effective_thumbnail);

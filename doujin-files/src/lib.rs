@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use doujin_scanner::SourceKind;
 use doujin_storage::lifecycle::{DeleteMode, FileOperationKind, PendingFileOperation};
+use doujin_storage::roots::LibraryRootSnapshot;
 use doujin_storage::{CatalogRepository, StorageError};
 
 static PARTIAL_FILE_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -310,6 +311,152 @@ impl BatchReport {
     }
 }
 
+/// 一筆收藏對「下載區 → 歸檔區」move 的可執行狀態。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveMoveReadiness {
+    /// 可直接歸檔，且場次資料夾不是「未分類」。
+    Ready,
+    /// 可直接歸檔，但場次資料夾是「未分類」。
+    ReadyUnclassified,
+    /// 收藏目前不在下載區。
+    NotDownloads,
+    /// 來源 ZIP 不存在、不是一般檔案，或是 symlink。
+    SourceMissing,
+    /// 目的地已有檔案，或已被某收藏的 current location 索引。
+    Collision,
+    /// 其他阻擋：檔名不是安全的 ZIP component、場次資料夾不是一般資料夾等。
+    Blocked,
+}
+
+/// `plan_archive_move` 的唯讀結果。`blocker` 是 apply 期會回報的錯誤；
+/// `Collision` 由 `begin_system_move` 在 apply 期攔下，因此仍附上對應說明。
+#[derive(Debug)]
+pub struct ArchiveMovePlan {
+    pub collection_id: i64,
+    pub readiness: ArchiveMoveReadiness,
+    pub destination: Option<PathBuf>,
+    pub blocker: Option<FileServiceError>,
+}
+
+pub fn validate_archive_root(archive_root: &LibraryRootSnapshot) -> Result<(), FileServiceError> {
+    if archive_root.source != SourceKind::Archive || !archive_root.active {
+        return Err(FileServiceError::InvalidFile(
+            "move 目標必須是啟用中的歸檔區".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// 計算單筆收藏的歸檔目的地與可執行狀態，全程唯讀：不建立資料夾、不寫 journal。
+/// move preflight 與 apply 期共用這條分類邏輯。
+pub fn plan_archive_move(
+    repository: &CatalogRepository,
+    collection_id: i64,
+    archive_root: &LibraryRootSnapshot,
+) -> Result<ArchiveMovePlan, StorageError> {
+    let collection = repository.collection(collection_id)?;
+    if !collection
+        .root
+        .as_ref()
+        .is_some_and(|root| root.source == SourceKind::Downloads)
+    {
+        return Ok(blocked_plan(
+            collection_id,
+            None,
+            ArchiveMoveReadiness::NotDownloads,
+            FileServiceError::InvalidFile("系統 move 只能從下載區開始".to_owned()),
+        ));
+    }
+    if let Err(error) = validate_zip_filename_component(&collection.filename) {
+        return Ok(blocked_plan(
+            collection_id,
+            None,
+            ArchiveMoveReadiness::Blocked,
+            error,
+        ));
+    }
+    let folder = safe_archive_folder(collection.event.as_deref());
+    let event_directory = archive_root.path.join(&folder);
+    let destination = event_directory.join(&collection.filename);
+    if let Err(error) = validate_source_zip(&collection.path) {
+        return Ok(blocked_plan(
+            collection_id,
+            Some(destination),
+            ArchiveMoveReadiness::SourceMissing,
+            error,
+        ));
+    }
+    if let Err(error) = inspect_safe_archive_directory(&archive_root.path, &event_directory) {
+        return Ok(blocked_plan(
+            collection_id,
+            Some(destination),
+            ArchiveMoveReadiness::Blocked,
+            error,
+        ));
+    }
+    match fs::symlink_metadata(&destination) {
+        Ok(_) => {
+            let message = format!("move 目標已存在，禁止覆寫：{}", destination.display());
+            return Ok(blocked_plan(
+                collection_id,
+                Some(destination),
+                ArchiveMoveReadiness::Collision,
+                FileServiceError::InvalidFile(message),
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Ok(blocked_plan(
+                collection_id,
+                Some(destination.clone()),
+                ArchiveMoveReadiness::Blocked,
+                FileServiceError::Io {
+                    action: "檢查 move 目標",
+                    path: destination,
+                    source,
+                },
+            ));
+        }
+    }
+    if repository
+        .collection_id_for_current_path(&destination)?
+        .is_some()
+    {
+        let message = format!("move 目標已被收藏索引：{}", destination.display());
+        return Ok(blocked_plan(
+            collection_id,
+            Some(destination),
+            ArchiveMoveReadiness::Collision,
+            FileServiceError::InvalidFile(message),
+        ));
+    }
+    let readiness = if folder == UNCLASSIFIED_ARCHIVE_FOLDER {
+        ArchiveMoveReadiness::ReadyUnclassified
+    } else {
+        ArchiveMoveReadiness::Ready
+    };
+    Ok(ArchiveMovePlan {
+        collection_id,
+        readiness,
+        destination: Some(destination),
+        blocker: None,
+    })
+}
+
+fn blocked_plan(
+    collection_id: i64,
+    destination: Option<PathBuf>,
+    readiness: ArchiveMoveReadiness,
+    blocker: FileServiceError,
+) -> ArchiveMovePlan {
+    ArchiveMovePlan {
+        collection_id,
+        readiness,
+        destination,
+        blocker: Some(blocker),
+    }
+}
+
 pub struct FileOperationService<'repository, R> {
     repository: &'repository mut CatalogRepository,
     recycle_bin: R,
@@ -386,34 +533,31 @@ impl<'repository, R: RecycleBin> FileOperationService<'repository, R> {
         collection_id: i64,
         archive_root_id: i64,
     ) -> Result<MoveRequest, FileServiceError> {
-        let collection = self.repository.collection(collection_id)?;
-        if !collection
-            .root
-            .as_ref()
-            .is_some_and(|root| root.source == SourceKind::Downloads)
-        {
-            return Err(FileServiceError::InvalidFile(
-                "系統 move 只能從下載區開始".to_owned(),
-            ));
-        }
-        validate_zip_filename_component(&collection.filename)?;
-        validate_source_zip(&collection.path)?;
-
         let archive_root = self.repository.library_root(archive_root_id)?;
-        if archive_root.source != SourceKind::Archive || !archive_root.active {
-            return Err(FileServiceError::InvalidFile(
-                "move 目標必須是啟用中的歸檔區".to_owned(),
-            ));
-        }
-        let event_directory = archive_root
-            .path
-            .join(safe_archive_folder(collection.event.as_deref()));
-        ensure_safe_archive_directory(&archive_root.path, &event_directory)?;
+        validate_archive_root(&archive_root)?;
+        let plan = plan_archive_move(self.repository, collection_id, &archive_root)?;
+        let destination = match plan.readiness {
+            // Collision 交由 begin_system_move 與 move_zip_no_overwrite 攔下，維持既有錯誤來源。
+            ArchiveMoveReadiness::Ready
+            | ArchiveMoveReadiness::ReadyUnclassified
+            | ArchiveMoveReadiness::Collision => plan
+                .destination
+                .expect("可歸檔或碰撞的 plan 一定算得出目的地"),
+            _ => {
+                return Err(plan.blocker.unwrap_or_else(|| {
+                    FileServiceError::InvalidFile("收藏目前不可歸檔".to_owned())
+                }));
+            }
+        };
+        let event_directory = destination
+            .parent()
+            .ok_or_else(|| FileServiceError::InvalidFile("歸檔目的地缺少場次資料夾".to_owned()))?;
+        ensure_safe_archive_directory(&archive_root.path, event_directory)?;
 
         Ok(MoveRequest {
             collection_id,
             archive_root_id,
-            destination: event_directory.join(collection.filename),
+            destination,
         })
     }
 
@@ -583,6 +727,8 @@ fn move_zip_no_overwrite(source: &Path, destination: &Path) -> Result<(), FileSe
     move_zip_no_overwrite_with_strategy(source, destination, false)
 }
 
+const UNCLASSIFIED_ARCHIVE_FOLDER: &str = "未分類";
+
 fn safe_archive_folder(event: Option<&str>) -> String {
     let event = event.unwrap_or_default().trim();
     let mut folder: String = event
@@ -597,7 +743,7 @@ fn safe_archive_folder(event: Option<&str>) -> String {
         .collect();
     folder = folder.trim().trim_end_matches([' ', '.']).to_owned();
     if folder.is_empty() || matches!(folder.as_str(), "." | "..") {
-        return "未分類".to_owned();
+        return UNCLASSIFIED_ARCHIVE_FOLDER.to_owned();
     }
     if is_windows_reserved_name(&folder) {
         folder.insert(0, '_');
@@ -652,41 +798,63 @@ fn validate_rename_destination(destination: &Path) -> Result<(), FileServiceErro
 }
 
 fn ensure_safe_archive_directory(root: &Path, directory: &Path) -> Result<(), FileServiceError> {
-    let canonical_root = fs::canonicalize(root).map_err(|source| FileServiceError::Io {
+    let canonical_root = canonical_archive_root(root)?;
+    if !archive_directory_exists(directory)? {
+        fs::create_dir(directory).map_err(|source| FileServiceError::Io {
+            action: "建立歸檔場次資料夾",
+            path: directory.to_owned(),
+            source,
+        })?;
+    }
+    ensure_directory_within_root(&canonical_root, directory)
+}
+
+/// `ensure_safe_archive_directory` 的唯讀版本：只檢查現況，不建立任何資料夾。
+fn inspect_safe_archive_directory(root: &Path, directory: &Path) -> Result<(), FileServiceError> {
+    let canonical_root = canonical_archive_root(root)?;
+    if archive_directory_exists(directory)? {
+        ensure_directory_within_root(&canonical_root, directory)?;
+    }
+    Ok(())
+}
+
+fn canonical_archive_root(root: &Path) -> Result<PathBuf, FileServiceError> {
+    fs::canonicalize(root).map_err(|source| FileServiceError::Io {
         action: "解析歸檔區",
         path: root.to_owned(),
         source,
-    })?;
+    })
+}
+
+fn archive_directory_exists(directory: &Path) -> Result<bool, FileServiceError> {
     match fs::symlink_metadata(directory) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-            return Err(FileServiceError::InvalidFile(format!(
+            Err(FileServiceError::InvalidFile(format!(
                 "歸檔場次路徑必須是一般資料夾且不能是 symlink：{}",
                 directory.display()
-            )));
+            )))
         }
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            fs::create_dir(directory).map_err(|source| FileServiceError::Io {
-                action: "建立歸檔場次資料夾",
-                path: directory.to_owned(),
-                source,
-            })?;
-        }
-        Err(source) => {
-            return Err(FileServiceError::Io {
-                action: "檢查歸檔場次資料夾",
-                path: directory.to_owned(),
-                source,
-            });
-        }
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(FileServiceError::Io {
+            action: "檢查歸檔場次資料夾",
+            path: directory.to_owned(),
+            source,
+        }),
     }
+}
+
+fn ensure_directory_within_root(
+    canonical_root: &Path,
+    directory: &Path,
+) -> Result<(), FileServiceError> {
     let canonical_directory =
         fs::canonicalize(directory).map_err(|source| FileServiceError::Io {
             action: "解析歸檔場次資料夾",
             path: directory.to_owned(),
             source,
         })?;
-    if !canonical_directory.starts_with(&canonical_root) {
+    if !canonical_directory.starts_with(canonical_root) {
         return Err(FileServiceError::InvalidFile(format!(
             "歸檔場次資料夾不在指定歸檔區內：{}",
             directory.display()

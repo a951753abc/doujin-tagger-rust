@@ -45,6 +45,7 @@
         <nav class="primary-nav" aria-label="主要功能">
           <a href="#shelf" data-route="shelf" aria-current="page">書架</a>
           <a href="#library" data-route="library">全部藏書</a>
+          <a href="#triage" data-route="triage">待歸檔 <b class="nav-count" id="triage-count" hidden>0</b></a>
           <a href="#basket" data-route="basket">工作籃 <b class="nav-count" id="work-basket-count" hidden>0</b></a>
           <a href="#review" data-route="review">品質審核 <b class="nav-count" id="review-count" hidden>0</b></a>
           <a href="#duplicates" data-route="duplicates">重複作品 <b class="nav-count" id="duplicate-count" hidden>0</b></a>
@@ -312,6 +313,7 @@
                 <div class="primary-actions">
                   <button class="primary-button" id="read-button" type="button">用閱讀器開啟</button>
                   <button class="secondary-button" id="open-button" type="button">在系統中開啟</button>
+                  <button class="secondary-button" id="archive-button" type="button" hidden>歸檔到收藏區</button>
                   <button class="basket-toggle" id="detail-basket-toggle" type="button" disabled>工作籃狀態載入中</button>
                 </div>
 
@@ -375,6 +377,7 @@
           <div>
             <button class="text-button" id="selection-basket-add" type="button">將已選 0 本加入工作籃</button>
             <button class="text-button" id="clear-selection" type="button">清除選取</button>
+            <button class="secondary-button" id="selection-quick-archive" type="button">快速歸檔 0 本</button>
             <a class="primary-button button-link" id="selection-workbench-link" href="#workbench">前往工作台處理 0 筆</a>
           </div>
         </aside>
@@ -602,6 +605,80 @@
         </div>
       </section>
 
+      <section class="view triage-view" id="triage-view" data-view="triage" aria-labelledby="triage-heading" hidden>
+        <header class="page-heading triage-page-heading">
+          <div>
+            <p class="eyebrow">INBOX TRIAGE / 待歸檔</p>
+            <h1 id="triage-heading">逐本確認去向，一鍵歸檔</h1>
+          </div>
+          <p>只列出下載區尚未歸檔的收藏；每本都先做一次歸檔預檢，確認目的地後才動檔案。</p>
+        </header>
+
+        <div class="triage-toolbar">
+          <div class="triage-count-copy" aria-live="polite">
+            <strong id="triage-total">正在清點待歸檔收藏…</strong>
+            <span id="triage-position"></span>
+          </div>
+          <button class="text-button" id="reset-triage-skips" type="button" hidden>重新顯示本次略過項目</button>
+          <button class="text-button" id="refresh-triage" type="button">重新整理清單</button>
+        </div>
+
+        <div class="triage-loading" id="triage-loading" role="status" hidden><span class="loader" aria-hidden="true"></span> 正在整理下載區收藏…</div>
+        <div class="triage-error" id="triage-error" role="alert" hidden>
+          <strong>無法載入待歸檔清單</strong>
+          <p id="triage-error-message"></p>
+          <button class="secondary-button" id="retry-triage" type="button">再試一次</button>
+        </div>
+        <div class="triage-empty" id="triage-empty" hidden>
+          <span aria-hidden="true">空</span>
+          <div><h2>下載區沒有待歸檔的收藏</h2><p id="triage-empty-message">新掃描進來的收藏會出現在這裡，等你決定去向。</p></div>
+          <a class="text-button" id="triage-empty-library-link" href="#library?source=downloads">前往全部藏書查看下載區</a>
+        </div>
+
+        <article class="triage-desk" id="triage-desk" hidden aria-live="polite">
+          <section class="triage-book" aria-labelledby="triage-title">
+            <div class="triage-cover-stage">
+              <img id="triage-cover" alt="" width="360" height="480">
+              <span id="triage-source" class="source-ribbon">下載區</span>
+            </div>
+            <p class="triage-sequence" id="triage-sequence"></p>
+            <h2 id="triage-title"></h2>
+            <p class="filename" id="triage-filename"></p>
+            <dl class="triage-context" id="triage-context"></dl>
+            <div class="triage-tags" id="triage-tags"></div>
+          </section>
+
+          <section class="triage-readiness" aria-labelledby="triage-readiness-heading">
+            <header class="triage-readiness-heading">
+              <div><p class="eyebrow">DESTINATION / 歸檔預檢</p><h2 id="triage-readiness-heading">這本要去哪裡</h2></div>
+              <span class="triage-status-badge" id="triage-status">預檢中</span>
+            </header>
+            <div class="triage-destination" id="triage-destination">
+              <p class="triage-destination-label" id="triage-destination-label">正在取得歸檔預檢結果…</p>
+              <p class="triage-destination-path" id="triage-destination-path" hidden></p>
+            </div>
+            <section class="triage-quality" aria-labelledby="triage-quality-heading">
+              <h3 id="triage-quality-heading">編目資料狀態</h3>
+              <p id="triage-quality-summary"></p>
+              <div class="triage-quality-actions" id="triage-quality-actions"></div>
+            </section>
+          </section>
+
+          <aside class="triage-actions" aria-label="待歸檔操作">
+            <p><span>KEYBOARD FIRST</span> 歸檔後依偏好自動前進下一本。</p>
+            <button class="primary-button" id="triage-archive" type="button"><kbd>A</kbd> 歸檔到典藏庫</button>
+            <button class="secondary-button" id="triage-edit" type="button"><kbd>E</kbd> 編輯 metadata</button>
+            <button class="secondary-button" id="triage-search" type="button"><kbd>W</kbd> 外部搜尋</button>
+            <button class="text-button" id="triage-skip" type="button"><kbd>S</kbd> 本次略過</button>
+            <button class="text-button" id="triage-detail" type="button"><kbd>O</kbd> 打開完整 Detail</button>
+            <div class="triage-navigation">
+              <button class="text-button" id="triage-previous" type="button"><kbd>K</kbd> 上一本</button>
+              <button class="text-button" id="triage-next" type="button">下一本 <kbd>J</kbd></button>
+            </div>
+          </aside>
+        </article>
+      </section>
+
       <section class="view review-view" id="review-view" data-view="review" aria-labelledby="review-heading" hidden>
         <header class="page-heading review-page-heading">
           <div>
@@ -739,6 +816,15 @@
               <label>閱讀器執行檔
                 <input name="viewer_path" type="text" autocomplete="off" placeholder="留空時使用系統預設程式" aria-describedby="viewer-path-override">
                 <span class="field-override-note" id="viewer-path-override" hidden></span>
+              </label>
+              <label>預設典藏庫
+                <select name="default_archive_root_id" id="default-archive-root" aria-describedby="default-archive-root-note"></select>
+                <span class="field-note" id="default-archive-root-note" hidden></span>
+              </label>
+              <label class="settings-checkbox-field">
+                <input name="triage_auto_advance" id="triage-auto-advance" type="checkbox" aria-describedby="triage-auto-advance-note">
+                <span>待歸檔：歸檔成功後自動前進下一本</span>
+                <span class="field-note" id="triage-auto-advance-note">只存在這台瀏覽器，不影響其他裝置的設定。</span>
               </label>
               <div class="form-row">
                 <label>縮圖尺寸
@@ -1024,6 +1110,37 @@
     </form>
   </dialog>
 
+  <dialog id="archive-target-dialog" aria-labelledby="archive-target-dialog-heading">
+    <form class="dialog-shell" id="archive-target-form">
+      <header><div><p class="eyebrow">ARCHIVE / 歸檔</p><h2 id="archive-target-dialog-heading">選擇典藏庫</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉">×</button></header>
+      <p class="dialog-intro">選擇這本收藏要歸檔到哪一個典藏庫。</p>
+      <label>目的典藏庫
+        <select name="archive_root_id" id="archive-target-select" required></select>
+      </label>
+      <label><input type="checkbox" id="archive-target-set-default" name="set_default"> 設為預設收藏區</label>
+      <div class="dialog-footer"><button class="text-button" data-close-dialog type="button">取消</button><button class="primary-button" type="submit">選定並繼續</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="archive-confirm-dialog" aria-labelledby="archive-confirm-dialog-heading">
+    <form class="dialog-shell" id="archive-confirm-form">
+      <header><div><p class="eyebrow">ARCHIVE / 歸檔</p><h2 id="archive-confirm-dialog-heading">歸檔到收藏區</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉">×</button></header>
+      <p class="dialog-intro" id="archive-confirm-message"></p>
+      <div class="dialog-footer"><button class="text-button" data-close-dialog type="button">取消</button><button class="primary-button" id="archive-confirm-submit" type="submit">確認歸檔</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="quick-archive-dialog" aria-labelledby="quick-archive-dialog-heading">
+    <form class="dialog-shell" id="quick-archive-form">
+      <header><div><p class="eyebrow">ARCHIVE / 歸檔</p><h2 id="quick-archive-dialog-heading">快速歸檔已選收藏</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉">×</button></header>
+      <p class="dialog-intro" id="quick-archive-intro"></p>
+      <ul class="quick-archive-summary" id="quick-archive-summary"></ul>
+      <ol class="quick-archive-items" id="quick-archive-items"></ol>
+      <p class="field-note">異常項目不會阻止其他項目歸檔；歸檔後這些收藏會離開下載區查詢結果。</p>
+      <div class="dialog-footer"><button class="text-button" data-close-dialog type="button">取消</button><button class="primary-button" id="quick-archive-submit" type="submit">歸檔 0 本</button></div>
+    </form>
+  </dialog>
+
   <dialog id="export-dialog" aria-labelledby="export-dialog-heading">
     <form class="dialog-shell export-dialog-shell" id="export-form">
       <header><div><p class="eyebrow">EXPORT / 匯出</p><h2 id="export-dialog-heading">建立 ZIP 套件</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉">×</button></header>
@@ -1081,7 +1198,7 @@
   <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-heading">
     <div class="dialog-shell compact-dialog">
       <header><h2 id="shortcuts-heading">鍵盤操作</h2><button class="icon-button" data-close-dialog type="button" aria-label="關閉">×</button></header>
-      <dl class="shortcut-list"><dt><kbd>/</kbd></dt><dd>跳到搜尋</dd><dt><kbd>J</kbd> / <kbd>K</kbd></dt><dd>移動目前查看收藏或審核項目</dd><dt><kbd>A</kbd> / <kbd>R</kbd></dt><dd>在品質審核採用／拒絕主要候選</dd><dt><kbd>E</kbd> / <kbd>S</kbd></dt><dd>在品質審核手動編輯／本次略過</dd><dt><kbd>Space</kbd></dt><dd>切換目前查看收藏的批次選取</dd><dt><kbd>?</kbd></dt><dd>顯示這份說明</dd><dt><kbd>Esc</kbd></dt><dd>關閉對話框</dd></dl>
+      <dl class="shortcut-list"><dt><kbd>/</kbd></dt><dd>跳到搜尋</dd><dt><kbd>J</kbd> / <kbd>K</kbd></dt><dd>移動目前查看收藏或審核項目</dd><dt><kbd>A</kbd> / <kbd>R</kbd></dt><dd>在品質審核採用／拒絕主要候選</dd><dt><kbd>E</kbd> / <kbd>S</kbd></dt><dd>在品質審核手動編輯／本次略過</dd><dt><kbd>A</kbd> / <kbd>E</kbd> / <kbd>W</kbd></dt><dd>僅在待歸檔模式：歸檔／編輯 metadata／外部搜尋</dd><dt><kbd>S</kbd> / <kbd>O</kbd></dt><dd>僅在待歸檔模式：本次略過／打開完整 Detail</dd><dt><kbd>Space</kbd></dt><dd>切換目前查看收藏的批次選取</dd><dt><kbd>?</kbd></dt><dd>顯示這份說明</dd><dt><kbd>Esc</kbd></dt><dd>關閉對話框</dd></dl>
     </div>
   </dialog>
 

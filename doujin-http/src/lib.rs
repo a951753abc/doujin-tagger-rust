@@ -22,6 +22,7 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
+use doujin_app::archive::ArchiveMovePreflight;
 use doujin_app::export::{
     ExportExecutionRequest, ExportPreflight, ExportProgress, write_export_package,
 };
@@ -402,6 +403,10 @@ where
             "/api/export-jobs/{job_id}/open-location",
             post(open_export_location::<R>),
         )
+        .route(
+            "/api/file-actions/move/preflight",
+            post(preflight_move_collections::<R>),
+        )
         .route("/api/file-actions/move", post(move_collections::<R>))
         .route(
             "/api/file-actions/rename/preflight",
@@ -550,6 +555,7 @@ struct SettingsResponse {
     saved_viewer_path: String,
     saved_thumb_size: String,
     saved_thumb_quality: u8,
+    default_archive_root_id: Option<i64>,
     overrides: SettingsOverridesResponse,
     environment_overrides: Vec<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -594,6 +600,7 @@ impl SettingsResponse {
                 settings.saved_thumbnail_width, settings.saved_thumbnail_height
             ),
             saved_thumb_quality: settings.saved_thumbnail_quality,
+            default_archive_root_id: settings.default_archive_root_id,
             overrides: SettingsOverridesResponse {
                 viewer_path: settings
                     .reader_overridden_by_environment
@@ -617,6 +624,8 @@ struct SettingsUpdateRequest {
     viewer_path: String,
     thumb_size: String,
     thumb_quality: i64,
+    #[serde(default)]
+    default_archive_root_id: Option<i64>,
 }
 
 async fn get_settings<R>(
@@ -689,7 +698,13 @@ where
             Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
         };
         application
-            .save_application_settings(reader_path, width, height, quality)
+            .save_application_settings(
+                reader_path,
+                width,
+                height,
+                quality,
+                payload.default_archive_root_id,
+            )
             .map_err(ApiError::from_application)
     })
     .await
@@ -4549,6 +4564,13 @@ struct MoveCollectionsRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct MovePreflightRequest {
+    collection_ids: Vec<i64>,
+    archive_root_id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DeleteCollectionsRequest {
     collection_ids: Vec<i64>,
     mode: String,
@@ -5052,6 +5074,41 @@ where
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(report.into()))
+}
+
+async fn preflight_move_collections<R>(
+    State(state): State<HttpState<R>>,
+    payload: Result<Json<MovePreflightRequest>, JsonRejection>,
+) -> Result<Json<ArchiveMovePreflight>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let Json(payload) =
+        payload.map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    let collection_ids = validated_collection_ids(payload.collection_ids)?;
+    let archive_root_id = positive_id(
+        payload.archive_root_id,
+        "invalid_archive_root_id",
+        "archive root ID 必須是正整數",
+    )?;
+    let preflight = tokio::task::spawn_blocking(move || {
+        let application = match state.application.try_lock() {
+            Ok(application) => application,
+            Err(TryLockError::WouldBlock) => {
+                return Err(ApiError::unavailable(
+                    "application_busy",
+                    "application service 正在處理其他要求",
+                ));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
+        };
+        application
+            .move_preflight(&collection_ids, archive_root_id)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(preflight))
 }
 
 async fn preflight_rename_collections<R>(
