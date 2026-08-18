@@ -16,13 +16,16 @@ use doujin_app::{
     ApplicationSettingsOverrides,
 };
 use doujin_files::RecycleBin;
+use doujin_parser::domain::Authors;
 use doujin_scanner::{ScanRoot, SourceKind};
 use doujin_storage::collections::{ReviewQueueKind, ReviewQueueQuery};
 use doujin_storage::covers::CoverSelectionStatus;
 use doujin_storage::external_search_batches::ExternalSearchBatchStrategy;
 use doujin_storage::jobs::{ExternalSearchErrorKind, ExternalSearchJobStatus};
 use doujin_storage::lifecycle::{CandidateDecision, CollectionStatus};
-use doujin_storage::metadata::{ConfidenceEvidence, MetadataField, MetadataValue};
+use doujin_storage::metadata::{
+    ConfidenceEvidence, MetadataAssertionDecision, MetadataField, MetadataValue,
+};
 use doujin_storage::scan::ScanRunStatus;
 use doujin_storage::thumbnails::{
     BACKGROUND_THUMBNAIL_PRIORITY, BATCH_THUMBNAIL_PRIORITY, DEFAULT_THUMBNAIL_PRIORITY,
@@ -100,6 +103,34 @@ impl ExternalMetadataProvider for PartialProvider {
                 field: Some(MetadataField::Parody),
                 kind: ExternalSearchErrorKind::ProviderUnavailable,
                 message: "parody endpoint unavailable".to_owned(),
+            }],
+        })
+    }
+}
+
+struct CandidateIssueProvider;
+
+impl ExternalMetadataProvider for CandidateIssueProvider {
+    fn search(
+        &self,
+        request: &ExternalSearchRequest,
+    ) -> Result<ExternalSearchProviderResponse, ExternalSearchProviderError> {
+        assert_eq!(vec![MetadataField::Authors], request.fields);
+        Ok(ExternalSearchProviderResponse {
+            candidates: vec![ExternalMetadataCandidate {
+                field: MetadataField::Authors,
+                value: MetadataValue::Authors(Authors {
+                    raw: Some("Candidate Author".to_owned()),
+                    values: vec!["Candidate Author".to_owned()],
+                }),
+                source_reference: "mock:candidate-lifecycle:authors".to_owned(),
+                confidence: confidence(0.8, false),
+            }],
+            tags: Vec::new(),
+            issues: vec![ExternalSearchProviderIssue {
+                field: Some(MetadataField::Authors),
+                kind: ExternalSearchErrorKind::ProviderUnavailable,
+                message: "secondary authors source unavailable".to_owned(),
             }],
         })
     }
@@ -1071,6 +1102,103 @@ fn external_search_provider_can_partially_succeed_without_rolling_back_candidate
             .expect("tagged collection")
             .tags
             .contains(&"female:big breasts".to_owned())
+    );
+}
+
+#[test]
+fn external_search_activity_tracks_exact_candidate_until_manual_decision() {
+    let tree = TestTree::new("external-search-candidate-lifecycle");
+    let path = tree.zip("[Circle] candidate lifecycle.zip");
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application
+        .run_scan(&[tree.root()])
+        .expect("scan candidate lifecycle collection");
+    let collection_id = application
+        .repository()
+        .collection_id_for_current_path(&path)
+        .expect("candidate lifecycle lookup")
+        .expect("candidate lifecycle collection ID");
+    let job = application
+        .enqueue_external_search(collection_id, &[MetadataField::Authors])
+        .expect("enqueue candidate lifecycle job")
+        .job;
+    let partial = application
+        .run_external_search_job(job.id, &CandidateIssueProvider)
+        .expect("run candidate lifecycle provider");
+    assert_eq!(ExternalSearchJobStatus::Partial, partial.status);
+    let summary: serde_json::Value = serde_json::from_str(
+        partial
+            .result_json
+            .as_deref()
+            .expect("candidate lifecycle summary"),
+    )
+    .expect("decode candidate lifecycle summary");
+    let assertion_id = summary["suggestion_assertion_ids"][0]
+        .as_i64()
+        .expect("exact suggestion assertion ID");
+
+    let unresolved = application
+        .external_search_activity()
+        .expect("unresolved candidate activity");
+    assert_eq!(1, unresolved.actionable_count);
+    assert!(
+        unresolved
+            .items
+            .iter()
+            .find(|item| item.job.id == job.id)
+            .expect("candidate activity item")
+            .actionable
+    );
+    assert_eq!(
+        1,
+        application
+            .review_queue(&ReviewQueueQuery {
+                kind: ReviewQueueKind::Candidate,
+                ..ReviewQueueQuery::default()
+            })
+            .expect("candidate review queue before decision")
+            .total
+    );
+
+    application
+        .decide_metadata_assertion(
+            collection_id,
+            MetadataField::Authors,
+            assertion_id,
+            MetadataAssertionDecision::Select,
+        )
+        .expect("accept exact suggestion assertion");
+    let resolved = application
+        .external_search_activity()
+        .expect("resolved candidate activity");
+    assert_eq!(0, resolved.actionable_count);
+    let resolved_item = resolved
+        .items
+        .iter()
+        .find(|item| item.job.id == job.id)
+        .expect("resolved candidate activity item");
+    assert!(!resolved_item.actionable);
+    assert_eq!(
+        Some(doujin_storage::jobs::ExternalSearchActivityResolution::MetadataResolved),
+        resolved_item.resolution
+    );
+    assert_eq!(
+        0,
+        application
+            .review_queue(&ReviewQueueQuery {
+                kind: ReviewQueueKind::Candidate,
+                ..ReviewQueueQuery::default()
+            })
+            .expect("candidate review queue after decision")
+            .total
+    );
+    assert_eq!(
+        ExternalSearchJobStatus::Partial,
+        application
+            .external_search_job(job.id)
+            .expect("preserved candidate job history")
+            .status
     );
 }
 

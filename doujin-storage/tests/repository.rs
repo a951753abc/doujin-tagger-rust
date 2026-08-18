@@ -159,7 +159,7 @@ fn duplicate_fingerprint(collection_id: i64, source: &str, content: char) -> Dup
 fn migration_enables_required_sqlite_features() {
     let repository = CatalogRepository::open_in_memory().expect("open catalog");
 
-    assert_eq!(17, repository.schema_version().expect("schema version"));
+    assert_eq!(18, repository.schema_version().expect("schema version"));
     assert!(repository.foreign_keys_enabled().expect("foreign keys"));
     assert!(
         repository
@@ -895,6 +895,7 @@ fn external_search_jobs_deduplicate_persist_results_and_schedule_typed_retries()
                 tags_applied: 0,
                 auto_applied: 0,
                 suggestions: 1,
+                suggestion_assertion_ids: Vec::new(),
                 search_only: 0,
                 issues: vec![ExternalSearchJobIssue {
                     field: Some(MetadataField::Authors),
@@ -959,6 +960,172 @@ fn external_search_jobs_deduplicate_persist_results_and_schedule_typed_retries()
 }
 
 #[test]
+fn version_seventeen_external_search_activity_uses_selected_assertion_time_for_legacy_jobs() {
+    let tree = TestTree::new("upgrade-v17-external-activity");
+    let database = tree.database();
+    let first = tree.pending("[circle (Existing Author)] legacy changed.zip");
+    let second = tree.pending("[circle (Existing Author)] legacy unchanged.zip");
+    let mut repository = CatalogRepository::open(&database).expect("create current catalog");
+    for pending in [&first, &second] {
+        repository
+            .ingest_collection(pending)
+            .expect("ingest legacy activity collection");
+    }
+    let collection_id = |pending: &doujin_scanner::PendingCollection| {
+        repository
+            .collection_id_for_current_path(&pending.path)
+            .expect("legacy collection lookup")
+            .expect("legacy collection ID")
+    };
+    let changed_id = collection_id(&first);
+    let unchanged_id = collection_id(&second);
+
+    let changed_job = repository
+        .enqueue_external_search(changed_id, &[MetadataField::Authors])
+        .expect("enqueue changed legacy job")
+        .job;
+    repository
+        .start_external_search_job(changed_job.id)
+        .expect("start changed legacy job");
+    repository
+        .fail_external_search_job(
+            changed_job.id,
+            ExternalSearchErrorKind::NoMatch,
+            "legacy no match",
+            None,
+        )
+        .expect("fail changed legacy job");
+    repository
+        .set_manual_value(
+            changed_id,
+            MetadataField::Authors,
+            MetadataValue::Authors(Authors {
+                raw: Some("Later Author".to_owned()),
+                values: vec!["Later Author".to_owned()],
+            }),
+        )
+        .expect("set post-job legacy authors");
+
+    repository
+        .set_manual_value(
+            unchanged_id,
+            MetadataField::Authors,
+            MetadataValue::Authors(Authors {
+                raw: Some("Existing Author".to_owned()),
+                values: vec!["Existing Author".to_owned()],
+            }),
+        )
+        .expect("set pre-job legacy authors");
+    let unchanged_job = repository
+        .enqueue_external_search(unchanged_id, &[MetadataField::Authors])
+        .expect("enqueue unchanged legacy job")
+        .job;
+    repository
+        .start_external_search_job(unchanged_job.id)
+        .expect("start unchanged legacy job");
+    repository
+        .fail_external_search_job(
+            unchanged_job.id,
+            ExternalSearchErrorKind::NoMatch,
+            "legacy no match",
+            None,
+        )
+        .expect("fail unchanged legacy job");
+    drop(repository);
+
+    let connection = Connection::open(&database).expect("rewind catalog to v17");
+    connection
+        .execute(
+            "UPDATE background_jobs
+             SET payload_json = json_remove(payload_json, '$.selection_baseline'),
+                 created_at = '2026-08-18T00:00:00.000Z'
+             WHERE id = ?1",
+            [changed_job.id],
+        )
+        .expect("make changed job legacy");
+    connection
+        .execute(
+            "UPDATE metadata_assertions
+             SET created_at = CASE
+                 WHEN source_kind = 'manual' THEN '2026-08-18T00:00:01.000Z'
+                 ELSE '2026-08-17T00:00:00.000Z'
+             END
+             WHERE collection_id = ?1 AND field_name = 'authors'",
+            [changed_id],
+        )
+        .expect("date changed assertion after job and prior assertion before job");
+    connection
+        .execute(
+            "UPDATE background_jobs
+             SET payload_json = json_remove(payload_json, '$.selection_baseline'),
+                 created_at = '2026-08-18T00:00:01.000Z'
+             WHERE id = ?1",
+            [unchanged_job.id],
+        )
+        .expect("make unchanged job legacy");
+    connection
+        .execute(
+            "UPDATE metadata_assertions SET created_at = '2026-08-18T00:00:00.000Z'
+             WHERE collection_id = ?1 AND field_name = 'authors'",
+            [unchanged_id],
+        )
+        .expect("date unchanged assertion before job");
+    connection
+        .execute_batch(
+            "DROP TABLE external_search_job_resolutions;
+             DELETE FROM schema_migrations WHERE version = 18;
+             PRAGMA user_version = 17;",
+        )
+        .expect("rewind external activity migration");
+    drop(connection);
+
+    let mut repository =
+        CatalogRepository::open(&database).expect("upgrade legacy activity catalog");
+    assert_eq!(18, repository.schema_version().expect("upgraded schema"));
+    let activity = repository
+        .external_search_activity()
+        .expect("legacy external activity");
+    assert_eq!(1, activity.actionable_count);
+    let changed = activity
+        .items
+        .iter()
+        .find(|item| item.job.id == changed_job.id)
+        .expect("changed legacy activity");
+    assert!(!changed.actionable);
+    assert_eq!(
+        Some(doujin_storage::jobs::ExternalSearchActivityResolution::MetadataResolved),
+        changed.resolution
+    );
+    let unchanged = activity
+        .items
+        .iter()
+        .find(|item| item.job.id == unchanged_job.id)
+        .expect("unchanged legacy activity");
+    assert!(unchanged.actionable);
+    assert_eq!(vec![MetadataField::Authors], unchanged.unresolved_fields);
+
+    assert!(
+        repository
+            .clear_manual_value(changed_id, MetadataField::Authors)
+            .expect("clear post-job manual authors")
+    );
+    let restored = repository
+        .external_search_activity()
+        .expect("activity after restoring pre-job assertion");
+    assert_eq!(2, restored.actionable_count);
+    let restored_changed = restored
+        .items
+        .iter()
+        .find(|item| item.job.id == changed_job.id)
+        .expect("restored legacy activity");
+    assert!(restored_changed.actionable);
+    assert_eq!(
+        vec![MetadataField::Authors],
+        restored_changed.unresolved_fields
+    );
+}
+
+#[test]
 fn external_search_batch_persists_100_plus_items_and_aggregates_linked_job_state() {
     let tree = TestTree::new("external-search-batch");
     let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
@@ -1004,6 +1171,7 @@ fn external_search_batch_persists_100_plus_items_and_aggregates_linked_job_state
                 tags_applied: 0,
                 auto_applied: 0,
                 suggestions: 1,
+                suggestion_assertion_ids: Vec::new(),
                 search_only: 0,
                 issues: Vec::new(),
             },
@@ -1092,6 +1260,7 @@ fn external_search_batch_persists_100_plus_items_and_aggregates_linked_job_state
                 tags_applied: 0,
                 auto_applied: 0,
                 suggestions: 0,
+                suggestion_assertion_ids: Vec::new(),
                 search_only: 1,
                 issues: vec![ExternalSearchJobIssue {
                     field: Some(MetadataField::Authors),
@@ -1440,7 +1609,7 @@ fn version_one_catalog_upgrades_through_all_migrations_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade catalog");
 
-    assert_eq!(17, repository.schema_version().expect("schema version"));
+    assert_eq!(18, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     drop(repository);
     let connection = Connection::open(&database).expect("inspect upgraded catalog");
@@ -1489,6 +1658,7 @@ fn version_eight_catalog_removes_is_dl_event_fallback_without_overwriting_manual
              SELECT 2, 'event', id, 'manual'
              FROM metadata_assertions
              WHERE collection_id = 2 AND source_kind = 'manual';
+             DROP TABLE external_search_job_resolutions;
              DROP TABLE external_search_batch_items;
              DROP TABLE external_search_batches;
              DROP TABLE vocabulary_exclusions;
@@ -1506,14 +1676,14 @@ fn version_eight_catalog_removes_is_dl_event_fallback_without_overwriting_manual
              DROP TABLE export_jobs;
              DROP TABLE export_roots;
              ALTER TABLE application_settings DROP COLUMN default_archive_root_id;
-             DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12, 13, 14, 15, 16, 17);
+             DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12, 13, 14, 15, 16, 17, 18);
              PRAGMA user_version = 8;",
         )
         .expect("seed v8 metadata");
     drop(connection);
 
     let repository = CatalogRepository::open(&database).expect("upgrade catalog");
-    assert_eq!(17, repository.schema_version().expect("schema version"));
+    assert_eq!(18, repository.schema_version().expect("schema version"));
     drop(repository);
 
     let connection = Connection::open(&database).expect("inspect upgraded catalog");
@@ -1617,7 +1787,7 @@ fn version_six_catalog_adds_thumbnail_priority_without_losing_state() {
         .thumbnail_state(1)
         .expect("preserved thumbnail state");
 
-    assert_eq!(17, repository.schema_version().expect("schema version"));
+    assert_eq!(18, repository.schema_version().expect("schema version"));
     assert_eq!(ThumbnailStatus::Pending, state.status);
     assert_eq!(BACKGROUND_THUMBNAIL_PRIORITY, state.priority);
     assert!(state.requested_at.is_some());
@@ -1664,7 +1834,7 @@ fn version_two_catalog_upgrades_external_search_jobs_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v2 catalog");
 
-    assert_eq!(17, repository.schema_version().expect("schema version"));
+    assert_eq!(18, repository.schema_version().expect("schema version"));
     let job = repository
         .external_search_job(job_id)
         .expect("preserved external search job");
@@ -1714,7 +1884,7 @@ fn version_three_catalog_adds_consolidation_audit_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v3 catalog");
 
-    assert_eq!(17, repository.schema_version().expect("schema version"));
+    assert_eq!(18, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert_eq!(
         None,
@@ -1769,7 +1939,7 @@ fn version_four_catalog_adds_thumbnail_state_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v4 catalog");
 
-    assert_eq!(17, repository.schema_version().expect("schema version"));
+    assert_eq!(18, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert!(
         repository
@@ -1828,7 +1998,7 @@ fn version_five_catalog_adds_typed_application_settings_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v5 catalog");
 
-    assert_eq!(17, repository.schema_version().expect("schema version"));
+    assert_eq!(18, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert!(
         repository

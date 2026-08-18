@@ -331,8 +331,16 @@ where
             post(external_search::enqueue_external_search::<R>),
         )
         .route(
+            "/api/external-search-jobs/activity",
+            get(external_search::get_external_search_activity::<R>),
+        )
+        .route(
             "/api/external-search-jobs/{job_id}",
             get(external_search::get_external_search_job::<R>),
+        )
+        .route(
+            "/api/external-search-jobs/{job_id}/acknowledge",
+            post(external_search::acknowledge_external_search_job::<R>),
         )
         .route(
             "/api/external-search-batches/preflight",

@@ -43,7 +43,7 @@ use crate::metadata::{
     MetadataAssertionDecision, MetadataField, MetadataSource, MetadataValue, SelectionSnapshot,
 };
 
-const SCHEMA_VERSION: i64 = 17;
+const SCHEMA_VERSION: i64 = 18;
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const SCAN_RUN_GUARD_MIGRATION: &str = include_str!("../migrations/0002_scan_run_guard.sql");
 const EXTERNAL_SEARCH_JOBS_MIGRATION: &str =
@@ -70,6 +70,8 @@ const DUPLICATE_DETECTION_MIGRATION: &str =
 const EXPORT_PACKAGES_MIGRATION: &str = include_str!("../migrations/0016_export_packages.sql");
 const DEFAULT_ARCHIVE_ROOT_MIGRATION: &str =
     include_str!("../migrations/0017_default_archive_root.sql");
+const EXTERNAL_SEARCH_ACTIVITY_MIGRATION: &str =
+    include_str!("../migrations/0018_external_search_activity.sql");
 
 struct Migration {
     version: i64,
@@ -162,6 +164,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 17,
         name: "0017_default_archive_root",
         sql: DEFAULT_ARCHIVE_ROOT_MIGRATION,
+    },
+    Migration {
+        version: 18,
+        name: "0018_external_search_activity",
+        sql: EXTERNAL_SEARCH_ACTIVITY_MIGRATION,
     },
 ];
 

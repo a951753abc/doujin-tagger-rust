@@ -12,8 +12,14 @@ use doujin_http::{
     SharedApplication, bind_loopback, serve_shared_with_shutdown, share_application,
     validate_loopback_address,
 };
+use doujin_parser::domain::Authors;
 use doujin_scanner::{ScanRoot, SourceKind};
 use doujin_storage::CatalogRepository;
+use doujin_storage::external_search_batches::ExternalSearchBatchStrategy;
+use doujin_storage::jobs::{
+    ExternalSearchCompletionStatus, ExternalSearchErrorKind, ExternalSearchJobIssue,
+    ExternalSearchJobSnapshot, ExternalSearchJobSummary,
+};
 use doujin_storage::metadata::{
     ConfidenceEvidence, ExternalCandidate, ExternalCandidateOutcome, MetadataField, MetadataValue,
 };
@@ -281,6 +287,98 @@ impl RunningServer {
             .expect("server task")
             .expect("server result");
     }
+}
+
+fn external_search_test_application(
+    tree: &TestTree,
+    filenames: &[&str],
+    mut repository: CatalogRepository,
+) -> (ApplicationService<NoopRecycleBin>, Vec<i64>) {
+    for filename in filenames {
+        tree.zip(filename);
+    }
+    repository
+        .register_library_root(&tree.library(), SourceKind::Archive, "歸檔區")
+        .expect("register external search test root");
+    let roots = repository
+        .active_scan_roots()
+        .expect("read external search test roots");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application
+        .run_scan(&roots)
+        .expect("scan external search test collections");
+    let collection_ids = filenames
+        .iter()
+        .map(|filename| {
+            application
+                .repository()
+                .collection_id_for_current_path(&tree.library().join(filename))
+                .expect("external search test collection lookup")
+                .expect("external search test collection ID")
+        })
+        .collect();
+    (application, collection_ids)
+}
+
+fn fail_external_search_job(
+    mut application: ApplicationService<NoopRecycleBin>,
+    collection_id: i64,
+    fields: &[MetadataField],
+    error_kind: ExternalSearchErrorKind,
+    summary: Option<&ExternalSearchJobSummary>,
+) -> (
+    ApplicationService<NoopRecycleBin>,
+    ExternalSearchJobSnapshot,
+) {
+    let job = application
+        .enqueue_external_search(collection_id, fields)
+        .expect("enqueue external search test job")
+        .job;
+    let mut repository = application.into_repository();
+    repository
+        .start_external_search_job(job.id)
+        .expect("start external search test job");
+    let failed = repository
+        .fail_external_search_job(
+            job.id,
+            error_kind,
+            "simulated external search failure",
+            summary,
+        )
+        .expect("fail external search test job");
+    (ApplicationService::new(repository, NoopRecycleBin), failed)
+}
+
+fn complete_partial_external_search_job(
+    mut application: ApplicationService<NoopRecycleBin>,
+    collection_id: i64,
+    fields: &[MetadataField],
+    summary: &ExternalSearchJobSummary,
+) -> (
+    ApplicationService<NoopRecycleBin>,
+    ExternalSearchJobSnapshot,
+) {
+    let job = application
+        .enqueue_external_search(collection_id, fields)
+        .expect("enqueue partial external search test job")
+        .job;
+    let mut repository = application.into_repository();
+    repository
+        .start_external_search_job(job.id)
+        .expect("start partial external search test job");
+    let partial = repository
+        .complete_external_search_job(job.id, ExternalSearchCompletionStatus::Partial, summary)
+        .expect("complete partial external search test job");
+    (ApplicationService::new(repository, NoopRecycleBin), partial)
+}
+
+fn external_search_activity_item(activity: &Value, job_id: i64) -> &Value {
+    activity["items"]
+        .as_array()
+        .expect("activity items")
+        .iter()
+        .find(|item| item["id"].as_i64() == Some(job_id))
+        .expect("external search activity item")
 }
 
 #[tokio::test]
@@ -2657,6 +2755,589 @@ async fn external_search_jobs_can_be_enqueued_deduplicated_and_read_over_loopbac
         "external_search_job_not_found",
         missing_job.json["error"]["code"]
     );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn external_search_activity_auto_resolves_no_match_after_requested_metadata_changes() {
+    let tree = TestTree::new("external-activity-auto-resolution");
+    let (application, collection_ids) = external_search_test_application(
+        &tree,
+        &["[Circle] Missing Author.zip"],
+        CatalogRepository::open_in_memory().expect("open catalog"),
+    );
+    let collection_id = collection_ids[0];
+    let (application, failed_job) = fail_external_search_job(
+        application,
+        collection_id,
+        &[MetadataField::Authors],
+        ExternalSearchErrorKind::NoMatch,
+        None,
+    );
+    let original_status = failed_job.status;
+    let original_error = failed_job.error_message.clone();
+    let original_attempts = failed_job.attempts;
+    let server = RunningServer::start(application).await;
+
+    let before = server
+        .request("GET", "/api/external-search-jobs/activity", &[])
+        .await;
+    assert_eq!(200, before.status);
+    assert_eq!(1, before.json["actionable_count"]);
+    let before_item = external_search_activity_item(&before.json, failed_job.id);
+    assert_eq!(true, before_item["actionable"]);
+    assert_eq!(Value::Null, before_item["resolution"]);
+    assert_eq!(
+        serde_json::json!(["authors"]),
+        before_item["unresolved_fields"]
+    );
+
+    let manual = server
+        .request_json(
+            "PUT",
+            &format!("/api/collections/{collection_id}/metadata/authors"),
+            &serde_json::json!({"value": ["Manual Author"]}),
+        )
+        .await;
+    assert_eq!(200, manual.status);
+
+    let after = server
+        .request("GET", "/api/external-search-jobs/activity", &[])
+        .await;
+    assert_eq!(200, after.status);
+    assert_eq!(0, after.json["actionable_count"]);
+    let after_item = external_search_activity_item(&after.json, failed_job.id);
+    assert_eq!(false, after_item["actionable"]);
+    assert_eq!("metadata_resolved", after_item["resolution"]);
+    assert_eq!(serde_json::json!([]), after_item["unresolved_fields"]);
+
+    let preserved = server
+        .request(
+            "GET",
+            &format!("/api/external-search-jobs/{}", failed_job.id),
+            &[],
+        )
+        .await;
+    assert_eq!(200, preserved.status);
+    assert_eq!(original_status.as_str(), preserved.json["status"]);
+    assert_eq!(
+        original_error,
+        preserved.json["error_message"].as_str().map(str::to_owned)
+    );
+    assert_eq!(original_attempts, preserved.json["attempts"]);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn external_search_activity_requires_post_enqueue_metadata_change_for_auto_resolution() {
+    let tree = TestTree::new("external-activity-enqueue-baseline");
+    let (mut application, collection_ids) = external_search_test_application(
+        &tree,
+        &["[Circle] Existing Author.zip"],
+        CatalogRepository::open_in_memory().expect("open catalog"),
+    );
+    let collection_id = collection_ids[0];
+    application
+        .set_manual_metadata(
+            collection_id,
+            MetadataField::Authors,
+            MetadataValue::Authors(Authors {
+                raw: Some("Existing Author".to_owned()),
+                values: vec!["Existing Author".to_owned()],
+            }),
+        )
+        .expect("seed pre-enqueue authors");
+    let (application, failed_job) = fail_external_search_job(
+        application,
+        collection_id,
+        &[MetadataField::Authors],
+        ExternalSearchErrorKind::NoMatch,
+        None,
+    );
+    let server = RunningServer::start(application).await;
+
+    let unchanged = server
+        .request("GET", "/api/external-search-jobs/activity", &[])
+        .await;
+    assert_eq!(200, unchanged.status);
+    assert_eq!(1, unchanged.json["actionable_count"]);
+    let unchanged_item = external_search_activity_item(&unchanged.json, failed_job.id);
+    assert_eq!(true, unchanged_item["actionable"]);
+    assert_eq!(Value::Null, unchanged_item["resolution"]);
+    assert_eq!(
+        serde_json::json!(["authors"]),
+        unchanged_item["unresolved_fields"]
+    );
+
+    let replacement = server
+        .request_json(
+            "PUT",
+            &format!("/api/collections/{collection_id}/metadata/authors"),
+            &serde_json::json!({"value": ["Replacement Author"]}),
+        )
+        .await;
+    assert_eq!(200, replacement.status);
+    let changed = server
+        .request("GET", "/api/external-search-jobs/activity", &[])
+        .await;
+    assert_eq!(0, changed.json["actionable_count"]);
+    assert_eq!(
+        "metadata_resolved",
+        external_search_activity_item(&changed.json, failed_job.id)["resolution"]
+    );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn external_search_activity_resolves_partial_only_after_all_failed_fields_change() {
+    let tree = TestTree::new("external-activity-partial-fields");
+    let (application, collection_ids) = external_search_test_application(
+        &tree,
+        &["[Circle] Partial Fields.zip"],
+        CatalogRepository::open_in_memory().expect("open catalog"),
+    );
+    let collection_id = collection_ids[0];
+    let summary = ExternalSearchJobSummary {
+        candidates_received: 0,
+        tags_received: 0,
+        tags_applied: 0,
+        auto_applied: 0,
+        suggestions: 0,
+        suggestion_assertion_ids: Vec::new(),
+        search_only: 0,
+        issues: vec![
+            ExternalSearchJobIssue {
+                field: Some(MetadataField::Authors),
+                kind: "provider_field_error".to_owned(),
+                message: "authors lookup failed".to_owned(),
+            },
+            ExternalSearchJobIssue {
+                field: Some(MetadataField::Parody),
+                kind: "provider_field_error".to_owned(),
+                message: "parody lookup failed".to_owned(),
+            },
+        ],
+    };
+    let (application, partial_job) = complete_partial_external_search_job(
+        application,
+        collection_id,
+        &[MetadataField::Authors, MetadataField::Parody],
+        &summary,
+    );
+    let server = RunningServer::start(application).await;
+
+    let before = server
+        .request("GET", "/api/external-search-jobs/activity", &[])
+        .await;
+    assert_eq!(200, before.status);
+    assert_eq!(1, before.json["actionable_count"]);
+    assert_eq!(
+        serde_json::json!(["authors", "parody"]),
+        external_search_activity_item(&before.json, partial_job.id)["unresolved_fields"]
+    );
+
+    let authors = server
+        .request_json(
+            "PUT",
+            &format!("/api/collections/{collection_id}/metadata/authors"),
+            &serde_json::json!({"value": ["Manual Author"]}),
+        )
+        .await;
+    assert_eq!(200, authors.status);
+    let halfway = server
+        .request("GET", "/api/external-search-jobs/activity", &[])
+        .await;
+    assert_eq!(1, halfway.json["actionable_count"]);
+    let halfway_item = external_search_activity_item(&halfway.json, partial_job.id);
+    assert_eq!(true, halfway_item["actionable"]);
+    assert_eq!(
+        serde_json::json!(["parody"]),
+        halfway_item["unresolved_fields"]
+    );
+
+    let parody = server
+        .request_json(
+            "PUT",
+            &format!("/api/collections/{collection_id}/metadata/parody"),
+            &serde_json::json!({"value": "Manual Parody"}),
+        )
+        .await;
+    assert_eq!(200, parody.status);
+    let complete = server
+        .request("GET", "/api/external-search-jobs/activity", &[])
+        .await;
+    assert_eq!(0, complete.json["actionable_count"]);
+    let complete_item = external_search_activity_item(&complete.json, partial_job.id);
+    assert_eq!(false, complete_item["actionable"]);
+    assert_eq!("metadata_resolved", complete_item["resolution"]);
+    assert_eq!(serde_json::json!([]), complete_item["unresolved_fields"]);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn external_search_activity_keeps_suggestions_and_system_failures_actionable() {
+    let tree = TestTree::new("external-activity-conservative-resolution");
+    let (application, collection_ids) = external_search_test_application(
+        &tree,
+        &["[Circle] Candidate.zip", "[Circle] System Error.zip"],
+        CatalogRepository::open_in_memory().expect("open catalog"),
+    );
+    let suggestion_summary = ExternalSearchJobSummary {
+        candidates_received: 1,
+        tags_received: 0,
+        tags_applied: 0,
+        auto_applied: 0,
+        suggestions: 1,
+        suggestion_assertion_ids: Vec::new(),
+        search_only: 0,
+        issues: vec![ExternalSearchJobIssue {
+            field: Some(MetadataField::Authors),
+            kind: "provider_field_error".to_owned(),
+            message: "authors lookup failed".to_owned(),
+        }],
+    };
+    let (mut application, suggestion_job) = complete_partial_external_search_job(
+        application,
+        collection_ids[0],
+        &[MetadataField::Authors],
+        &suggestion_summary,
+    );
+    application
+        .set_manual_metadata(
+            collection_ids[0],
+            MetadataField::Authors,
+            MetadataValue::Authors(Authors {
+                raw: Some("Manual Candidate Review".to_owned()),
+                values: vec!["Manual Candidate Review".to_owned()],
+            }),
+        )
+        .expect("resolve suggestion field manually");
+    let (mut application, system_job) = fail_external_search_job(
+        application,
+        collection_ids[1],
+        &[MetadataField::Authors],
+        ExternalSearchErrorKind::InvalidResponse,
+        None,
+    );
+    application
+        .set_manual_metadata(
+            collection_ids[1],
+            MetadataField::Authors,
+            MetadataValue::Authors(Authors {
+                raw: Some("Manual System Recovery".to_owned()),
+                values: vec!["Manual System Recovery".to_owned()],
+            }),
+        )
+        .expect("fill system failure field manually");
+    let server = RunningServer::start(application).await;
+
+    let activity = server
+        .request("GET", "/api/external-search-jobs/activity", &[])
+        .await;
+    assert_eq!(200, activity.status);
+    assert_eq!(2, activity.json["actionable_count"]);
+    for job_id in [suggestion_job.id, system_job.id] {
+        let item = external_search_activity_item(&activity.json, job_id);
+        assert_eq!(true, item["actionable"]);
+        assert_eq!(Value::Null, item["resolution"]);
+    }
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn external_search_acknowledgement_persists_without_rewriting_job_metadata_or_batch_history()
+{
+    let tree = TestTree::new("external-activity-ack-persistence");
+    let database_path = tree.path.join("catalog.db");
+    let (mut application, collection_ids) = external_search_test_application(
+        &tree,
+        &["[Circle] Acknowledged.zip"],
+        CatalogRepository::open(&database_path).expect("open persistent catalog"),
+    );
+    let collection_id = collection_ids[0];
+    let batch = application
+        .create_external_search_batch(
+            &[collection_id],
+            &[MetadataField::Authors],
+            ExternalSearchBatchStrategy::Specified,
+        )
+        .expect("create acknowledgement batch");
+    let job_id = batch.items[0].job_id.expect("batch external search job");
+    let mut repository = application.into_repository();
+    repository
+        .start_external_search_job(job_id)
+        .expect("start acknowledgement job");
+    repository
+        .fail_external_search_job(
+            job_id,
+            ExternalSearchErrorKind::Unsupported,
+            "provider does not support this query",
+            None,
+        )
+        .expect("fail acknowledgement job");
+    let application = ApplicationService::new(repository, NoopRecycleBin);
+    let server = RunningServer::start(application).await;
+
+    let job_before = server
+        .request("GET", &format!("/api/external-search-jobs/{job_id}"), &[])
+        .await;
+    let metadata_before = server
+        .request(
+            "GET",
+            &format!("/api/collections/{collection_id}/metadata"),
+            &[],
+        )
+        .await;
+    let batch_before = server
+        .request(
+            "GET",
+            &format!("/api/external-search-batches/{}", batch.id),
+            &[],
+        )
+        .await;
+    assert_eq!("failed", job_before.json["status"]);
+    assert_eq!(1, batch_before.json["summary"]["failed"]);
+
+    let acknowledged = server
+        .request(
+            "POST",
+            &format!("/api/external-search-jobs/{job_id}/acknowledge"),
+            &[],
+        )
+        .await;
+    assert_eq!(200, acknowledged.status);
+    assert_eq!(false, acknowledged.json["actionable"]);
+    assert_eq!("acknowledged", acknowledged.json["resolution"]);
+    assert!(acknowledged.json["acknowledged_at"].as_str().is_some());
+
+    let job_after = server
+        .request("GET", &format!("/api/external-search-jobs/{job_id}"), &[])
+        .await;
+    let metadata_after = server
+        .request(
+            "GET",
+            &format!("/api/collections/{collection_id}/metadata"),
+            &[],
+        )
+        .await;
+    let batch_after = server
+        .request(
+            "GET",
+            &format!("/api/external-search-batches/{}", batch.id),
+            &[],
+        )
+        .await;
+    for history_field in [
+        "id",
+        "collection_id",
+        "status",
+        "fields",
+        "result",
+        "error_kind",
+        "error_message",
+        "attempts",
+        "next_retry_at",
+        "created_at",
+        "updated_at",
+    ] {
+        assert_eq!(
+            job_before.json[history_field], job_after.json[history_field],
+            "acknowledgement must preserve job history field {history_field}"
+        );
+    }
+    assert_eq!(metadata_before.json, metadata_after.json);
+    assert_eq!(batch_before.json, batch_after.json);
+    server.stop().await;
+
+    let restarted = ApplicationService::new(
+        CatalogRepository::open(&database_path).expect("reopen acknowledged catalog"),
+        NoopRecycleBin,
+    );
+    let restarted_server = RunningServer::start(restarted).await;
+    let persisted = restarted_server
+        .request("GET", "/api/external-search-jobs/activity", &[])
+        .await;
+    assert_eq!(200, persisted.status);
+    assert_eq!(0, persisted.json["actionable_count"]);
+    let persisted_item = external_search_activity_item(&persisted.json, job_id);
+    assert_eq!(false, persisted_item["actionable"]);
+    assert_eq!("acknowledged", persisted_item["resolution"]);
+    assert!(persisted_item["acknowledged_at"].as_str().is_some());
+    restarted_server.stop().await;
+}
+
+#[tokio::test]
+async fn external_search_acknowledgement_is_per_job_and_does_not_hide_a_new_failure() {
+    let tree = TestTree::new("external-activity-ack-per-job");
+    let database_path = tree.path.join("catalog.db");
+    let (application, collection_ids) = external_search_test_application(
+        &tree,
+        &["[Circle] Repeated Failure.zip"],
+        CatalogRepository::open(&database_path).expect("open persistent catalog"),
+    );
+    let collection_id = collection_ids[0];
+    let (application, first_job) = fail_external_search_job(
+        application,
+        collection_id,
+        &[MetadataField::Authors],
+        ExternalSearchErrorKind::Unsupported,
+        None,
+    );
+    let server = RunningServer::start(application).await;
+    let acknowledged = server
+        .request(
+            "POST",
+            &format!("/api/external-search-jobs/{}/acknowledge", first_job.id),
+            &[],
+        )
+        .await;
+    assert_eq!(200, acknowledged.status);
+    server.stop().await;
+
+    let application = ApplicationService::new(
+        CatalogRepository::open(&database_path).expect("reopen catalog for new job"),
+        NoopRecycleBin,
+    );
+    let (application, second_job) = fail_external_search_job(
+        application,
+        collection_id,
+        &[MetadataField::Authors],
+        ExternalSearchErrorKind::Unsupported,
+        None,
+    );
+    assert_ne!(first_job.id, second_job.id);
+    let restarted_server = RunningServer::start(application).await;
+    let activity = restarted_server
+        .request("GET", "/api/external-search-jobs/activity", &[])
+        .await;
+    assert_eq!(1, activity.json["actionable_count"]);
+    assert_eq!(
+        "acknowledged",
+        external_search_activity_item(&activity.json, first_job.id)["resolution"]
+    );
+    let new_item = external_search_activity_item(&activity.json, second_job.id);
+    assert_eq!(true, new_item["actionable"]);
+    assert_eq!(Value::Null, new_item["resolution"]);
+    restarted_server.stop().await;
+}
+
+#[tokio::test]
+async fn external_search_activity_lists_all_database_failures_and_excludes_inactive_collections() {
+    let tree = TestTree::new("external-activity-database-list");
+    let filenames = [
+        "[Circle] First Actionable.zip",
+        "[Circle] Second Actionable.zip",
+        "[Circle] Tombstoned.zip",
+    ];
+    let (application, collection_ids) = external_search_test_application(
+        &tree,
+        &filenames,
+        CatalogRepository::open_in_memory().expect("open catalog"),
+    );
+    let (application, first_job) = fail_external_search_job(
+        application,
+        collection_ids[0],
+        &[MetadataField::Authors],
+        ExternalSearchErrorKind::NoMatch,
+        None,
+    );
+    let (application, second_job) = fail_external_search_job(
+        application,
+        collection_ids[1],
+        &[MetadataField::Authors],
+        ExternalSearchErrorKind::NoMatch,
+        None,
+    );
+    let (application, ghost_job) = fail_external_search_job(
+        application,
+        collection_ids[2],
+        &[MetadataField::Authors],
+        ExternalSearchErrorKind::NoMatch,
+        None,
+    );
+    fs::remove_file(tree.library().join(filenames[2])).expect("remove tombstoned collection");
+    let mut repository = application.into_repository();
+    repository
+        .mark_collection_missing(collection_ids[2])
+        .expect("tombstone inactive collection");
+    let server = RunningServer::start(ApplicationService::new(repository, NoopRecycleBin)).await;
+
+    let activity = server
+        .request("GET", "/api/external-search-jobs/activity", &[])
+        .await;
+    assert_eq!(200, activity.status);
+    assert_eq!(2, activity.json["actionable_count"]);
+    assert_eq!(
+        true,
+        external_search_activity_item(&activity.json, first_job.id)["actionable"]
+    );
+    assert_eq!(
+        true,
+        external_search_activity_item(&activity.json, second_job.id)["actionable"]
+    );
+    assert!(
+        activity.json["items"]
+            .as_array()
+            .expect("activity items")
+            .iter()
+            .all(|item| item["id"].as_i64() != Some(ghost_job.id)),
+        "inactive collection job must not remain as an Activity ghost"
+    );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn external_search_activity_does_not_count_pending_or_running_jobs_as_actionable() {
+    let tree = TestTree::new("external-activity-nonterminal");
+    let (mut application, collection_ids) = external_search_test_application(
+        &tree,
+        &["[Circle] Pending.zip", "[Circle] Running.zip"],
+        CatalogRepository::open_in_memory().expect("open catalog"),
+    );
+    let pending_job = application
+        .enqueue_external_search(collection_ids[0], &[MetadataField::Authors])
+        .expect("enqueue pending job")
+        .job;
+    let running_job = application
+        .enqueue_external_search(collection_ids[1], &[MetadataField::Authors])
+        .expect("enqueue running job")
+        .job;
+    let mut repository = application.into_repository();
+    repository
+        .start_external_search_job(running_job.id)
+        .expect("start running job");
+    let server = RunningServer::start(ApplicationService::new(repository, NoopRecycleBin)).await;
+
+    let activity = server
+        .request("GET", "/api/external-search-jobs/activity", &[])
+        .await;
+    assert_eq!(200, activity.status);
+    assert_eq!(0, activity.json["actionable_count"]);
+    for job_id in [pending_job.id, running_job.id] {
+        let item = external_search_activity_item(&activity.json, job_id);
+        assert_eq!(false, item["actionable"]);
+        assert_eq!(Value::Null, item["resolution"]);
+        assert_eq!(Value::Null, item["acknowledged_at"]);
+    }
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn activity_ui_reads_persistent_external_search_activity_and_offers_acknowledgement() {
+    let application = ApplicationService::new(
+        CatalogRepository::open_in_memory().expect("open catalog"),
+        NoopRecycleBin,
+    );
+    let server = RunningServer::start(application).await;
+    let javascript = server.request("GET", "/assets/app.js", &[]).await;
+    assert_eq!(200, javascript.status);
+    let script = String::from_utf8(javascript.body).expect("UTF-8 script");
+
+    assert!(script.contains("/api/external-search-jobs/activity"));
+    assert!(script.contains("/acknowledge"));
+    assert!(script.contains("標記已處理"));
+    assert!(script.contains("metadata_resolved"));
+    assert!(script.contains("actionable_count"));
     server.stop().await;
 }
 
