@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>私藏編目室</title>
-  <link rel="stylesheet" href="/assets/app.css?v=54">
-  <script src="/assets/app.js?v=54" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=55">
+  <script src="/assets/app.js?v=55" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -743,6 +743,8 @@
             <p><span>KEYBOARD FIRST</span> 做完後依最新狀態重新核對 Queue。</p>
             <button class="primary-button review-accept" id="review-accept" type="button"><kbd>A</kbd> 採用主要候選</button>
             <button class="secondary-button" id="review-reject" type="button"><kbd>R</kbd> 拒絕主要候選</button>
+            <button class="secondary-button" id="review-search" type="button" aria-describedby="review-external-status"><kbd>W</kbd> 搜尋外部資料</button>
+            <section class="external-job-status review-external-status" id="review-external-status" role="status" aria-live="polite" aria-atomic="true" hidden></section>
             <button class="secondary-button" id="review-edit" type="button"><kbd>E</kbd> 手動編輯</button>
             <button class="text-button" id="review-skip" type="button"><kbd>S</kbd> 本次略過</button>
             <button class="text-button" id="review-detail" type="button">打開完整 Detail <span aria-hidden="true">→</span></button>
@@ -1204,7 +1206,7 @@
   <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-heading">
     <div class="dialog-shell compact-dialog">
       <header><h2 id="shortcuts-heading">鍵盤操作</h2><button class="icon-button" data-close-dialog type="button" aria-label="關閉">×</button></header>
-      <dl class="shortcut-list"><dt><kbd>/</kbd></dt><dd>跳到搜尋</dd><dt><kbd>J</kbd> / <kbd>K</kbd></dt><dd>移動目前查看收藏或審核項目</dd><dt><kbd>A</kbd> / <kbd>R</kbd></dt><dd>在品質審核採用／拒絕主要候選</dd><dt><kbd>E</kbd> / <kbd>S</kbd></dt><dd>在品質審核手動編輯／本次略過</dd><dt><kbd>A</kbd> / <kbd>E</kbd> / <kbd>W</kbd></dt><dd>僅在待歸檔模式：歸檔／編輯 metadata／外部搜尋</dd><dt><kbd>S</kbd> / <kbd>O</kbd></dt><dd>僅在待歸檔模式：本次略過／打開完整 Detail</dd><dt><kbd>Space</kbd></dt><dd>切換目前查看收藏的批次選取</dd><dt><kbd>?</kbd></dt><dd>顯示這份說明</dd><dt><kbd>Esc</kbd></dt><dd>關閉對話框</dd></dl>
+      <dl class="shortcut-list"><dt><kbd>/</kbd></dt><dd>跳到搜尋</dd><dt><kbd>J</kbd> / <kbd>K</kbd></dt><dd>移動目前查看收藏或審核項目</dd><dt><kbd>A</kbd> / <kbd>R</kbd></dt><dd>在品質審核採用／拒絕主要候選</dd><dt><kbd>E</kbd> / <kbd>S</kbd></dt><dd>在品質審核手動編輯／本次略過</dd><dt><kbd>W</kbd></dt><dd>在品質審核搜尋目前問題欄位；partial 時再試一次</dd><dt><kbd>A</kbd> / <kbd>E</kbd> / <kbd>W</kbd></dt><dd>僅在待歸檔模式：歸檔／編輯 metadata／外部搜尋</dd><dt><kbd>S</kbd> / <kbd>O</kbd></dt><dd>僅在待歸檔模式：本次略過／打開完整 Detail</dd><dt><kbd>Space</kbd></dt><dd>切換目前查看收藏的批次選取</dd><dt><kbd>?</kbd></dt><dd>顯示這份說明</dd><dt><kbd>Esc</kbd></dt><dd>關閉對話框</dd></dl>
     </div>
   </dialog>
 

@@ -94,6 +94,15 @@
     partial: "部分完成",
     failed: "搜尋失敗",
   };
+  const EXTERNAL_ERROR_KIND_LABELS = {
+    network: "網路錯誤",
+    rate_limited: "供應方流量限制",
+    provider_unavailable: "供應方暫時無法使用",
+    worker_interrupted: "背景工作中斷",
+    invalid_response: "供應方回應無效",
+    no_match: "找不到相符資料",
+    unsupported: "供應方不支援此查詢",
+  };
   const SCAN_ISSUE_KIND_LABELS = {
     no_roots: "沒有來源",
     missing_root: "來源不存在",
@@ -158,6 +167,11 @@
     reviewSkipped: new Set(),
     reviewRequestNumber: 0,
     reviewReturnId: null,
+    reviewExternalJobs: new Map(),
+    reviewExternalJobRequests: new Map(),
+    reviewExternalLoadingJobs: new Set(),
+    reviewExternalMutationNumber: 0,
+    reviewTerminalJobIds: new Set(),
     triageLoaded: false,
     triageLoading: false,
     triageItems: [],
@@ -203,6 +217,7 @@
     activityExternalJobs: new Map(),
     activityExternalActionableCount: 0,
     activityExternalLoaded: false,
+    activityExternalRefreshPromise: null,
     activityScan: null,
     activityThumbnailFailures: new Set(),
     thumbnailCacheJob: null,
@@ -236,6 +251,8 @@
   if (!Array.isArray(state.recent)) state.recent = [];
   if (!['list', 'grid'].includes(state.layout)) state.layout = 'list';
   if (!state.externalJobRefs || typeof state.externalJobRefs !== "object" || Array.isArray(state.externalJobRefs)) state.externalJobRefs = {};
+
+  const reviewQueueRefreshCoordinator = createCoalescedReviewQueueRefresh(reloadReviewQueueAfterExternalJobs);
 
   const ui = {};
   const mobileDetailMedia = window.matchMedia("(max-width: 899px)");
@@ -501,6 +518,8 @@
       reviewAllIssues: byId("review-all-issues"),
       reviewAccept: byId("review-accept"),
       reviewReject: byId("review-reject"),
+      reviewSearch: byId("review-search"),
+      reviewExternalStatus: byId("review-external-status"),
       reviewEdit: byId("review-edit"),
       reviewSkip: byId("review-skip"),
       reviewDetail: byId("review-detail"),
@@ -793,6 +812,7 @@
     ui.resetReviewSkips.addEventListener("click", resetReviewSkips);
     ui.reviewAccept.addEventListener("click", () => decideReviewCandidate("select"));
     ui.reviewReject.addEventListener("click", () => decideReviewCandidate("reject"));
+    ui.reviewSearch.addEventListener("click", enqueueReviewExternalSearch);
     ui.reviewEdit.addEventListener("click", openReviewEditor);
     ui.reviewSkip.addEventListener("click", skipCurrentReviewItem);
     ui.reviewDetail.addEventListener("click", openReviewDetail);
@@ -1149,15 +1169,39 @@
   }
 
   async function refreshExternalSearchActivityProjection() {
-    try {
-      const activity = await api("/api/external-search-jobs/activity");
-      state.activityExternalJobs = new Map(activity.items.map((job) => [job.id, job]));
-      state.activityExternalActionableCount = Number(activity.actionable_count) || 0;
-      state.activityExternalLoaded = true;
-      return true;
-    } catch (_) {
-      return false;
-    }
+    if (state.activityExternalRefreshPromise) return state.activityExternalRefreshPromise;
+    let trackedPromise;
+    const refreshPromise = (async () => {
+      while (true) {
+        const reviewMutationNumber = state.reviewExternalMutationNumber;
+        let activity;
+        try {
+          activity = await api("/api/external-search-jobs/activity");
+        } catch (_) {
+          return false;
+        }
+        if (reviewMutationNumber !== state.reviewExternalMutationNumber) continue;
+
+        const beforeSignature = currentReviewExternalDisplaySignature();
+        const reconciliation = reconcileReviewExternalActivity(
+          state.activityExternalJobs,
+          activity.items || [],
+        );
+        state.activityExternalJobs = reconciliation.jobs;
+        state.reviewExternalJobs.clear();
+        state.activityExternalActionableCount = Number(activity.actionable_count) || 0;
+        state.activityExternalLoaded = true;
+        const afterSignature = currentReviewExternalDisplaySignature();
+        if (state.route === "review" && beforeSignature !== afterSignature) renderReviewQueue();
+        requestReviewTerminalRefresh(reconciliation.terminalJobs);
+        return true;
+      }
+    })();
+    trackedPromise = refreshPromise.finally(() => {
+      if (state.activityExternalRefreshPromise === trackedPromise) state.activityExternalRefreshPromise = null;
+    });
+    state.activityExternalRefreshPromise = trackedPromise;
+    return trackedPromise;
   }
 
   function setServiceState(status, label) {
@@ -4515,26 +4559,33 @@
     ui.workbenchCount.title = `${state.selectedIds.size} 筆批次選取，${pending} 筆身分候選，${vocabulary} 組名稱候選`;
   }
 
-  async function loadReviewQueue({ preferredId = null } = {}) {
-    if (state.reviewLoading) return;
+  async function loadReviewQueue({ preferredId = null, preserveLiveContext = false } = {}) {
     const requestNumber = ++state.reviewRequestNumber;
     state.reviewLoading = true;
     ui.reviewLoading.hidden = false;
     ui.reviewError.hidden = true;
     try {
+      if (!state.activityExternalLoaded) {
+        await refreshExternalSearchActivityProjection();
+        if (requestNumber !== state.reviewRequestNumber) return;
+      }
       const page = await api(`/api/review-queue?kind=${encodeURIComponent(state.reviewKind)}&page=${state.reviewPage}&per_page=100`);
       if (requestNumber !== state.reviewRequestNumber) return;
+      const livePreferredId = preserveLiveContext
+        ? currentReviewItem()?.collection.id ?? preferredId
+        : preferredId;
+      const livePosition = state.reviewPosition;
       state.reviewItems = page.items || [];
       state.reviewTotal = page.pagination?.total || 0;
       state.reviewTotalPages = page.pagination?.total_pages || 0;
       if (!state.reviewItems.length && state.reviewPage > Math.max(1, state.reviewTotalPages)) {
         state.reviewPage = Math.max(1, state.reviewTotalPages);
         state.reviewLoading = false;
-        return loadReviewQueue({ preferredId });
+        return loadReviewQueue({ preferredId: livePreferredId, preserveLiveContext });
       }
-      const preferredIndex = preferredId == null ? -1 : state.reviewItems.findIndex((item) => item.collection.id === preferredId && !state.reviewSkipped.has(item.collection.id));
+      const preferredIndex = livePreferredId == null ? -1 : state.reviewItems.findIndex((item) => item.collection.id === livePreferredId && !state.reviewSkipped.has(item.collection.id));
       if (preferredIndex >= 0) state.reviewPosition = preferredIndex;
-      else state.reviewPosition = Math.min(state.reviewPosition, Math.max(0, state.reviewItems.length - 1));
+      else state.reviewPosition = Math.min(livePosition, Math.max(0, state.reviewItems.length - 1));
       const available = availableReviewIndices();
       if (available.length && !available.includes(state.reviewPosition)) state.reviewPosition = available.find((index) => index >= state.reviewPosition) ?? available[available.length - 1];
       state.reviewLoaded = true;
@@ -4593,6 +4644,288 @@
     return issues.candidates[0] || issues.missing[0] || null;
   }
 
+  function selectReviewExternalJob(collectionId, field, reviewJobs, activityJobs) {
+    const jobsById = new Map();
+    [reviewJobs, activityJobs].forEach((source) => {
+      if (!source) return;
+      const jobs = typeof source.values === "function" ? source.values() : source;
+      for (const job of jobs) {
+        if (job?.collection_id === collectionId) jobsById.set(job.id, job);
+      }
+    });
+    const jobs = [...jobsById.values()].sort((left, right) => right.id - left.id);
+    return jobs.find((job) => ["pending", "running"].includes(job.status))
+      || jobs.find((job) => (job.fields || []).includes(field))
+      || null;
+  }
+
+  function reviewExternalSearchMode(issue, job, activityLoaded = true) {
+    if (!issue) return "unavailable";
+    if (["pending", "running"].includes(job?.status)) return "active";
+    if (issue.type === "missing" && job?.status === "partial" && (job.fields || []).includes(issue.field)) return "retry";
+    if (issue.type === "missing" && (!job || job.status === "succeeded")) return activityLoaded ? "search" : "checking";
+    return "unavailable";
+  }
+
+  function externalJobsById(source) {
+    const jobs = source && typeof source.values === "function" ? source.values() : (source || []);
+    return new Map([...jobs].filter((job) => job?.id != null).map((job) => [job.id, job]));
+  }
+
+  function reconcileReviewExternalActivity(previousJobs, nextJobs) {
+    const previous = externalJobsById(previousJobs);
+    const jobs = externalJobsById(nextJobs);
+    const terminalJobs = [...jobs.values()].filter((job) => {
+      const previousJob = previous.get(job.id);
+      return ["pending", "running"].includes(previousJob?.status)
+        && !["pending", "running"].includes(job.status);
+    });
+    return { jobs, terminalJobs };
+  }
+
+  function claimReviewTerminalJobs(jobs, handledJobIds) {
+    const handled = new Set(handledJobIds || []);
+    const terminalJobs = [];
+    for (const job of jobs || []) {
+      if (!job || ["pending", "running"].includes(job.status) || handled.has(job.id)) continue;
+      handled.add(job.id);
+      terminalJobs.push(job);
+    }
+    return { handledJobIds: handled, terminalJobs };
+  }
+
+  function createCoalescedReviewQueueRefresh(run) {
+    let requested = false;
+    let promise = null;
+    return {
+      request() {
+        requested = true;
+        if (!promise) {
+          promise = (async () => {
+            let runs = 0;
+            do {
+              await Promise.resolve();
+              requested = false;
+              await run();
+              runs += 1;
+            } while (requested);
+            return runs;
+          })().finally(() => { promise = null; });
+        }
+        return promise;
+      },
+    };
+  }
+
+  function reviewExternalDisplaySignature(item, issue, activityLoaded, reviewJobs, activityJobs) {
+    if (!item || !issue) return "none";
+    const job = selectReviewExternalJob(item.collection.id, issue.field, reviewJobs, activityJobs);
+    const mode = reviewExternalSearchMode(issue, job, activityLoaded);
+    if (!job) return JSON.stringify([item.collection.id, issue.type, issue.field, mode]);
+    return JSON.stringify([
+      item.collection.id,
+      issue.type,
+      issue.field,
+      mode,
+      job.id,
+      job.status,
+      job.fields || [],
+      job.result || null,
+      job.error_kind || null,
+      job.error_message || null,
+      job.attempts ?? 0,
+      job.next_retry_at || null,
+      job.updated_at || null,
+    ]);
+  }
+
+  function currentReviewExternalDisplaySignature() {
+    const item = currentReviewItem();
+    return reviewExternalDisplaySignature(
+      item,
+      primaryReviewIssue(item),
+      state.activityExternalLoaded,
+      state.reviewExternalJobs,
+      state.activityExternalJobs,
+    );
+  }
+
+  function currentReviewExternalJob(item, issue) {
+    if (!item || !issue) return null;
+    return selectReviewExternalJob(
+      item.collection.id,
+      issue.field,
+      state.reviewExternalJobs,
+      state.activityExternalJobs,
+    );
+  }
+
+  function renderReviewExternalSearch(item, issue) {
+    const job = currentReviewExternalJob(item, issue);
+    const mode = reviewExternalSearchMode(issue, job, state.activityExternalLoaded);
+    ui.reviewSearch.hidden = mode === "unavailable";
+    ui.reviewSearch.disabled = ["active", "checking"].includes(mode);
+    ui.reviewSearch.replaceChildren();
+    const shortcut = el("kbd", "", "W");
+    const label = mode === "retry"
+      ? `再試一次（${METADATA_LABELS[issue.field] || issue.field}）`
+      : mode === "active"
+        ? "正在搜尋外部資料…"
+        : mode === "checking"
+          ? "檢查現有搜尋…"
+          : `搜尋${METADATA_LABELS[issue?.field] || "目前欄位"}候選`;
+    ui.reviewSearch.append(shortcut, document.createTextNode(` ${label}`));
+    renderReviewExternalJob(job);
+
+    const knownId = Number(state.externalJobRefs[String(item.collection.id)]);
+    const alreadyKnown = [state.reviewExternalJobs, state.activityExternalJobs]
+      .some((jobs) => Number.isSafeInteger(knownId) && [...jobs.values()].some((candidate) => candidate.id === knownId));
+    if (Number.isSafeInteger(knownId) && knownId > 0 && !alreadyKnown) {
+      loadReviewExternalJob(knownId, item.collection.id);
+    }
+    if (!state.activityExternalLoaded && !job) refreshExternalSearchActivityProjection();
+  }
+
+  function renderReviewExternalJob(job) {
+    ui.reviewExternalStatus.hidden = !job;
+    ui.reviewExternalStatus.replaceChildren();
+    if (!job) return;
+
+    const header = el("header", "external-job-header");
+    const heading = el("div");
+    heading.append(el("small", "", `EXTERNAL JOB #${job.id}`), el("strong", "", "目前收藏的外部搜尋"));
+    header.append(heading, el("span", `job-status status-${job.status}`, EXTERNAL_JOB_STATUS_LABELS[job.status] || job.status));
+    const fields = (job.fields || []).map((field) => METADATA_LABELS[field] || field).join("、") || "欄位不明";
+    ui.reviewExternalStatus.append(
+      header,
+      el("p", "external-job-facts", `${fields} · 已嘗試 ${job.attempts ?? 0} 次 · 更新於 ${formatMetadataTime(job.updated_at)}`),
+    );
+
+    if (job.result) {
+      const result = el("dl", "external-job-result");
+      [
+        ["收到候選", job.result.candidates_received],
+        ["自動套用", job.result.auto_applied],
+        ["建議候選", job.result.suggestions],
+        ["僅供追查", job.result.search_only],
+      ].forEach(([label, value]) => result.append(el("dt", "", label), el("dd", "", value ?? 0)));
+      ui.reviewExternalStatus.append(result);
+      if (Array.isArray(job.result.issues) && job.result.issues.length) {
+        const issues = el("ul", "external-job-issues");
+        job.result.issues.forEach((problem) => {
+          const field = problem.field ? `${METADATA_LABELS[problem.field] || problem.field}：` : "";
+          const kind = problem.kind ? `（${problem.kind}）` : "";
+          issues.append(el("li", "", `${field}${problem.message}${kind}`));
+        });
+        ui.reviewExternalStatus.append(issues);
+      }
+    }
+
+    if (job.status === "partial") {
+      ui.reviewExternalStatus.append(el("p", "review-external-guidance", "部分欄位未完成；已取得的候選仍可採用或拒絕，也可只對目前問題欄位再試一次。"));
+    } else if (job.status === "failed") {
+      ui.reviewExternalStatus.append(el("p", "review-external-guidance", "這次搜尋無法完成；請手動編輯目前欄位，或打開完整 Detail 查看證據。永久失敗不會由 Queue 繞過。"));
+    } else if (job.status === "succeeded") {
+      ui.reviewExternalStatus.append(el("p", "review-external-guidance", "搜尋已完成；若目前欄位仍未補齊，可手動編輯或打開完整 Detail。"));
+    }
+    if (job.error_message) {
+      const errorKind = EXTERNAL_ERROR_KIND_LABELS[job.error_kind] || "搜尋錯誤";
+      const typedKind = job.error_kind ? `（${job.error_kind}）` : "";
+      ui.reviewExternalStatus.append(el("p", "external-job-error", `${errorKind}${typedKind}：${job.error_message}`));
+    }
+    if (job.next_retry_at) {
+      ui.reviewExternalStatus.append(el("p", "external-job-retry", `依既有 backoff 規則，預計 ${formatMetadataTime(job.next_retry_at)} 再試。`));
+    }
+    const refresh = el("button", "text-button", ["pending", "running"].includes(job.status) ? "立即更新狀態" : "重新讀取結果");
+    refresh.type = "button";
+    refresh.addEventListener("click", () => loadReviewExternalJob(job.id, job.collection_id));
+    ui.reviewExternalStatus.append(refresh);
+  }
+
+  async function enqueueReviewExternalSearch() {
+    const item = currentReviewItem();
+    const issue = primaryReviewIssue(item);
+    const job = currentReviewExternalJob(item, issue);
+    const mode = reviewExternalSearchMode(issue, job, state.activityExternalLoaded);
+    if (!item || !issue || !["search", "retry"].includes(mode)) return;
+    const collectionId = item.collection.id;
+    ui.reviewSearch.disabled = true;
+    try {
+      const result = await api(`/api/collections/${collectionId}/external-search-jobs`, {
+        method: "POST",
+        body: { fields: [issue.field] },
+      });
+      const beforeSignature = currentReviewExternalDisplaySignature();
+      rememberExternalJob(result.job);
+      state.reviewExternalJobs.set(collectionId, result.job);
+      state.reviewExternalMutationNumber += 1;
+      if (beforeSignature !== currentReviewExternalDisplaySignature()) renderReviewQueue();
+      refreshActivityCenter(true);
+      const actualFields = (result.job.fields || []).map((field) => METADATA_LABELS[field] || field).join("、");
+      toast(result.created
+        ? `已排入外部資料搜尋（${actualFields}）`
+        : `已沿用進行中的 external job；實際搜尋欄位：${actualFields}`);
+    } catch (error) {
+      toast(error.message, true);
+      if (currentReviewItem()?.collection.id === collectionId) renderReviewQueue();
+    }
+  }
+
+  async function loadReviewExternalJob(jobId, collectionId) {
+    const loadingKey = `${collectionId}:${jobId}`;
+    if (state.reviewExternalLoadingJobs.has(loadingKey)) return;
+    state.reviewExternalLoadingJobs.add(loadingKey);
+    const requestNumber = (state.reviewExternalJobRequests.get(collectionId) || 0) + 1;
+    state.reviewExternalJobRequests.set(collectionId, requestNumber);
+    try {
+      const job = await api(`/api/external-search-jobs/${jobId}`);
+      if (state.reviewExternalJobRequests.get(collectionId) !== requestNumber
+          || job.id !== jobId || job.collection_id !== collectionId) return;
+      const beforeSignature = currentReviewExternalDisplaySignature();
+      const previous = state.reviewExternalJobs.get(collectionId) || state.activityExternalJobs.get(jobId);
+      if (previous && previous.id > job.id) return;
+      state.reviewExternalJobs.set(collectionId, job);
+      rememberExternalJob(job);
+      state.reviewExternalMutationNumber += 1;
+      if (beforeSignature !== currentReviewExternalDisplaySignature()) renderReviewQueue();
+      requestReviewTerminalRefresh([job]);
+    } catch (error) {
+      if (state.reviewExternalJobRequests.get(collectionId) !== requestNumber) return;
+      if (error.status === 404) {
+        const beforeSignature = currentReviewExternalDisplaySignature();
+        const current = state.reviewExternalJobs.get(collectionId);
+        if (current?.id === jobId) state.reviewExternalJobs.delete(collectionId);
+        state.activityExternalJobs.delete(jobId);
+        state.reviewExternalMutationNumber += 1;
+        if (Number(state.externalJobRefs[String(collectionId)]) === jobId) {
+          delete state.externalJobRefs[String(collectionId)];
+          writeStorage(EXTERNAL_JOB_KEY, state.externalJobRefs);
+        }
+        if (beforeSignature !== currentReviewExternalDisplaySignature()) renderReviewQueue();
+        return;
+      }
+      if (currentReviewItem()?.collection.id === collectionId) toast(`無法更新外部搜尋狀態：${error.message}`, true);
+    } finally {
+      state.reviewExternalLoadingJobs.delete(loadingKey);
+    }
+  }
+
+  function requestReviewTerminalRefresh(jobs) {
+    const claimed = claimReviewTerminalJobs(jobs, state.reviewTerminalJobIds);
+    state.reviewTerminalJobIds = claimed.handledJobIds;
+    if (!claimed.terminalJobs.length || state.route !== "review") return Promise.resolve(false);
+    return reviewQueueRefreshCoordinator.request();
+  }
+
+  async function reloadReviewQueueAfterExternalJobs() {
+    if (state.route !== "review") return false;
+    invalidateDerivedData({ library: true });
+    await loadReviewQueue({ preferredId: currentReviewItem()?.collection.id || null, preserveLiveContext: true });
+    if (state.route !== "review") return false;
+    toast("外部搜尋已結束；Queue 已依最新 metadata 與候選更新");
+    return true;
+  }
+
   function renderReviewQueue() {
     const available = availableReviewIndices();
     const skippedCount = state.reviewSkipped.size;
@@ -4627,6 +4960,7 @@
     issues.missing.forEach((issue) => ui.reviewProblems.append(el("span", "review-problem missing", `缺${METADATA_LABELS[issue.field]}`)));
     renderReviewDecision(primary);
     renderReviewAllIssues(issues, primary);
+    renderReviewExternalSearch(item, primary);
     const hasCandidate = primary?.type === "candidate";
     ui.reviewAccept.disabled = !hasCandidate;
     ui.reviewReject.disabled = !hasCandidate;
@@ -4693,7 +5027,7 @@
     const issue = primaryReviewIssue(item);
     if (!item || issue?.type !== "candidate") return;
     if (decision === "reject" && !window.confirm("拒絕後仍會保留證據，但這筆 assertion 不能再次選取。確定拒絕？")) return;
-    [ui.reviewAccept, ui.reviewReject, ui.reviewEdit, ui.reviewSkip].forEach((button) => { button.disabled = true; });
+    [ui.reviewAccept, ui.reviewReject, ui.reviewSearch, ui.reviewEdit, ui.reviewSkip].forEach((button) => { button.disabled = true; });
     try {
       await api(`/api/collections/${item.collection.id}/metadata/${issue.field}/assertions/${issue.assertion.id}`, { method: "PATCH", body: { decision } });
       await refreshActivityCenter(true);
@@ -7900,12 +8234,13 @@
     }
     if (state.route === "review" && !isTyping && !isDialogOpen() && !event.altKey && !event.ctrlKey && !event.metaKey) {
       const key = event.key.toLowerCase();
-      if (["a", "r", "e", "s", "j", "k"].includes(key)) {
+      if (["a", "r", "e", "s", "w", "j", "k"].includes(key)) {
         event.preventDefault();
         if (key === "a" && !ui.reviewAccept.disabled) decideReviewCandidate("select");
         else if (key === "r" && !ui.reviewReject.disabled) decideReviewCandidate("reject");
         else if (key === "e" && !ui.reviewEdit.disabled) openReviewEditor();
         else if (key === "s" && !ui.reviewSkip.disabled) skipCurrentReviewItem();
+        else if (key === "w" && !ui.reviewSearch.disabled && !ui.reviewSearch.hidden) enqueueReviewExternalSearch();
         else if (key === "j") moveReviewPosition(1);
         else if (key === "k") moveReviewPosition(-1);
       }
@@ -8336,6 +8671,8 @@
   if (typeof module !== "undefined" && module.exports) {
     module.exports = {
       batchStatusLabel,
+      claimReviewTerminalJobs,
+      createCoalescedReviewQueueRefresh,
       exportRequest,
       externalBatchNeedsAttention,
       metadataAuthorsForSave,
@@ -8344,6 +8681,10 @@
       metadataVocabularyField,
       mergeExternalActivityProjection,
       replaceOperationSelection,
+      reconcileReviewExternalActivity,
+      reviewExternalDisplaySignature,
+      reviewExternalSearchMode,
+      selectReviewExternalJob,
       workBasketHandoffEntries,
     };
   }

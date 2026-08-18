@@ -762,8 +762,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("href=\"/assets/app.css?v=54\""));
-    assert!(document.contains("src=\"/assets/app.js?v=54\" defer"));
+    assert!(document.contains("href=\"/assets/app.css?v=55\""));
+    assert!(document.contains("src=\"/assets/app.js?v=55\" defer"));
     assert!(document.contains("id=\"duplicates-view\""));
     assert!(document.contains("id=\"start-duplicate-scan\""));
     assert!(document.contains("id=\"rename-preflight-form\""));
@@ -772,6 +772,11 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("data-route=\"review\""));
     assert!(document.contains("id=\"review-desk\""));
     assert!(document.contains("id=\"review-accept\""));
+    assert!(document.contains("id=\"review-search\""));
+    assert!(document.contains(
+        "id=\"review-external-status\" role=\"status\" aria-live=\"polite\" aria-atomic=\"true\""
+    ));
+    assert!(document.contains("在品質審核搜尋目前問題欄位；partial 時再試一次"));
     assert!(document.contains("id=\"library-scroll-sentinel\""));
     assert!(document.contains("id=\"library-load-more\""));
     assert!(document.contains("id=\"library-load-announcer\""));
@@ -960,6 +965,17 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("/api/collections"));
     assert!(script.contains("/api/review-queue?kind=${encodeURIComponent(state.reviewKind)}"));
     assert!(script.contains("function decideReviewCandidate"));
+    assert!(script.contains("function enqueueReviewExternalSearch"));
+    assert!(script.contains("body: { fields: [issue.field] }"));
+    assert!(script.contains("實際搜尋欄位：${actualFields}"));
+    assert!(script.contains("function loadReviewExternalJob"));
+    assert!(script.contains("preserveLiveContext: true"));
+    assert!(script.contains("currentReviewItem()?.collection.id ?? preferredId"));
+    assert!(script.contains("job?.status === \"partial\""));
+    assert!(script.contains("!job || job.status === \"succeeded\""));
+    assert!(script.contains("job.error_kind"));
+    assert!(script.contains("job.next_retry_at"));
+    assert!(script.contains("!ui.reviewSearch.disabled && !ui.reviewSearch.hidden"));
     assert!(script.contains("state.reviewSkipped.add(item.collection.id)"));
     assert!(script.contains("state.reviewReturnId = item.collection.id"));
     assert!(script.contains("target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement || target?.isContentEditable"));
