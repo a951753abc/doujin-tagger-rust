@@ -8,7 +8,10 @@ use doujin_files::RecycleBin;
 use doujin_storage::external_search_batches::{
     ExternalSearchBatchItemSnapshot, ExternalSearchBatchSnapshot,
 };
-use doujin_storage::jobs::{ExternalSearchEnqueueOutcome, ExternalSearchJobSnapshot};
+use doujin_storage::jobs::{
+    ExternalSearchActivityItem, ExternalSearchActivitySnapshot, ExternalSearchEnqueueOutcome,
+    ExternalSearchJobSnapshot,
+};
 use doujin_storage::metadata::MetadataField;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -120,6 +123,22 @@ pub(crate) struct ExternalSearchJobResponse {
     updated_at: String,
 }
 
+#[derive(Debug, Serialize)]
+pub(crate) struct ExternalSearchActivityItemResponse {
+    #[serde(flatten)]
+    job: ExternalSearchJobResponse,
+    actionable: bool,
+    resolution: Option<&'static str>,
+    unresolved_fields: Vec<&'static str>,
+    acknowledged_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ExternalSearchActivityResponse {
+    actionable_count: usize,
+    items: Vec<ExternalSearchActivityItemResponse>,
+}
+
 impl TryFrom<ExternalSearchJobSnapshot> for ExternalSearchJobResponse {
     type Error = ApiError;
 
@@ -152,6 +171,39 @@ impl TryFrom<ExternalSearchEnqueueOutcome> for ExternalSearchEnqueueResponse {
         Ok(Self {
             created: outcome.created,
             job: outcome.job.try_into()?,
+        })
+    }
+}
+
+impl TryFrom<ExternalSearchActivityItem> for ExternalSearchActivityItemResponse {
+    type Error = ApiError;
+
+    fn try_from(item: ExternalSearchActivityItem) -> Result<Self, Self::Error> {
+        Ok(Self {
+            job: item.job.try_into()?,
+            actionable: item.actionable,
+            resolution: item.resolution.map(|resolution| resolution.as_str()),
+            unresolved_fields: item
+                .unresolved_fields
+                .into_iter()
+                .map(MetadataField::as_str)
+                .collect(),
+            acknowledged_at: item.acknowledged_at,
+        })
+    }
+}
+
+impl TryFrom<ExternalSearchActivitySnapshot> for ExternalSearchActivityResponse {
+    type Error = ApiError;
+
+    fn try_from(activity: ExternalSearchActivitySnapshot) -> Result<Self, Self::Error> {
+        Ok(Self {
+            actionable_count: activity.actionable_count,
+            items: activity
+                .items
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<Vec<_>, _>>()?,
         })
     }
 }
@@ -279,6 +331,42 @@ where
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(job.try_into()?))
+}
+
+pub(crate) async fn get_external_search_activity<R>(
+    State(state): State<HttpState<R>>,
+) -> Result<Json<ExternalSearchActivityResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let activity = tokio::task::spawn_blocking(move || {
+        let application = lock_interactive_application(&state.application)?;
+        application
+            .external_search_activity()
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(activity.try_into()?))
+}
+
+pub(crate) async fn acknowledge_external_search_job<R>(
+    State(state): State<HttpState<R>>,
+    Path(job_id): Path<String>,
+) -> Result<Json<ExternalSearchActivityItemResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let job_id = parse_external_search_job_id(&job_id)?;
+    let item = tokio::task::spawn_blocking(move || {
+        let mut application = lock_interactive_application(&state.application)?;
+        application
+            .acknowledge_external_search_job(job_id)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(item.try_into()?))
 }
 
 pub(crate) async fn preflight_external_search_batch<R>(

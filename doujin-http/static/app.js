@@ -195,6 +195,8 @@
     externalBatchTimer: null,
     serviceOnline: null,
     activityExternalJobs: new Map(),
+    activityExternalActionableCount: 0,
+    activityExternalLoaded: false,
     activityScan: null,
     activityThumbnailFailures: new Set(),
     thumbnailCacheJob: null,
@@ -1095,25 +1097,8 @@
     }
 
     if (state.serviceOnline) {
-      const storedIds = Object.values(state.externalJobRefs).map(Number).filter((id) => Number.isSafeInteger(id) && id > 0).reverse();
-      const activeIds = [...state.activityExternalJobs.values()]
-        .filter((job) => ["pending", "running"].includes(job.status))
-        .map((job) => job.id);
-      const jobIds = [...new Set([
-        ...activeIds,
-        ...storedIds.slice(0, forceJobs || state.activityExternalJobs.size === 0 ? 12 : 3),
-      ])];
-      for (let index = 0; index < jobIds.length; index += 4) {
-        const jobs = await Promise.all(jobIds.slice(index, index + 4).map(async (jobId) => {
-          try {
-            return await api(`/api/external-search-jobs/${jobId}`);
-          } catch (_) {
-            return null;
-          }
-        }));
-        jobs.filter(Boolean).forEach((job) => state.activityExternalJobs.set(job.id, job));
-      }
-      const [cacheJobs, latestScan, exportJobs] = await Promise.all([
+      const [, cacheJobs, latestScan, exportJobs] = await Promise.all([
+        refreshExternalSearchActivityProjection(),
         api("/api/thumbnail-cache-jobs/current").catch(() => null),
         api("/api/scans/latest").catch(() => null),
         api("/api/export-jobs/current").catch(() => null),
@@ -1138,6 +1123,18 @@
       || state.batchRunning != null
       || [...state.activityExternalJobs.values()].some((job) => ["pending", "running"].includes(job.status));
     state.activityTimer = window.setTimeout(() => refreshActivityCenter(), active ? 4000 : 15000);
+  }
+
+  async function refreshExternalSearchActivityProjection() {
+    try {
+      const activity = await api("/api/external-search-jobs/activity");
+      state.activityExternalJobs = new Map(activity.items.map((job) => [job.id, job]));
+      state.activityExternalActionableCount = Number(activity.actionable_count) || 0;
+      state.activityExternalLoaded = true;
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   function setServiceState(status, label) {
@@ -1168,11 +1165,15 @@
       : 0;
     const batchRunning = state.batchRunning != null;
     const batchFailures = state.lastBatchActivity?.failed || 0;
-    const enrichmentNeedsAttention = Boolean(state.externalBatch?.summary?.partial || state.externalBatch?.summary?.failed);
+    const enrichmentNeedsAttention = externalBatchNeedsAttention(
+      state.externalBatch,
+      state.activityExternalJobs,
+      state.activityExternalLoaded,
+    );
     const enrichmentRunning = Boolean(state.externalBatch?.summary?.pending || state.externalBatch?.summary?.running);
     const exportNeedsAttention = state.exportJob?.status === "failed";
     const exportRunning = ["pending", "running"].includes(state.exportJob?.status);
-    const attentionCount = failedJobs.length + state.activityThumbnailFailures.size + Number(scanNeedsAttention) + batchFailures + thumbnailCacheFailures + Number(enrichmentNeedsAttention) + Number(exportNeedsAttention);
+    const attentionCount = state.activityExternalActionableCount + state.activityThumbnailFailures.size + Number(scanNeedsAttention) + batchFailures + thumbnailCacheFailures + Number(exportNeedsAttention);
     const runningCount = activeJobs.length + Number(scanRunning) + Number(thumbnailCacheRunning) + Number(batchRunning) + Number(enrichmentRunning) + Number(exportRunning);
 
     let summary = "本機服務正常";
@@ -1236,7 +1237,22 @@
     }
     [...activeJobs, ...failedJobs].slice(0, 8).forEach((job) => {
       const fields = job.fields.map((field) => METADATA_LABELS[field] || field).join("、");
-      ui.activityList.append(activityItem(`external ${job.status}`, `外部資料搜尋 #${job.id}`, `${fields} · 收藏 #${job.collection_id}`, EXTERNAL_JOB_STATUS_LABELS[job.status] || job.status, "查看收藏", () => openActivityCollection(job.collection_id)));
+      const baseStatus = EXTERNAL_JOB_STATUS_LABELS[job.status] || job.status;
+      const status = job.resolution === "acknowledged"
+        ? `${baseStatus} · 已處理`
+        : job.resolution === "metadata_resolved"
+          ? `${baseStatus} · 已由手動資料解決`
+          : baseStatus;
+      ui.activityList.append(activityItem(
+        `external ${job.status}${job.actionable ? " actionable" : " resolved"}`,
+        `外部資料搜尋 #${job.id}`,
+        `${fields} · 收藏 #${job.collection_id}`,
+        status,
+        "查看收藏",
+        () => openActivityCollection(job.collection_id),
+        job.actionable ? "標記已處理" : null,
+        job.actionable ? (button) => acknowledgeExternalSearchJob(job.id, button) : null,
+      ));
     });
     if (state.externalBatch) {
       const batch = state.externalBatch;
@@ -1245,7 +1261,7 @@
         `external-batch ${enrichmentNeedsAttention ? "failed" : enrichmentRunning ? "running" : "succeeded"}`,
         `批次外部資料補齊 #${batch.id}`,
         `已完成 ${formatNumber(finished)} / ${formatNumber(batch.summary.total)} · 沿用 ${formatNumber(batch.summary.reused)} 筆既有工作`,
-        batchStatusLabel(batch.summary),
+        batchStatusLabel(batch.summary, enrichmentNeedsAttention),
         "查看工作台",
         () => { setActivityPanelOpen(false); location.hash = "workbench"; },
         enrichmentNeedsAttention ? "前往品質審核" : null,
@@ -1335,11 +1351,24 @@
     if (secondaryActionLabel && secondaryAction) {
       const secondary = el("button", "text-button activity-secondary-action", secondaryActionLabel);
       secondary.type = "button";
-      secondary.addEventListener("click", secondaryAction);
+      secondary.addEventListener("click", (event) => secondaryAction(event.currentTarget));
       actions.append(secondary);
     }
     item.append(copy, badge, actions);
     return item;
+  }
+
+  async function acknowledgeExternalSearchJob(jobId, button) {
+    button.disabled = true;
+    try {
+      const item = await api(`/api/external-search-jobs/${jobId}/acknowledge`, { method: "POST" });
+      state.activityExternalJobs.set(item.id, item);
+      await refreshActivityCenter(true);
+      toast(`外部資料搜尋 #${jobId} 已標記處理；工作紀錄仍保留`);
+    } catch (error) {
+      toast(`無法標記外部資料搜尋 #${jobId}：${error.message}`, true);
+      button.disabled = false;
+    }
   }
 
   function scanActivity(scan) {
@@ -3235,6 +3264,7 @@
         body: { value },
       });
       invalidateDerivedData();
+      await refreshActivityCenter(true);
       ui.metadataDialog.close();
       if (state.route === "review") {
         invalidateDerivedData({ library: true });
@@ -3265,6 +3295,7 @@
     try {
       const collection = await api(`/api/collections/${target.id}/metadata/${field}`, { method: "DELETE" });
       invalidateDerivedData();
+      await refreshActivityCenter(true);
       ui.metadataDialog.close();
       if (state.route === "review") {
         invalidateDerivedData({ library: true });
@@ -3543,6 +3574,7 @@
         method: "PATCH",
         body: { decision },
       });
+      await refreshActivityCenter(true);
       if (state.selected?.id !== collectionId) return;
       state.metadataHistory = history;
       renderMetadataHistory(history);
@@ -3566,8 +3598,37 @@
     const keys = Object.keys(state.externalJobRefs);
     keys.slice(0, Math.max(0, keys.length - 200)).forEach((oldKey) => delete state.externalJobRefs[oldKey]);
     writeStorage(EXTERNAL_JOB_KEY, state.externalJobRefs);
-    state.activityExternalJobs.set(job.id, job);
+    state.activityExternalJobs.set(
+      job.id,
+      mergeExternalActivityProjection(job, state.activityExternalJobs.get(job.id)),
+    );
     renderActivityCenter();
+  }
+
+  function mergeExternalActivityProjection(job, existing) {
+    const projectionFields = [
+      "actionable",
+      "resolution",
+      "unresolved_fields",
+      "acknowledged_at",
+    ];
+    if (!existing || existing.id !== job.id || !projectionFields.every((field) => Object.hasOwn(existing, field))) {
+      const actionable = ["partial", "failed"].includes(job.status);
+      return {
+        ...job,
+        actionable,
+        resolution: null,
+        unresolved_fields: actionable ? [...(job.fields || [])] : [],
+        acknowledged_at: null,
+      };
+    }
+    return {
+      ...job,
+      actionable: existing.actionable,
+      resolution: existing.resolution,
+      unresolved_fields: existing.unresolved_fields,
+      acknowledged_at: existing.acknowledged_at,
+    };
   }
 
   function loadKnownExternalJob() {
@@ -3583,7 +3644,10 @@
       if (state.selected?.id !== collectionId) return;
       const previousStatus = state.externalJob?.id === job.id ? state.externalJob.status : null;
       state.externalJob = job;
-      state.activityExternalJobs.set(job.id, job);
+      state.activityExternalJobs.set(
+        job.id,
+        mergeExternalActivityProjection(job, state.activityExternalJobs.get(job.id)),
+      );
       renderExternalJob(job);
       renderActivityCenter();
       scheduleExternalJobPoll(job);
@@ -3595,9 +3659,14 @@
       if (error.status === 404) {
         delete state.externalJobRefs[String(collectionId)];
         writeStorage(EXTERNAL_JOB_KEY, state.externalJobRefs);
+        state.activityExternalJobs.delete(jobId);
+        state.activityExternalActionableCount = [...state.activityExternalJobs.values()]
+          .filter((job) => job.actionable).length;
         state.externalJob = null;
         ui.externalJobStatus.hidden = true;
         renderDataQualitySummary();
+        await refreshExternalSearchActivityProjection();
+        renderActivityCenter();
         return;
       }
       if (error.code === "application_busy") {
@@ -3674,6 +3743,7 @@
       state.metadataHistory = history;
       replaceSelected(collection);
       renderMetadataHistory(history);
+      await refreshActivityCenter(true);
       toast("外部搜尋已完成，metadata 證據已更新");
     } catch (error) {
       toast(`外部搜尋已結束，但重新載入證據失敗：${error.message}`, true);
@@ -4344,6 +4414,7 @@
     [ui.reviewAccept, ui.reviewReject, ui.reviewEdit, ui.reviewSkip].forEach((button) => { button.disabled = true; });
     try {
       await api(`/api/collections/${item.collection.id}/metadata/${issue.field}/assertions/${issue.assertion.id}`, { method: "PATCH", body: { decision } });
+      await refreshActivityCenter(true);
       invalidateDerivedData({ library: true });
       await loadReviewQueue({ preferredId: item.collection.id });
       const remains = state.reviewItems.some((candidate) => candidate.collection.id === item.collection.id);
@@ -5398,12 +5469,17 @@
   }
 
   function renderExternalBatch(batch) {
+    const needsAttention = externalBatchNeedsAttention(
+      batch,
+      state.activityExternalJobs,
+      state.activityExternalLoaded,
+    );
     ui.externalBatchResult.hidden = false;
     ui.externalBatchResult.replaceChildren();
     const heading = el("div", "enrichment-result-heading");
     heading.append(
       el("strong", "", `BATCH #${batch.id} · 外部資料補齊`),
-      el("span", "job-status", batchStatusLabel(batch.summary)),
+      el("span", "job-status", batchStatusLabel(batch.summary, needsAttention)),
     );
     const summary = el("dl", "enrichment-summary");
     [
@@ -5418,7 +5494,8 @@
     activity.addEventListener("click", () => setActivityPanelOpen(true));
     const review = el("a", "text-link", "前往品質審核 →");
     review.href = "#review";
-    links.append(activity, review);
+    links.append(activity);
+    if (needsAttention) links.append(review);
     if (batch.summary.partial) {
       const retry = el("button", "secondary-button", `重試 ${formatNumber(batch.summary.partial)} 筆部分完成`);
       retry.type = "button";
@@ -5464,10 +5541,21 @@
     }
   }
 
-  function batchStatusLabel(summary) {
+  function externalBatchNeedsAttention(batch, activityJobs, projectionLoaded) {
+    if (!batch) return false;
+    return batch.items
+      .filter((item) => item.job_id && ["partial", "failed"].includes(item.status))
+      .some((item) => {
+        const job = activityJobs.get(item.job_id);
+        if (!job) return !projectionLoaded;
+        return job.actionable !== false;
+      });
+  }
+
+  function batchStatusLabel(summary, needsAttention = Boolean(summary.failed || summary.partial)) {
     if (summary.running) return "處理中";
     if (summary.pending) return "等待背景處理";
-    if (summary.failed || summary.partial) return "需要檢查";
+    if (needsAttention) return "需要檢查";
     return "已完成";
   }
 
@@ -5478,6 +5566,9 @@
       try {
         const refreshed = await api(`/api/external-search-batches/${batch.id}`);
         state.externalBatch = refreshed;
+        if (!refreshed.summary.pending && !refreshed.summary.running) {
+          await refreshExternalSearchActivityProjection();
+        }
         renderExternalBatch(refreshed);
         scheduleExternalBatchPoll(refreshed);
       } catch (error) {
@@ -5523,7 +5614,10 @@
       payload: { value },
       collections: selectedCollections(),
     });
-    if (completed) ui.batchMetadataForm.elements.value.value = "";
+    if (completed) {
+      ui.batchMetadataForm.elements.value.value = "";
+      await refreshActivityCenter(true);
+    }
   }
 
   async function retryFailedBatch() {
@@ -7958,6 +8052,13 @@
   }
 
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { exportRequest, replaceOperationSelection, workBasketHandoffEntries };
+    module.exports = {
+      batchStatusLabel,
+      exportRequest,
+      externalBatchNeedsAttention,
+      mergeExternalActivityProjection,
+      replaceOperationSelection,
+      workBasketHandoffEntries,
+    };
   }
 })();

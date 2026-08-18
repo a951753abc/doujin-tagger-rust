@@ -7,9 +7,9 @@ use doujin_storage::external_search_batches::{
     NewExternalSearchBatchItem,
 };
 use doujin_storage::jobs::{
-    ExternalSearchCompletionStatus, ExternalSearchEnqueueOutcome, ExternalSearchErrorKind,
-    ExternalSearchJobIssue, ExternalSearchJobSnapshot, ExternalSearchJobStatus,
-    ExternalSearchJobSummary,
+    ExternalSearchActivityItem, ExternalSearchActivitySnapshot, ExternalSearchCompletionStatus,
+    ExternalSearchEnqueueOutcome, ExternalSearchErrorKind, ExternalSearchJobIssue,
+    ExternalSearchJobSnapshot, ExternalSearchJobStatus, ExternalSearchJobSummary,
 };
 use doujin_storage::metadata::{
     ConfidenceEvidence, ExternalCandidate, ExternalCandidateOutcome, ExternalTag,
@@ -387,6 +387,19 @@ impl<R: RecycleBin> ApplicationService<R> {
         Ok(job)
     }
 
+    pub fn external_search_activity(&self) -> ApplicationResult<ExternalSearchActivitySnapshot> {
+        Ok(self.repository.external_search_activity()?)
+    }
+
+    pub fn acknowledge_external_search_job(
+        &mut self,
+        job_id: i64,
+    ) -> ApplicationResult<ExternalSearchActivityItem> {
+        let job = self.repository.external_search_job(job_id)?;
+        self.repository.collection(job.collection_id)?;
+        Ok(self.repository.acknowledge_external_search_job(job_id)?)
+    }
+
     pub fn run_external_search_job<P: ExternalMetadataProvider>(
         &mut self,
         job_id: i64,
@@ -483,6 +496,7 @@ impl<R: RecycleBin> ApplicationService<R> {
         let tags_received = response.tags.len();
         let mut auto_applied = 0;
         let mut suggestions = 0;
+        let mut suggestion_assertion_ids = Vec::new();
         let mut search_only = 0;
         let mut tags_applied = 0;
         let mut issues = response
@@ -513,7 +527,10 @@ impl<R: RecycleBin> ApplicationService<R> {
             });
             match outcome {
                 Ok(ExternalCandidateOutcome::AutoApplied { .. }) => auto_applied += 1,
-                Ok(ExternalCandidateOutcome::Suggestion { .. }) => suggestions += 1,
+                Ok(ExternalCandidateOutcome::Suggestion { assertion_id, .. }) => {
+                    suggestions += 1;
+                    suggestion_assertion_ids.push(assertion_id);
+                }
                 Ok(ExternalCandidateOutcome::SearchOnly { .. }) => search_only += 1,
                 Err(StorageError::InvalidMetadata(reason)) => {
                     issues.push(ExternalSearchJobIssue {
@@ -553,6 +570,7 @@ impl<R: RecycleBin> ApplicationService<R> {
             tags_applied,
             auto_applied,
             suggestions,
+            suggestion_assertion_ids,
             search_only,
             issues,
         };

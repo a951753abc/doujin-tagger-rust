@@ -6,6 +6,9 @@ use crate::{CatalogRepository, StorageError, StorageResult};
 const EXTERNAL_SEARCH_JOB_COLUMNS: &str =
     "id, collection_id, status, payload_json, result_json, error_kind, error_message, attempts,
      next_retry_at, created_at, updated_at";
+const EXTERNAL_SEARCH_ACTIVITY_JOB_COLUMNS: &str =
+    "job.id, job.collection_id, job.status, job.payload_json, job.result_json, job.error_kind,
+     job.error_message, job.attempts, job.next_retry_at, job.created_at, job.updated_at";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternalSearchJobStatus {
@@ -122,6 +125,7 @@ pub struct ExternalSearchJobSummary {
     pub tags_applied: usize,
     pub auto_applied: usize,
     pub suggestions: usize,
+    pub suggestion_assertion_ids: Vec<i64>,
     pub search_only: usize,
     pub issues: Vec<ExternalSearchJobIssue>,
 }
@@ -145,6 +149,36 @@ pub struct ExternalSearchJobSnapshot {
 pub struct ExternalSearchEnqueueOutcome {
     pub job: ExternalSearchJobSnapshot,
     pub created: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalSearchActivityResolution {
+    Acknowledged,
+    MetadataResolved,
+}
+
+impl ExternalSearchActivityResolution {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Acknowledged => "acknowledged",
+            Self::MetadataResolved => "metadata_resolved",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExternalSearchActivityItem {
+    pub job: ExternalSearchJobSnapshot,
+    pub actionable: bool,
+    pub resolution: Option<ExternalSearchActivityResolution>,
+    pub unresolved_fields: Vec<MetadataField>,
+    pub acknowledged_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExternalSearchActivitySnapshot {
+    pub actionable_count: usize,
+    pub items: Vec<ExternalSearchActivityItem>,
 }
 
 impl CatalogRepository {
@@ -171,10 +205,6 @@ impl CatalogRepository {
         fields: &[MetadataField],
     ) -> StorageResult<ExternalSearchEnqueueOutcome> {
         let fields = normalized_fields(fields)?;
-        let payload_json = serde_json::json!({
-            "fields": fields.iter().map(|field| field.as_str()).collect::<Vec<_>>()
-        })
-        .to_string();
         let transaction = self.connection.transaction()?;
         super::ensure_collection(&transaction, collection_id)?;
         let existing_id = transaction
@@ -194,6 +224,23 @@ impl CatalogRepository {
                 created: false,
             });
         }
+        let mut selection_baseline = serde_json::Map::new();
+        for field in &fields {
+            let assertion_id = transaction
+                .query_row(
+                    "SELECT assertion_id FROM metadata_selections
+                     WHERE collection_id = ?1 AND field_name = ?2",
+                    params![collection_id, field.as_str()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?;
+            selection_baseline.insert(field.as_str().to_owned(), assertion_id.into());
+        }
+        let payload_json = serde_json::json!({
+            "fields": fields.iter().map(|field| field.as_str()).collect::<Vec<_>>(),
+            "selection_baseline": selection_baseline,
+        })
+        .to_string();
         transaction.execute(
             "INSERT INTO background_jobs(collection_id, job_kind, status, payload_json)
              VALUES (?1, 'external_search', 'pending', ?2)",
@@ -218,6 +265,198 @@ impl CatalogRepository {
             .optional()?
             .ok_or(StorageError::ExternalSearchJobNotFound(job_id))?;
         raw.try_into()
+    }
+
+    pub fn external_search_activity(&self) -> StorageResult<ExternalSearchActivitySnapshot> {
+        let sql = format!(
+            "SELECT {EXTERNAL_SEARCH_ACTIVITY_JOB_COLUMNS}, resolution.acknowledged_at
+             FROM background_jobs AS job
+             JOIN collections AS collection ON collection.id = job.collection_id
+             LEFT JOIN external_search_job_resolutions AS resolution ON resolution.job_id = job.id
+             WHERE job.job_kind = 'external_search' AND collection.status = 'active'
+             ORDER BY job.id DESC"
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    raw_external_search_job(row)?,
+                    row.get::<_, Option<String>>(11)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let items = rows
+            .into_iter()
+            .map(|(raw, acknowledged_at)| {
+                self.external_search_activity_from_raw(raw, acknowledged_at)
+            })
+            .collect::<StorageResult<Vec<_>>>()?;
+        let actionable_count = items.iter().filter(|item| item.actionable).count();
+        Ok(ExternalSearchActivitySnapshot {
+            actionable_count,
+            items,
+        })
+    }
+
+    pub fn acknowledge_external_search_job(
+        &mut self,
+        job_id: i64,
+    ) -> StorageResult<ExternalSearchActivityItem> {
+        let job = self.external_search_job(job_id)?;
+        self.collection(job.collection_id)?;
+        if !matches!(
+            job.status,
+            ExternalSearchJobStatus::Partial | ExternalSearchJobStatus::Failed
+        ) {
+            return Err(StorageError::InvalidExternalSearchJob(
+                "只有 partial 或 failed external search job 可以標記已處理".to_owned(),
+            ));
+        }
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO external_search_job_resolutions(job_id) VALUES (?1)
+             ON CONFLICT(job_id) DO NOTHING",
+            [job_id],
+        )?;
+        transaction.commit()?;
+        self.external_search_activity()?
+            .items
+            .into_iter()
+            .find(|item| item.job.id == job_id)
+            .ok_or(StorageError::CollectionNotFound(job.collection_id))
+    }
+
+    fn external_search_activity_from_raw(
+        &self,
+        raw: RawExternalSearchJob,
+        acknowledged_at: Option<String>,
+    ) -> StorageResult<ExternalSearchActivityItem> {
+        let payload = parse_external_search_payload(&raw.payload_json)?;
+        let job: ExternalSearchJobSnapshot = raw.try_into()?;
+        if !matches!(
+            job.status,
+            ExternalSearchJobStatus::Partial | ExternalSearchJobStatus::Failed
+        ) {
+            return Ok(ExternalSearchActivityItem {
+                job,
+                actionable: false,
+                resolution: None,
+                unresolved_fields: Vec::new(),
+                acknowledged_at: None,
+            });
+        }
+
+        let scope = auto_resolution_scope(&job)?;
+        let unresolved_fields =
+            self.unresolved_external_search_fields(&job, &payload, &scope.fields)?;
+        let unresolved_suggestions = self.has_unresolved_suggestions(&job, &scope)?;
+        let resolution = if acknowledged_at.is_some() {
+            Some(ExternalSearchActivityResolution::Acknowledged)
+        } else if scope.field_resolution_allowed
+            && !scope.fields.is_empty()
+            && unresolved_fields.is_empty()
+            && !unresolved_suggestions
+        {
+            Some(ExternalSearchActivityResolution::MetadataResolved)
+        } else {
+            None
+        };
+        Ok(ExternalSearchActivityItem {
+            job,
+            actionable: resolution.is_none(),
+            resolution,
+            unresolved_fields,
+            acknowledged_at,
+        })
+    }
+
+    fn unresolved_external_search_fields(
+        &self,
+        job: &ExternalSearchJobSnapshot,
+        payload: &ExternalSearchJobPayload,
+        scoped_fields: &[MetadataField],
+    ) -> StorageResult<Vec<MetadataField>> {
+        let Some(selection_baseline) = &payload.selection_baseline else {
+            let mut unresolved = Vec::new();
+            for field in scoped_fields {
+                let current_assertion_created_at = self
+                    .connection
+                    .query_row(
+                        "SELECT assertion.created_at
+                         FROM metadata_selections AS selection
+                         JOIN metadata_assertions AS assertion
+                           ON assertion.id = selection.assertion_id
+                         WHERE selection.collection_id = ?1 AND selection.field_name = ?2",
+                        params![job.collection_id, field.as_str()],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?;
+                if current_assertion_created_at
+                    .as_deref()
+                    .is_none_or(|created_at| created_at <= job.created_at.as_str())
+                {
+                    unresolved.push(*field);
+                }
+            }
+            return Ok(unresolved);
+        };
+        let mut unresolved = Vec::new();
+        for field in scoped_fields {
+            let Some((_, baseline)) = selection_baseline
+                .iter()
+                .find(|(baseline_field, _)| baseline_field == field)
+            else {
+                unresolved.push(*field);
+                continue;
+            };
+            let current = self
+                .connection
+                .query_row(
+                    "SELECT assertion_id FROM metadata_selections
+                     WHERE collection_id = ?1 AND field_name = ?2",
+                    params![job.collection_id, field.as_str()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?;
+            if current.is_none() || current == *baseline {
+                unresolved.push(*field);
+            }
+        }
+        Ok(unresolved)
+    }
+
+    fn has_unresolved_suggestions(
+        &self,
+        job: &ExternalSearchJobSnapshot,
+        scope: &AutoResolutionScope,
+    ) -> StorageResult<bool> {
+        if scope.suggestions == 0 {
+            return Ok(false);
+        }
+        let Some(assertion_ids) = &scope.suggestion_assertion_ids else {
+            return Ok(true);
+        };
+        if assertion_ids.len() != scope.suggestions || assertion_ids.is_empty() {
+            return Ok(true);
+        }
+        for assertion_id in assertion_ids {
+            let status = self
+                .connection
+                .query_row(
+                    "SELECT status FROM metadata_assertions
+                     WHERE id = ?1 AND collection_id = ?2",
+                    params![assertion_id, job.collection_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            let Some(status) = status else {
+                return Ok(true);
+            };
+            if status == "candidate" {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub fn due_external_search_jobs(
@@ -417,10 +656,170 @@ fn encode_summary(summary: &ExternalSearchJobSummary) -> StorageResult<String> {
         "tags_applied": summary.tags_applied,
         "auto_applied": summary.auto_applied,
         "suggestions": summary.suggestions,
+        "suggestion_assertion_ids": summary.suggestion_assertion_ids,
         "search_only": summary.search_only,
         "issues": issues,
     })
     .to_string())
+}
+
+struct ExternalSearchJobPayload {
+    fields: Vec<MetadataField>,
+    selection_baseline: Option<Vec<(MetadataField, Option<i64>)>>,
+}
+
+fn parse_external_search_payload(payload_json: &str) -> StorageResult<ExternalSearchJobPayload> {
+    let payload: serde_json::Value = serde_json::from_str(payload_json)?;
+    let field_values = payload
+        .get("fields")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            StorageError::InvalidSchema("external search job payload 缺少 fields array".to_owned())
+        })?;
+    let mut fields = Vec::with_capacity(field_values.len());
+    for value in field_values {
+        let value = value.as_str().ok_or_else(|| {
+            StorageError::InvalidSchema("external search job field 必須是 string".to_owned())
+        })?;
+        let field = MetadataField::parse(value).map_err(StorageError::InvalidSchema)?;
+        if !fields.contains(&field) {
+            fields.push(field);
+        }
+    }
+    if fields.is_empty() {
+        return Err(StorageError::InvalidSchema(
+            "external search job 至少必須有一個 field".to_owned(),
+        ));
+    }
+    let selection_baseline = payload
+        .get("selection_baseline")
+        .map(
+            |baseline| -> StorageResult<Vec<(MetadataField, Option<i64>)>> {
+                let baseline = baseline.as_object().ok_or_else(|| {
+                    StorageError::InvalidSchema(
+                        "external search job selection_baseline 必須是 object".to_owned(),
+                    )
+                })?;
+                let mut parsed = Vec::with_capacity(baseline.len());
+                for (field, assertion_id) in baseline {
+                    let field = MetadataField::parse(field).map_err(StorageError::InvalidSchema)?;
+                    let assertion_id = if assertion_id.is_null() {
+                        None
+                    } else {
+                        Some(assertion_id.as_i64().filter(|id| *id > 0).ok_or_else(|| {
+                            StorageError::InvalidSchema(
+                                "external search job baseline assertion ID 必須是正整數或 null"
+                                    .to_owned(),
+                            )
+                        })?)
+                    };
+                    parsed.push((field, assertion_id));
+                }
+                Ok(parsed)
+            },
+        )
+        .transpose()?;
+    Ok(ExternalSearchJobPayload {
+        fields,
+        selection_baseline,
+    })
+}
+
+struct AutoResolutionScope {
+    field_resolution_allowed: bool,
+    fields: Vec<MetadataField>,
+    suggestions: usize,
+    suggestion_assertion_ids: Option<Vec<i64>>,
+}
+
+fn auto_resolution_scope(job: &ExternalSearchJobSnapshot) -> StorageResult<AutoResolutionScope> {
+    let Some(result_json) = &job.result_json else {
+        let no_match = job.error_kind == Some(ExternalSearchErrorKind::NoMatch);
+        return Ok(AutoResolutionScope {
+            field_resolution_allowed: no_match,
+            fields: if no_match {
+                job.fields.clone()
+            } else {
+                Vec::new()
+            },
+            suggestions: 0,
+            suggestion_assertion_ids: None,
+        });
+    };
+    let result: serde_json::Value = serde_json::from_str(result_json)?;
+    let suggestions = result
+        .get("suggestions")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0)
+        .try_into()
+        .map_err(|_| {
+            StorageError::InvalidSchema("external search suggestions 數量超出範圍".to_owned())
+        })?;
+    let suggestion_assertion_ids = result
+        .get("suggestion_assertion_ids")
+        .map(|ids| {
+            let ids = ids.as_array().ok_or_else(|| {
+                StorageError::InvalidSchema(
+                    "external search suggestion_assertion_ids 必須是 array".to_owned(),
+                )
+            })?;
+            let mut parsed = Vec::with_capacity(ids.len());
+            for id in ids {
+                let id = id.as_i64().filter(|id| *id > 0).ok_or_else(|| {
+                    StorageError::InvalidSchema(
+                        "external search suggestion assertion ID 必須是正整數".to_owned(),
+                    )
+                })?;
+                if !parsed.contains(&id) {
+                    parsed.push(id);
+                }
+            }
+            Ok::<_, StorageError>(parsed)
+        })
+        .transpose()?;
+    let issues = result
+        .get("issues")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut scoped_fields = Vec::new();
+    let mut has_unscoped_issue = false;
+    for issue in issues {
+        match issue.get("field") {
+            Some(field) if !field.is_null() => {
+                let field = field.as_str().ok_or_else(|| {
+                    StorageError::InvalidSchema(
+                        "external search result issue field 必須是 string 或 null".to_owned(),
+                    )
+                })?;
+                let field = MetadataField::parse(field).map_err(StorageError::InvalidSchema)?;
+                if !scoped_fields.contains(&field) {
+                    scoped_fields.push(field);
+                }
+            }
+            _ => has_unscoped_issue = true,
+        }
+    }
+    if suggestions > 0 && scoped_fields.is_empty() {
+        scoped_fields = job.fields.clone();
+    }
+    if job.status == ExternalSearchJobStatus::Failed
+        && job.error_kind == Some(ExternalSearchErrorKind::NoMatch)
+        && issues.is_empty()
+    {
+        return Ok(AutoResolutionScope {
+            field_resolution_allowed: true,
+            fields: job.fields.clone(),
+            suggestions,
+            suggestion_assertion_ids,
+        });
+    }
+    Ok(AutoResolutionScope {
+        field_resolution_allowed: !scoped_fields.is_empty() && !has_unscoped_issue,
+        fields: scoped_fields,
+        suggestions,
+        suggestion_assertion_ids,
+    })
 }
 
 struct RawExternalSearchJob {
@@ -457,30 +856,7 @@ impl TryFrom<RawExternalSearchJob> for ExternalSearchJobSnapshot {
     type Error = StorageError;
 
     fn try_from(raw: RawExternalSearchJob) -> Result<Self, Self::Error> {
-        let payload: serde_json::Value = serde_json::from_str(&raw.payload_json)?;
-        let field_values = payload
-            .get("fields")
-            .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| {
-                StorageError::InvalidSchema(
-                    "external search job payload 缺少 fields array".to_owned(),
-                )
-            })?;
-        let mut fields = Vec::with_capacity(field_values.len());
-        for value in field_values {
-            let value = value.as_str().ok_or_else(|| {
-                StorageError::InvalidSchema("external search job field 必須是 string".to_owned())
-            })?;
-            let field = MetadataField::parse(value).map_err(StorageError::InvalidSchema)?;
-            if !fields.contains(&field) {
-                fields.push(field);
-            }
-        }
-        if fields.is_empty() {
-            return Err(StorageError::InvalidSchema(
-                "external search job 至少必須有一個 field".to_owned(),
-            ));
-        }
+        let payload = parse_external_search_payload(&raw.payload_json)?;
         Ok(Self {
             id: raw.id,
             collection_id: raw.collection_id.ok_or_else(|| {
@@ -488,7 +864,7 @@ impl TryFrom<RawExternalSearchJob> for ExternalSearchJobSnapshot {
             })?,
             status: ExternalSearchJobStatus::parse(&raw.status)
                 .map_err(StorageError::InvalidSchema)?,
-            fields,
+            fields: payload.fields,
             result_json: raw.result_json,
             error_kind: raw
                 .error_kind
