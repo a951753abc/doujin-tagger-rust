@@ -6,6 +6,13 @@ use rusqlite::{OptionalExtension, params};
 
 use crate::{CatalogRepository, StorageError, StorageResult};
 
+pub const DEFAULT_LIBRARY_BATCH_SIZE: u32 = 48;
+pub const LIBRARY_BATCH_SIZE_CHOICES: [u32; 5] = [24, 48, 96, 144, 192];
+
+pub fn is_supported_library_batch_size(value: u32) -> bool {
+    LIBRARY_BATCH_SIZE_CHOICES.contains(&value)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredApplicationSettings {
     pub reader_path: Option<PathBuf>,
@@ -13,6 +20,7 @@ pub struct StoredApplicationSettings {
     pub thumbnail_height: u32,
     pub thumbnail_quality: u8,
     pub default_archive_root_id: Option<i64>,
+    pub library_batch_size: u32,
     pub updated_at: String,
 }
 
@@ -28,7 +36,7 @@ impl CatalogRepository {
             .connection
             .query_row(
                 "SELECT reader_path, thumbnail_width, thumbnail_height,
-                        thumbnail_quality, default_archive_root_id, updated_at
+                        thumbnail_quality, default_archive_root_id, library_batch_size, updated_at
                  FROM application_settings WHERE singleton = 1",
                 [],
                 |row| {
@@ -38,7 +46,8 @@ impl CatalogRepository {
                         row.get::<_, i64>(2)?,
                         row.get::<_, i64>(3)?,
                         row.get::<_, Option<i64>>(4)?,
-                        row.get::<_, String>(5)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, String>(6)?,
                     ))
                 },
             )
@@ -46,6 +55,7 @@ impl CatalogRepository {
         raw.map(decode_settings).transpose()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn save_application_settings(
         &mut self,
         reader_path: Option<&Path>,
@@ -54,6 +64,7 @@ impl CatalogRepository {
         thumbnail_quality: u8,
         effective_thumbnail_fingerprint: &str,
         default_archive_root_id: Option<i64>,
+        library_batch_size: u32,
     ) -> StorageResult<SaveApplicationSettingsOutcome> {
         validate_settings(
             reader_path,
@@ -61,19 +72,21 @@ impl CatalogRepository {
             thumbnail_height,
             thumbnail_quality,
             effective_thumbnail_fingerprint,
+            library_batch_size,
         )?;
         let transaction = self.connection.transaction()?;
         transaction.execute(
             "INSERT INTO application_settings(
                  singleton, reader_path, thumbnail_width, thumbnail_height, thumbnail_quality,
-                 default_archive_root_id
-             ) VALUES (1, ?1, ?2, ?3, ?4, ?5)
+                 default_archive_root_id, library_batch_size
+             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(singleton) DO UPDATE SET
                  reader_path = excluded.reader_path,
                  thumbnail_width = excluded.thumbnail_width,
                  thumbnail_height = excluded.thumbnail_height,
                  thumbnail_quality = excluded.thumbnail_quality,
                  default_archive_root_id = excluded.default_archive_root_id,
+                 library_batch_size = excluded.library_batch_size,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
             params![
                 reader_path.map(super::path_text).transpose()?,
@@ -81,6 +94,7 @@ impl CatalogRepository {
                 i64::from(thumbnail_height),
                 i64::from(thumbnail_quality),
                 default_archive_root_id,
+                i64::from(library_batch_size),
             ],
         )?;
         let thumbnails_requeued = transaction.execute(
@@ -109,6 +123,7 @@ fn validate_settings(
     thumbnail_height: u32,
     thumbnail_quality: u8,
     effective_thumbnail_fingerprint: &str,
+    library_batch_size: u32,
 ) -> StorageResult<()> {
     if reader_path.is_some_and(|path| !path.is_absolute()) {
         return Err(StorageError::InvalidApplicationSettings(
@@ -134,11 +149,16 @@ fn validate_settings(
             "effective thumbnail fingerprint 不得為空白".to_owned(),
         ));
     }
+    if !is_supported_library_batch_size(library_batch_size) {
+        return Err(StorageError::InvalidApplicationSettings(
+            "library batch size 必須是 24、48、96、144 或 192".to_owned(),
+        ));
+    }
     Ok(())
 }
 
 fn decode_settings(
-    raw: (Option<String>, i64, i64, i64, Option<i64>, String),
+    raw: (Option<String>, i64, i64, i64, Option<i64>, i64, String),
 ) -> StorageResult<StoredApplicationSettings> {
     Ok(StoredApplicationSettings {
         reader_path: raw.0.map(PathBuf::from),
@@ -149,6 +169,10 @@ fn decode_settings(
         thumbnail_quality: u8::try_from(raw.3)
             .map_err(|_| StorageError::InvalidSchema("thumbnail quality 超出範圍".to_owned()))?,
         default_archive_root_id: raw.4,
-        updated_at: raw.5,
+        library_batch_size: u32::try_from(raw.5)
+            .ok()
+            .filter(|value| is_supported_library_batch_size(*value))
+            .unwrap_or(DEFAULT_LIBRARY_BATCH_SIZE),
+        updated_at: raw.6,
     })
 }

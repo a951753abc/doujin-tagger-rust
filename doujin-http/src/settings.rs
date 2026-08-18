@@ -8,6 +8,7 @@ use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use doujin_app::ApplicationSettingsSnapshot;
 use doujin_files::RecycleBin;
+use doujin_storage::settings::is_supported_library_batch_size;
 use serde::{Deserialize, Serialize};
 
 use crate::HttpState;
@@ -22,6 +23,7 @@ pub(crate) struct SettingsResponse {
     saved_thumb_size: String,
     saved_thumb_quality: u8,
     default_archive_root_id: Option<i64>,
+    library_batch_size: u32,
     overrides: SettingsOverridesResponse,
     environment_overrides: Vec<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -67,6 +69,7 @@ impl SettingsResponse {
             ),
             saved_thumb_quality: settings.saved_thumbnail_quality,
             default_archive_root_id: settings.default_archive_root_id,
+            library_batch_size: settings.library_batch_size,
             overrides: SettingsOverridesResponse {
                 viewer_path: settings
                     .reader_overridden_by_environment
@@ -92,6 +95,7 @@ pub(crate) struct SettingsUpdateRequest {
     thumb_quality: i64,
     #[serde(default)]
     default_archive_root_id: Option<i64>,
+    library_batch_size: i64,
 }
 
 pub(crate) async fn get_settings<R>(
@@ -139,6 +143,15 @@ where
                 "thumb_quality 必須是 1 到 100 的整數",
             )
         })?;
+    let library_batch_size = u32::try_from(payload.library_batch_size)
+        .ok()
+        .filter(|value| is_supported_library_batch_size(*value))
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "invalid_library_batch_size",
+                "library_batch_size 必須是 24、48、96、144 或 192",
+            )
+        })?;
     let reader_path = match payload.viewer_path.trim() {
         "" => None,
         value => Some(PathBuf::from(value)),
@@ -170,6 +183,7 @@ where
                 height,
                 quality,
                 payload.default_archive_root_id,
+                library_batch_size,
             )
             .map_err(ApiError::from_application)
     })

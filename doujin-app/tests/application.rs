@@ -1502,8 +1502,15 @@ fn environment_overrides_remain_effective_while_user_settings_are_persisted() {
         },
     );
 
+    assert_eq!(
+        48,
+        application
+            .application_settings()
+            .expect("default settings")
+            .library_batch_size
+    );
     let saved = application
-        .save_application_settings(Some(stored_reader.clone()), 360, 480, 85, None)
+        .save_application_settings(Some(stored_reader.clone()), 360, 480, 85, None, 96)
         .expect("save overridden settings");
 
     assert_eq!(Some(environment_reader), saved.settings.reader_path);
@@ -1520,6 +1527,7 @@ fn environment_overrides_remain_effective_while_user_settings_are_persisted() {
     assert!(saved.settings.reader_overridden_by_environment);
     assert!(saved.settings.thumbnail_size_overridden_by_environment);
     assert!(saved.settings.thumbnail_quality_overridden_by_environment);
+    assert_eq!(96, saved.settings.library_batch_size);
     let stored = application
         .repository()
         .stored_application_settings()
@@ -1529,6 +1537,7 @@ fn environment_overrides_remain_effective_while_user_settings_are_persisted() {
     assert_eq!(360, stored.thumbnail_width);
     assert_eq!(480, stored.thumbnail_height);
     assert_eq!(85, stored.thumbnail_quality);
+    assert_eq!(96, stored.library_batch_size);
 }
 
 #[test]
@@ -1554,7 +1563,7 @@ fn stale_thumbnail_result_is_ignored_after_settings_requeue() {
         .expect("start thumbnail");
 
     let saved = application
-        .save_application_settings(None, 480, 640, 100, None)
+        .save_application_settings(None, 480, 640, 100, None, 48)
         .expect("save settings");
     assert_eq!(1, saved.thumbnails_requeued);
     let state = application
@@ -1635,7 +1644,7 @@ fn manual_cover_persists_invalidates_cache_survives_settings_and_reports_missing
     assert!(selected_state.source_fingerprint.contains("cover:manual"));
 
     let settings = application
-        .save_application_settings(None, 480, 640, 92, None)
+        .save_application_settings(None, 480, 640, 92, None, 48)
         .expect("change thumbnail settings");
     assert_eq!(1, settings.thumbnails_requeued);
     let selected_request = application

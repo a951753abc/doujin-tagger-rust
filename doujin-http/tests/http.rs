@@ -952,7 +952,11 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     let script = String::from_utf8(javascript.body).expect("UTF-8 script");
     assert!(script.contains("doujin-library.recent.v1"));
     assert!(script.contains("const RECENT_LIMIT = 20"));
-    assert!(script.contains("const PER_PAGE = 48"));
+    assert!(script.contains("const DEFAULT_LIBRARY_BATCH_SIZE = 48"));
+    assert!(
+        script.contains("const LIBRARY_BATCH_SIZE_CHOICES = Object.freeze([24, 48, 96, 144, 192])")
+    );
+    assert!(script.contains("per_page: String(normalizeLibraryBatchSize(batchSize))"));
     assert!(script.contains("loadMoreCollections"));
     assert!(script.contains("if (libraryLoadPromise) return libraryLoadPromise"));
     assert!(script.contains("function moveLibraryFocus"));
@@ -1891,6 +1895,7 @@ async fn saved_views_crud_validates_allowlisted_rules_and_recounts_current_catal
         .request("GET", &format!("/api/saved-views/{saved_view_id}"), &[])
         .await;
     assert_eq!(2, recounted.json["result_count"]);
+    assert_eq!(Value::Null, recounted.json["query"]["per_page"]);
 
     let renamed = server
         .request_json(
@@ -4327,6 +4332,7 @@ async fn settings_api_validates_persists_and_requeues_existing_thumbnail_state()
     assert_eq!(200, initial.status);
     assert_eq!("300x400", initial.json["thumb_size"]);
     assert_eq!(80, initial.json["thumb_quality"]);
+    assert_eq!(48, initial.json["library_batch_size"]);
     assert_eq!(serde_json::json!([]), initial.json["environment_overrides"]);
 
     let updated = server
@@ -4336,44 +4342,86 @@ async fn settings_api_validates_persists_and_requeues_existing_thumbnail_state()
             &serde_json::json!({
                 "viewer_path": reader_path.to_string_lossy(),
                 "thumb_size": "360x480",
-                "thumb_quality": 85
+                "thumb_quality": 85,
+                "library_batch_size": 96
             }),
         )
         .await;
     assert_eq!(200, updated.status);
     assert_eq!("360x480", updated.json["thumb_size"]);
     assert_eq!(85, updated.json["thumb_quality"]);
+    assert_eq!(96, updated.json["library_batch_size"]);
     assert_eq!(1, updated.json["thumbnails_requeued"]);
+
+    for library_batch_size in [24, 48, 96, 144, 192] {
+        let round_trip = server
+            .request_json(
+                "PUT",
+                "/api/settings",
+                &serde_json::json!({
+                    "viewer_path": reader_path.to_string_lossy(),
+                    "thumb_size": "360x480",
+                    "thumb_quality": 85,
+                    "library_batch_size": library_batch_size
+                }),
+            )
+            .await;
+        assert_eq!(200, round_trip.status);
+        assert_eq!(library_batch_size, round_trip.json["library_batch_size"]);
+        assert_eq!(0, round_trip.json["thumbnails_requeued"]);
+    }
 
     for payload in [
         serde_json::json!({
             "viewer_path": "",
             "thumb_size": "300*400",
-            "thumb_quality": 80
+            "thumb_quality": 80,
+            "library_batch_size": 48
         }),
         serde_json::json!({
             "viewer_path": "",
             "thumb_size": "300x400",
-            "thumb_quality": 0
+            "thumb_quality": 0,
+            "library_batch_size": 48
         }),
         serde_json::json!({
             "viewer_path": "",
             "thumb_size": "300x400",
             "thumb_quality": 80,
+            "library_batch_size": 48,
             "unknown": true
         }),
         serde_json::json!({
             "viewer_path": tree.root("missing-reader.exe").to_string_lossy(),
             "thumb_size": "300x400",
-            "thumb_quality": 80
+            "thumb_quality": 80,
+            "library_batch_size": 48
         }),
     ] {
         let invalid = server.request_json("PUT", "/api/settings", &payload).await;
         assert_eq!(400, invalid.status);
     }
+    let invalid_batch_size = server
+        .request_json(
+            "PUT",
+            "/api/settings",
+            &serde_json::json!({
+                "viewer_path": reader_path.to_string_lossy(),
+                "thumb_size": "360x480",
+                "thumb_quality": 85,
+                "library_batch_size": 25
+            }),
+        )
+        .await;
+    assert_eq!(400, invalid_batch_size.status);
+    assert_eq!(
+        "invalid_library_batch_size",
+        invalid_batch_size.json["error"]["code"]
+    );
     let retained = server.request("GET", "/api/settings", &[]).await;
     assert_eq!("360x480", retained.json["thumb_size"]);
     assert_eq!(85, retained.json["thumb_quality"]);
+    assert_eq!(192, retained.json["library_batch_size"]);
     server.stop().await;
 }
 
@@ -4399,7 +4447,7 @@ async fn settings_api_identifies_each_environment_override_and_saved_fallback() 
         },
     );
     application
-        .save_application_settings(Some(saved_reader.clone()), 360, 480, 85, None)
+        .save_application_settings(Some(saved_reader.clone()), 360, 480, 85, None, 144)
         .expect("save fallback settings");
     let server = RunningServer::start(application).await;
 
@@ -4417,6 +4465,7 @@ async fn settings_api_identifies_each_environment_override_and_saved_fallback() 
     );
     assert_eq!("360x480", response.json["saved_thumb_size"]);
     assert_eq!(85, response.json["saved_thumb_quality"]);
+    assert_eq!(144, response.json["library_batch_size"]);
     assert_eq!(
         "DOUJIN_READER_PATH",
         response.json["overrides"]["viewer_path"]
@@ -4477,7 +4526,8 @@ async fn settings_api_manages_default_archive_root_and_pins_stored_value_after_d
             "viewer_path": "",
             "thumb_size": "300x400",
             "thumb_quality": 80,
-            "default_archive_root_id": default_archive_root_id
+            "default_archive_root_id": default_archive_root_id,
+            "library_batch_size": 48
         })
     };
 
