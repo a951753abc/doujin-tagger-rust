@@ -4273,6 +4273,233 @@ fn vocabulary_candidates_cover_four_fields_with_safe_normalization_and_counts() 
 }
 
 #[test]
+fn vocabulary_suggestions_cover_fields_aliases_counts_search_limit_and_active_current_scope() {
+    let tree = TestTree::new("vocabulary-suggestions");
+    let database = tree.database();
+    let mut repository = CatalogRepository::open(&database).expect("open catalog");
+    let rows = [
+        ("Top", "Top", "Top", "Top"),
+        ("top", "top", "top", "top"),
+        ("Rare", "Rare", "Rare", "Rare"),
+        ("Inactive", "Inactive", "Inactive", "Inactive"),
+        ("No Current", "No Current", "No Current", "No Current"),
+    ];
+    let mut collection_ids = Vec::new();
+    for (index, (event, circle, author, parody)) in rows.into_iter().enumerate() {
+        let pending = tree.pending(&format!("[suggest-{index}] suggestion-{index}.zip"));
+        let path = pending.path.clone();
+        repository
+            .ingest_collection(&pending)
+            .expect("ingest suggestion collection");
+        let collection_id = repository
+            .collection_id_for_current_path(&path)
+            .expect("suggestion lookup")
+            .expect("suggestion collection");
+        for (field, value) in [
+            (
+                MetadataField::Event,
+                MetadataValue::Text(format!("Event {event}")),
+            ),
+            (
+                MetadataField::Circle,
+                MetadataValue::Text(format!("Circle {circle}")),
+            ),
+            (
+                MetadataField::Authors,
+                MetadataValue::Authors(Authors {
+                    raw: Some(format!("Author {author}")),
+                    values: vec![format!("Author {author}")],
+                }),
+            ),
+            (
+                MetadataField::Parody,
+                MetadataValue::Parody(Parody {
+                    raw: format!("Parody {parody}"),
+                    canonical: format!("Parody {parody}"),
+                    evidence: "suggestion test".to_owned(),
+                }),
+            ),
+        ] {
+            repository
+                .set_manual_value(collection_id, field, value)
+                .expect("set suggestion value");
+        }
+        collection_ids.push(collection_id);
+    }
+    drop(repository);
+
+    let connection = Connection::open(&database).expect("open suggestion fixture database");
+    connection
+        .execute(
+            "UPDATE collections SET status = 'tombstone' WHERE id = ?1",
+            [collection_ids[3]],
+        )
+        .expect("make suggestion collection inactive");
+    connection
+        .execute(
+            "UPDATE collection_locations SET location_status = 'missing', ended_at = CURRENT_TIMESTAMP
+             WHERE collection_id = ?1 AND location_status = 'current'",
+            [collection_ids[4]],
+        )
+        .expect("remove current suggestion location");
+    drop(connection);
+
+    let mut repository = CatalogRepository::open(&database).expect("reopen suggestion catalog");
+    for (field, prefix) in [
+        (VocabularyField::Event, "Event"),
+        (VocabularyField::Circle, "Circle"),
+        (VocabularyField::Author, "Author"),
+        (VocabularyField::Parody, "Parody"),
+    ] {
+        let items = repository
+            .vocabulary_suggestions(field, "", 50)
+            .expect("top vocabulary suggestions");
+        assert_eq!(2, items.len(), "{field:?}");
+        assert_eq!(
+            (format!("{prefix} Top"), 2),
+            (items[0].name.clone(), items[0].count)
+        );
+        assert_eq!(
+            (format!("{prefix} Rare"), 1),
+            (items[1].name.clone(), items[1].count)
+        );
+        assert_eq!(
+            vec![format!("{prefix} Rare")],
+            repository
+                .vocabulary_suggestions(field, "rare", 50)
+                .expect("search vocabulary suggestions")
+                .into_iter()
+                .map(|item| item.name)
+                .collect::<Vec<_>>(),
+            "{field:?}"
+        );
+        let case_search = repository
+            .vocabulary_suggestions(field, "TOP", 50)
+            .expect("search case-only vocabulary suggestions");
+        assert_eq!(1, case_search.len(), "{field:?}");
+        assert_eq!(format!("{prefix} Top"), case_search[0].name, "{field:?}");
+        assert_eq!(2, case_search[0].count, "{field:?}");
+        assert_eq!(
+            1,
+            repository
+                .vocabulary_suggestions(field, "", 1)
+                .expect("limit vocabulary suggestions")
+                .len(),
+            "{field:?}"
+        );
+    }
+
+    repository
+        .merge_vocabulary(
+            VocabularyField::Event,
+            "Event Canonical",
+            &[
+                "Event Canonical".to_owned(),
+                "Event Top".to_owned(),
+                "Event top".to_owned(),
+                "Blue Event Alias".to_owned(),
+            ],
+        )
+        .expect("create suggestion aliases");
+    let alias_items = repository
+        .vocabulary_suggestions(VocabularyField::Event, "blue", 20)
+        .expect("search suggestion alias");
+    assert_eq!(1, alias_items.len());
+    assert_eq!("Event Canonical", alias_items[0].name);
+    assert_eq!(2, alias_items[0].count);
+    assert_eq!(
+        vec![
+            "Blue Event Alias".to_owned(),
+            "Event Top".to_owned(),
+            "Event top".to_owned(),
+        ],
+        alias_items[0].aliases
+    );
+    assert_eq!(
+        "Event Canonical",
+        repository
+            .vocabulary_suggestions(VocabularyField::Event, "canonical", 20)
+            .expect("search canonical suggestion")[0]
+            .name
+    );
+
+    repository
+        .set_manual_value(
+            collection_ids[2],
+            MetadataField::Event,
+            MetadataValue::Text("Event Canonical".to_owned()),
+        )
+        .expect("write selected canonical manually");
+    assert_eq!(
+        Some("Event Canonical".to_owned()),
+        repository
+            .collection(collection_ids[2])
+            .expect("canonical manual collection")
+            .event
+    );
+}
+
+#[test]
+fn vocabulary_suggestions_merge_mapped_and_unmapped_nocase_names_with_mapped_priority() {
+    let tree = TestTree::new("vocabulary-suggestion-mapped-nocase");
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    for (index, case) in ["Top", "top"].into_iter().enumerate() {
+        let pending = tree.pending(&format!("[mapped-case-{index}] mapped-case-{index}.zip"));
+        let path = pending.path.clone();
+        repository
+            .ingest_collection(&pending)
+            .expect("ingest mapped case collection");
+        let collection_id = repository
+            .collection_id_for_current_path(&path)
+            .expect("mapped case lookup")
+            .expect("mapped case collection");
+        repository
+            .set_manual_value(
+                collection_id,
+                MetadataField::Event,
+                MetadataValue::Text(format!("Mapped {case}")),
+            )
+            .expect("set mapped case event");
+        repository
+            .set_manual_value(
+                collection_id,
+                MetadataField::Circle,
+                MetadataValue::Text(format!("Entity {case}")),
+            )
+            .expect("set entity case circle");
+    }
+
+    repository
+        .merge_vocabulary(
+            VocabularyField::Event,
+            "Mapped Top",
+            &["Mapped Top".to_owned(), "Mapped Alias".to_owned()],
+        )
+        .expect("map only uppercase event");
+    let mapped_and_unmapped = repository
+        .vocabulary_suggestions(VocabularyField::Event, "alias", 20)
+        .expect("search mapped and unmapped event");
+    assert_eq!(1, mapped_and_unmapped.len());
+    assert_eq!("Mapped Top", mapped_and_unmapped[0].name);
+    assert_eq!(2, mapped_and_unmapped[0].count);
+    assert_eq!(vec!["Mapped Alias"], mapped_and_unmapped[0].aliases);
+
+    repository
+        .create_canonical_entity(EntityKind::Circle, "Entity Top", false)
+        .expect("create uppercase circle entity");
+    repository
+        .create_canonical_entity(EntityKind::Circle, "Entity top", false)
+        .expect("create lowercase circle entity");
+    let separate_entities = repository
+        .vocabulary_suggestions(VocabularyField::Circle, "ENTITY TOP", 20)
+        .expect("search separate nocase entities");
+    assert_eq!(1, separate_entities.len());
+    assert_eq!("Entity Top", separate_entities[0].name);
+    assert_eq!(2, separate_entities[0].count);
+    assert!(separate_entities[0].aliases.is_empty());
+}
+
+#[test]
 fn vocabulary_merge_preserves_manual_priority_and_updates_library_and_saved_views() {
     let tree = TestTree::new("vocabulary-merge");
     let mut repository = CatalogRepository::open_in_memory().expect("open catalog");

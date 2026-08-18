@@ -58,6 +58,12 @@
     classification: "種類",
     is_dl: "DL 版",
   };
+  const METADATA_VOCABULARY_FIELDS = {
+    event: "event",
+    circle: "circle",
+    authors: "author",
+    parody: "parody",
+  };
   const METADATA_SOURCE_LABELS = {
     manual: "手動修改",
     legacy: "舊版匯入",
@@ -235,6 +241,16 @@
   const mobileDetailMedia = window.matchMedia("(max-width: 899px)");
   const facetControllers = new Map();
   const tagSuggestionControllers = new Map();
+  const metadataSuggestionController = {
+    field: null,
+    options: [],
+    activeIndex: -1,
+    requestNumber: 0,
+    timer: null,
+    blurTimer: null,
+    suppressFocusSearch: false,
+    authors: [],
+  };
   const thumbnailBindings = new WeakMap();
   const thumbnailTrackers = new Map();
   const thumbnailRequestQueue = [];
@@ -369,6 +385,9 @@
       metadataTextGroup: byId("metadata-text-group"),
       metadataValue: byId("metadata-value"),
       metadataValueLabel: byId("metadata-value-label"),
+      metadataAuthorChips: byId("metadata-author-chips"),
+      metadataVocabularyOptions: byId("metadata-vocabulary-options"),
+      metadataValueHint: byId("metadata-value-hint"),
       metadataClassificationGroup: byId("metadata-classification-group"),
       metadataBooleanGroup: byId("metadata-boolean-group"),
       statLedger: byId("stat-ledger"),
@@ -602,6 +621,7 @@
   function bindEvents() {
     initializeFacetComboboxes();
     initializeTagSuggestionInputs();
+    initializeMetadataSuggestions();
     window.addEventListener("hashchange", routeFromHash);
     ui.activityTrigger.addEventListener("click", () => setActivityPanelOpen(ui.activityPanel.hidden));
     byId("close-activity").addEventListener("click", () => setActivityPanelOpen(false));
@@ -808,7 +828,10 @@
         if (event.target === dialog) dialog.close();
       });
     });
-    ui.metadataDialog.addEventListener("close", () => { state.metadataEditCollection = null; });
+    ui.metadataDialog.addEventListener("close", () => {
+      resetMetadataSuggestions();
+      state.metadataEditCollection = null;
+    });
     document.addEventListener("keydown", handleKeyboard);
   }
 
@@ -2306,6 +2329,241 @@
     if (controller) closeTagSuggestions(controller);
   }
 
+  function initializeMetadataSuggestions() {
+    ui.metadataValue.addEventListener("focus", () => {
+      window.clearTimeout(metadataSuggestionController.blurTimer);
+      if (metadataSuggestionController.suppressFocusSearch) {
+        metadataSuggestionController.suppressFocusSearch = false;
+        return;
+      }
+      if (metadataVocabularyField(ui.metadataField.value)) queueMetadataSuggestions(0);
+    });
+    ui.metadataValue.addEventListener("input", () => {
+      if (metadataVocabularyField(ui.metadataField.value)) queueMetadataSuggestions(140);
+    });
+    ui.metadataValue.addEventListener("blur", () => {
+      if (metadataVocabularyField(ui.metadataField.value)) {
+        metadataSuggestionController.blurTimer = window.setTimeout(() => closeMetadataSuggestions(), 160);
+      }
+    });
+    ui.metadataValue.addEventListener("keydown", handleMetadataSuggestionKeydown);
+  }
+
+  function metadataVocabularyField(field) {
+    return METADATA_VOCABULARY_FIELDS[field] || null;
+  }
+
+  function dedupeMetadataAuthors(values) {
+    const seen = new Set();
+    return (Array.isArray(values) ? values : []).map((value) => String(value || "").trim()).filter((value) => {
+      const key = value.toLocaleLowerCase();
+      if (!value || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function metadataAuthorsForSave(authors, pendingValue) {
+    return dedupeMetadataAuthors([...(Array.isArray(authors) ? authors : []), pendingValue]);
+  }
+
+  function metadataSuggestionPath(field, query) {
+    const params = new URLSearchParams({ field, q: String(query || "").trim(), limit: "20" });
+    return `/api/vocabulary/suggestions?${params}`;
+  }
+
+  function metadataSuggestionRequestIsCurrent(controller, requestNumber, field) {
+    return controller.requestNumber === requestNumber && controller.field === field;
+  }
+
+  function queueMetadataSuggestions(delay) {
+    const controller = metadataSuggestionController;
+    const field = metadataVocabularyField(ui.metadataField.value);
+    if (!field) return;
+    window.clearTimeout(controller.timer);
+    const requestNumber = ++controller.requestNumber;
+    controller.field = field;
+    controller.options = [];
+    controller.activeIndex = -1;
+    ui.metadataValue.removeAttribute("aria-activedescendant");
+    ui.metadataVocabularyOptions.replaceChildren(el("li", "facet-empty", delay ? "正在搜尋候選…" : "正在載入候選…"));
+    ui.metadataVocabularyOptions.hidden = false;
+    ui.metadataVocabularyOptions.setAttribute("aria-busy", "true");
+    ui.metadataValue.setAttribute("aria-expanded", "true");
+    controller.timer = window.setTimeout(() => loadMetadataSuggestions(requestNumber, field), delay);
+  }
+
+  async function loadMetadataSuggestions(requestNumber, field) {
+    const controller = metadataSuggestionController;
+    try {
+      const data = await api(metadataSuggestionPath(field, ui.metadataValue.value));
+      if (!ui.metadataDialog.open || !metadataSuggestionRequestIsCurrent(controller, requestNumber, field)) return;
+      const selectedAuthors = new Set(controller.authors.map((author) => author.toLocaleLowerCase()));
+      controller.options = (data.items || []).slice(0, 20).filter(
+        (option) => field !== "author" || !selectedAuthors.has(String(option.name || "").toLocaleLowerCase()),
+      );
+      renderMetadataSuggestions();
+    } catch (_) {
+      if (metadataSuggestionRequestIsCurrent(controller, requestNumber, field)) closeMetadataSuggestions();
+    }
+  }
+
+  function renderMetadataSuggestions() {
+    const controller = metadataSuggestionController;
+    ui.metadataVocabularyOptions.replaceChildren();
+    controller.activeIndex = -1;
+    ui.metadataValue.removeAttribute("aria-activedescendant");
+    if (!controller.options.length) {
+      const message = ui.metadataField.value === "authors"
+        ? "沒有既有候選；按 Enter 加入新作者"
+        : "沒有既有候選；可直接儲存目前輸入";
+      ui.metadataVocabularyOptions.append(el("li", "facet-empty", message));
+    } else {
+      controller.options.forEach((option, index) => {
+        const item = el("li", "facet-option metadata-vocabulary-option");
+        const optionId = `metadata-vocabulary-option-${index}`;
+        const countId = `${optionId}-count`;
+        item.id = optionId;
+        item.setAttribute("role", "option");
+        item.setAttribute("aria-selected", "false");
+        item.setAttribute("aria-label", option.name);
+
+        const copy = el("span", "metadata-vocabulary-copy");
+        copy.append(el("span", "", option.name));
+        const descriptions = [countId];
+        const aliases = (Array.isArray(option.aliases) ? option.aliases : []).filter(Boolean).slice(0, 2);
+        if (aliases.length) {
+          const alias = el("small", "metadata-vocabulary-alias", `亦以 ${aliases.join("、")} 出現`);
+          alias.id = `${optionId}-alias`;
+          descriptions.unshift(alias.id);
+          copy.append(alias);
+        }
+        const count = el("small", "metadata-vocabulary-count", `${formatNumber(option.count)} 次`);
+        count.id = countId;
+        item.setAttribute("aria-describedby", descriptions.join(" "));
+        item.append(copy, count);
+        item.addEventListener("click", () => selectMetadataSuggestion(index));
+        item.addEventListener("pointermove", (event) => {
+          if (event.pointerType === "mouse") setMetadataSuggestionActive(index);
+        });
+        ui.metadataVocabularyOptions.append(item);
+      });
+    }
+    ui.metadataVocabularyOptions.setAttribute("aria-busy", "false");
+    ui.metadataVocabularyOptions.hidden = false;
+    ui.metadataValue.setAttribute("aria-expanded", "true");
+  }
+
+  function handleMetadataSuggestionKeydown(event) {
+    if (!metadataVocabularyField(ui.metadataField.value)) return;
+    const controller = metadataSuggestionController;
+    if (event.key === "Tab") {
+      closeMetadataSuggestions();
+      return;
+    }
+    if (event.key === "Escape" && !ui.metadataVocabularyOptions.hidden) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeMetadataSuggestions();
+      return;
+    }
+    if (["ArrowDown", "ArrowUp"].includes(event.key)) {
+      event.preventDefault();
+      if (ui.metadataVocabularyOptions.hidden || !controller.options.length) {
+        queueMetadataSuggestions(0);
+        return;
+      }
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      const start = controller.activeIndex < 0 ? (direction > 0 ? -1 : 0) : controller.activeIndex;
+      setMetadataSuggestionActive((start + direction + controller.options.length) % controller.options.length);
+      return;
+    }
+    if (event.key !== "Enter") return;
+    if (!ui.metadataVocabularyOptions.hidden && controller.activeIndex >= 0) {
+      event.preventDefault();
+      selectMetadataSuggestion(controller.activeIndex);
+    } else if (ui.metadataField.value === "authors" && ui.metadataValue.value.trim()) {
+      event.preventDefault();
+      addMetadataAuthor(ui.metadataValue.value);
+    }
+  }
+
+  function setMetadataSuggestionActive(index) {
+    const controller = metadataSuggestionController;
+    controller.activeIndex = index;
+    ui.metadataVocabularyOptions.querySelectorAll('[role="option"]').forEach((option, optionIndex) => {
+      const active = optionIndex === index;
+      option.classList.toggle("is-active", active);
+      option.setAttribute("aria-selected", String(active));
+    });
+    const activeOption = ui.metadataVocabularyOptions.querySelectorAll('[role="option"]')[index];
+    if (!activeOption) return;
+    ui.metadataValue.setAttribute("aria-activedescendant", activeOption.id);
+    activeOption.scrollIntoView({ block: "nearest" });
+  }
+
+  function selectMetadataSuggestion(index) {
+    const option = metadataSuggestionController.options[index];
+    if (!option) return;
+    if (ui.metadataField.value === "authors") addMetadataAuthor(option.name);
+    else {
+      ui.metadataValue.value = option.name;
+      closeMetadataSuggestions();
+    }
+    if (document.activeElement !== ui.metadataValue) metadataSuggestionController.suppressFocusSearch = true;
+    ui.metadataValue.focus({ preventScroll: true });
+  }
+
+  function addMetadataAuthor(value) {
+    metadataSuggestionController.authors = metadataAuthorsForSave(metadataSuggestionController.authors, value);
+    ui.metadataValue.value = "";
+    renderMetadataAuthorChips();
+    closeMetadataSuggestions();
+    queueMetadataSuggestions(0);
+  }
+
+  function removeMetadataAuthor(index) {
+    metadataSuggestionController.authors.splice(index, 1);
+    renderMetadataAuthorChips();
+    ui.metadataValue.focus({ preventScroll: true });
+  }
+
+  function renderMetadataAuthorChips() {
+    ui.metadataAuthorChips.replaceChildren();
+    metadataSuggestionController.authors.forEach((author, index) => {
+      const chip = el("span", "metadata-author-chip");
+      const remove = el("button", "", "×");
+      remove.type = "button";
+      remove.setAttribute("aria-label", `移除作者 ${author}`);
+      remove.addEventListener("click", () => removeMetadataAuthor(index));
+      chip.append(document.createTextNode(author), remove);
+      ui.metadataAuthorChips.append(chip);
+    });
+    ui.metadataAuthorChips.hidden = ui.metadataField.value !== "authors" || metadataSuggestionController.authors.length === 0;
+  }
+
+  function closeMetadataSuggestions() {
+    const controller = metadataSuggestionController;
+    window.clearTimeout(controller.timer);
+    window.clearTimeout(controller.blurTimer);
+    controller.timer = null;
+    controller.blurTimer = null;
+    controller.requestNumber += 1;
+    controller.options = [];
+    controller.activeIndex = -1;
+    ui.metadataVocabularyOptions.hidden = true;
+    ui.metadataVocabularyOptions.setAttribute("aria-busy", "false");
+    ui.metadataValue.setAttribute("aria-expanded", "false");
+    ui.metadataValue.removeAttribute("aria-activedescendant");
+  }
+
+  function resetMetadataSuggestions() {
+    closeMetadataSuggestions();
+    metadataSuggestionController.field = null;
+    metadataSuggestionController.authors = [];
+    renderMetadataAuthorChips();
+  }
+
   function collectionPageParams(page) {
     const params = new URLSearchParams({
       page: String(page),
@@ -3216,9 +3474,33 @@
     const collection = state.metadataEditCollection || state.selected;
     const isClassification = field === "classification";
     const isBoolean = field === "is_dl";
+    const vocabularyField = metadataVocabularyField(field);
     ui.metadataTextGroup.hidden = isClassification || isBoolean;
     ui.metadataClassificationGroup.hidden = !isClassification;
     ui.metadataBooleanGroup.hidden = !isBoolean;
+
+    closeMetadataSuggestions();
+    metadataSuggestionController.field = vocabularyField;
+    metadataSuggestionController.authors = field === "authors" ? dedupeMetadataAuthors(collection?.authors) : [];
+    renderMetadataAuthorChips();
+    if (vocabularyField) {
+      ui.metadataValue.setAttribute("role", "combobox");
+      ui.metadataValue.setAttribute("aria-autocomplete", "list");
+      ui.metadataValue.setAttribute("aria-controls", ui.metadataVocabularyOptions.id);
+      ui.metadataValue.setAttribute("aria-describedby", ui.metadataValueHint.id);
+      ui.metadataValueHint.hidden = false;
+      ui.metadataValueHint.textContent = field === "authors"
+        ? "輸入後按 Enter 加入作者；可加入新作者，儲存前也會納入尚未加入的輸入。"
+        : "可選擇 catalog 既有 canonical 名稱，或直接儲存新的值。";
+    } else {
+      ui.metadataValue.removeAttribute("role");
+      ui.metadataValue.removeAttribute("aria-autocomplete");
+      ui.metadataValue.removeAttribute("aria-controls");
+      ui.metadataValue.removeAttribute("aria-describedby");
+      ui.metadataValue.removeAttribute("aria-expanded");
+      ui.metadataValueHint.hidden = true;
+      ui.metadataValueHint.textContent = "";
+    }
     if (!collection) return;
 
     if (isClassification) {
@@ -3227,10 +3509,10 @@
     } else if (isBoolean) {
       ui.metadataForm.elements.boolean_value.value = collection.is_dl === false ? "false" : "true";
     } else {
-      ui.metadataValueLabel.firstChild.textContent = `${METADATA_LABELS[field]}的新值`;
-      const current = field === "authors" ? collection.authors?.join("、") : field === "parody" ? collection.parody || collection.parody_raw : collection[field];
+      ui.metadataValueLabel.textContent = `${METADATA_LABELS[field]}的新值`;
+      const current = field === "authors" ? "" : field === "parody" ? collection.parody || collection.parody_raw : collection[field];
       ui.metadataValue.value = current || "";
-      ui.metadataValue.placeholder = field === "authors" ? "多位作者請用逗號或頓號分隔" : "";
+      ui.metadataValue.placeholder = field === "authors" ? "搜尋或輸入作者，按 Enter 加入" : "";
     }
   }
 
@@ -3248,7 +3530,7 @@
     } else if (field === "is_dl") {
       value = ui.metadataForm.elements.boolean_value.value === "true";
     } else if (field === "authors") {
-      value = ui.metadataValue.value.split(/[、,，\n]+/).map((part) => part.trim()).filter(Boolean);
+      value = metadataAuthorsForSave(metadataSuggestionController.authors, ui.metadataValue.value);
     } else {
       value = ui.metadataValue.value.trim();
     }
@@ -8056,6 +8338,10 @@
       batchStatusLabel,
       exportRequest,
       externalBatchNeedsAttention,
+      metadataAuthorsForSave,
+      metadataSuggestionPath,
+      metadataSuggestionRequestIsCurrent,
+      metadataVocabularyField,
       mergeExternalActivityProjection,
       replaceOperationSelection,
       workBasketHandoffEntries,

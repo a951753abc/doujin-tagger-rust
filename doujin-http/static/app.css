@@ -2564,6 +2564,84 @@ dialog select {
   background: var(--navy-tag-bg);
   color: var(--accent-dark);
 }
+.metadata-vocabulary-combobox {
+  position: relative;
+  min-width: 0;
+}
+.metadata-vocabulary-combobox input {
+  width: 100%;
+}
+.metadata-vocabulary-options {
+  text-align: left;
+}
+.metadata-vocabulary-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+.metadata-vocabulary-copy > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.metadata-vocabulary-option .metadata-vocabulary-alias {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.metadata-vocabulary-option .metadata-vocabulary-count {
+  color: var(--accent-dark);
+  font-variant-numeric: tabular-nums;
+}
+.metadata-author-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 8px;
+}
+.metadata-author-chips[hidden] {
+  display: none;
+}
+.metadata-author-chip {
+  display: inline-flex;
+  min-height: 30px;
+  padding: 3px 4px 3px 9px;
+  align-items: center;
+  gap: 4px;
+  border-radius: 3px;
+  background: var(--navy-tag-bg);
+  color: var(--accent-dark);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.metadata-author-chip button {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--accent-dark);
+  font-size: 1rem;
+  cursor: pointer;
+}
+.metadata-author-chip button:hover {
+  background: color-mix(in srgb, var(--accent-dark) 9%, transparent);
+}
+.metadata-author-chip button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+#metadata-value-hint {
+  display: block;
+  margin-top: 5px;
+}
+#metadata-value-hint[hidden] {
+  display: none;
+}
 .facet-empty {
   min-height: 44px;
   padding: 12px 10px;

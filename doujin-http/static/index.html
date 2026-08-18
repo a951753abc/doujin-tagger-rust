@@ -1079,7 +1079,13 @@
         </select>
       </label>
       <div id="metadata-text-group">
-        <label id="metadata-value-label">新值<input name="value" id="metadata-value" type="text" autocomplete="off"></label>
+        <label id="metadata-value-label" for="metadata-value">新值</label>
+        <div class="metadata-author-chips" id="metadata-author-chips" aria-label="已加入作者" hidden></div>
+        <div class="metadata-vocabulary-combobox">
+          <input name="value" id="metadata-value" type="text" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="metadata-vocabulary-options" aria-describedby="metadata-value-hint">
+          <ul class="facet-options metadata-vocabulary-options" id="metadata-vocabulary-options" role="listbox" hidden></ul>
+        </div>
+        <small class="field-note" id="metadata-value-hint" hidden></small>
       </div>
       <div id="metadata-classification-group" class="form-row" hidden>
         <label>主要種類
