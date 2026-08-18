@@ -4965,8 +4965,25 @@ async fn consolidation_preflight_resolves_manual_conflict_and_redirects_merged_i
             doujin_storage::lifecycle::CandidateDecision::Confirmed,
         )
         .expect("confirm candidate");
+    let (application, merged_job) = fail_external_search_job(
+        application,
+        candidate_id,
+        &[MetadataField::Authors],
+        ExternalSearchErrorKind::NoMatch,
+        None,
+    );
     let server = RunningServer::start(application).await;
     let base = format!("/api/tombstone-candidates/{old_id}/{candidate_id}");
+
+    let activity_before = server
+        .request("GET", "/api/external-search-jobs/activity", &[])
+        .await;
+    assert_eq!(200, activity_before.status);
+    assert_eq!(1, activity_before.json["actionable_count"]);
+    assert_eq!(
+        true,
+        external_search_activity_item(&activity_before.json, merged_job.id)["actionable"]
+    );
 
     let preflight = server
         .request("GET", &format!("{base}/preflight"), &[])
@@ -5037,6 +5054,20 @@ async fn consolidation_preflight_resolves_manual_conflict_and_redirects_merged_i
     assert_eq!("collection_merged", merged.json["error"]["code"]);
     assert_eq!(old_id, merged.json["error"]["merged_into_collection_id"]);
     assert!(candidate_path.is_file());
+
+    let activity_after = server
+        .request("GET", "/api/external-search-jobs/activity", &[])
+        .await;
+    assert_eq!(200, activity_after.status);
+    assert_eq!(0, activity_after.json["actionable_count"]);
+    assert!(
+        activity_after.json["items"]
+            .as_array()
+            .expect("activity items after consolidation")
+            .iter()
+            .all(|item| item["id"].as_i64() != Some(merged_job.id)),
+        "merged collection job must not remain as an Activity ghost"
+    );
 
     let repeated = server
         .request_json(
@@ -5977,7 +6008,39 @@ async fn delete_api_requires_an_explicit_mode_and_supports_soft_and_permanent_de
         .collection_id_for_current_path(&permanent_path)
         .expect("permanent lookup")
         .expect("permanent collection");
+    let mut repository = application.into_repository();
+    let fail_job = |repository: &mut CatalogRepository, collection_id: i64| {
+        let job = repository
+            .enqueue_external_search(collection_id, &[MetadataField::Authors])
+            .expect("enqueue delete Activity job")
+            .job;
+        repository
+            .start_external_search_job(job.id)
+            .expect("start delete Activity job");
+        repository
+            .fail_external_search_job(
+                job.id,
+                ExternalSearchErrorKind::NoMatch,
+                "delete Activity failure",
+                None,
+            )
+            .expect("fail delete Activity job")
+    };
+    let soft_job = fail_job(&mut repository, soft_id);
+    let permanent_job = fail_job(&mut repository, permanent_id);
+    let application = ApplicationService::new(
+        repository,
+        FakeRecycleBin {
+            directory: recycle.clone(),
+        },
+    );
     let server = RunningServer::start(application).await;
+
+    let activity_before = server
+        .request("GET", "/api/external-search-jobs/activity", &[])
+        .await;
+    assert_eq!(200, activity_before.status);
+    assert_eq!(2, activity_before.json["actionable_count"]);
 
     let missing_mode = server
         .request_json(
@@ -6034,6 +6097,21 @@ async fn delete_api_requires_an_explicit_mode_and_supports_soft_and_permanent_de
             .request("GET", &format!("/api/collections/{collection_id}"), &[])
             .await;
         assert_eq!(404, hidden.status);
+    }
+    let activity_after = server
+        .request("GET", "/api/external-search-jobs/activity", &[])
+        .await;
+    assert_eq!(200, activity_after.status);
+    assert_eq!(0, activity_after.json["actionable_count"]);
+    for job_id in [soft_job.id, permanent_job.id] {
+        assert!(
+            activity_after.json["items"]
+                .as_array()
+                .expect("activity items after delete")
+                .iter()
+                .all(|item| item["id"].as_i64() != Some(job_id)),
+            "deleted collection job must not remain as an Activity ghost"
+        );
     }
     server.stop().await;
 }
