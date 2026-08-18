@@ -195,6 +195,10 @@ where
             post(duplicates::confirm_duplicate_pair::<R>),
         )
         .route(
+            "/api/vocabulary/suggestions",
+            get(vocabulary::list_vocabulary_suggestions::<R>),
+        )
+        .route(
             "/api/vocabulary/candidates",
             get(vocabulary::list_vocabulary_candidates::<R>),
         )

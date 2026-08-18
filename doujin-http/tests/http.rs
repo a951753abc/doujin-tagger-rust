@@ -12,7 +12,7 @@ use doujin_http::{
     SharedApplication, bind_loopback, serve_shared_with_shutdown, share_application,
     validate_loopback_address,
 };
-use doujin_parser::domain::Authors;
+use doujin_parser::domain::{Authors, Parody};
 use doujin_scanner::{ScanRoot, SourceKind};
 use doujin_storage::CatalogRepository;
 use doujin_storage::external_search_batches::ExternalSearchBatchStrategy;
@@ -5277,6 +5277,187 @@ async fn vocabulary_api_preflights_merges_rejects_and_stays_separate_from_identi
             .expect("identity items")
             .len()
     );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn vocabulary_suggestions_expose_four_fields_alias_search_limits_and_query_validation() {
+    let tree = TestTree::new("vocabulary-suggestions-api");
+    for filename in [
+        "[suggest-one] one.zip",
+        "[suggest-two] two.zip",
+        "[suggest-three] three.zip",
+    ] {
+        tree.zip(filename);
+    }
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application
+        .run_scan(&[ScanRoot {
+            path: tree.library(),
+            source: SourceKind::Archive,
+            label: "歸檔區".to_owned(),
+        }])
+        .expect("scan suggestion fixtures");
+    let filenames = [
+        "[suggest-one] one.zip",
+        "[suggest-two] two.zip",
+        "[suggest-three] three.zip",
+    ];
+    let mut collection_ids = Vec::new();
+    for (index, filename) in filenames.into_iter().enumerate() {
+        let collection_id = application
+            .repository()
+            .collection_id_for_current_path(&tree.library().join(filename))
+            .expect("suggestion lookup")
+            .expect("suggestion collection");
+        let suffix = if index < 2 { "Common" } else { "Rare" };
+        for (field, value) in [
+            (
+                MetadataField::Event,
+                MetadataValue::Text(format!("Event {suffix}")),
+            ),
+            (
+                MetadataField::Circle,
+                MetadataValue::Text(format!("Circle {suffix}")),
+            ),
+            (
+                MetadataField::Authors,
+                MetadataValue::Authors(Authors {
+                    raw: Some(format!("Author {suffix}")),
+                    values: vec![format!("Author {suffix}")],
+                }),
+            ),
+            (
+                MetadataField::Parody,
+                MetadataValue::Parody(Parody {
+                    raw: format!("Parody {suffix}"),
+                    canonical: format!("Parody {suffix}"),
+                    evidence: "suggestion HTTP test".to_owned(),
+                }),
+            ),
+        ] {
+            application
+                .set_manual_metadata(collection_id, field, value)
+                .expect("seed suggestion metadata");
+        }
+        collection_ids.push(collection_id);
+    }
+    let server = RunningServer::start(application).await;
+
+    for (field, prefix) in [
+        ("event", "Event"),
+        ("circle", "Circle"),
+        ("author", "Author"),
+        ("parody", "Parody"),
+    ] {
+        let top = server
+            .request(
+                "GET",
+                &format!("/api/vocabulary/suggestions?field={field}&limit=1"),
+                &[],
+            )
+            .await;
+        assert_eq!(200, top.status, "{field}");
+        assert_eq!(1, top.json["items"].as_array().expect("top items").len());
+        assert_eq!(format!("{prefix} Common"), top.json["items"][0]["name"]);
+        assert_eq!(2, top.json["items"][0]["count"]);
+
+        let searched = server
+            .request(
+                "GET",
+                &format!("/api/vocabulary/suggestions?field={field}&q=rare&limit=20"),
+                &[],
+            )
+            .await;
+        assert_eq!(200, searched.status, "{field}");
+        assert_eq!(
+            1,
+            searched.json["items"]
+                .as_array()
+                .expect("search items")
+                .len()
+        );
+        assert_eq!(format!("{prefix} Rare"), searched.json["items"][0]["name"]);
+        assert_eq!(1, searched.json["items"][0]["count"]);
+    }
+
+    let merged = server
+        .request_json(
+            "POST",
+            "/api/vocabulary/merge",
+            &serde_json::json!({
+                "field": "event",
+                "canonical": "Event Canonical",
+                "variants": ["Event Canonical", "Event Common", "Blue Search Alias"]
+            }),
+        )
+        .await;
+    assert_eq!(200, merged.status);
+    let alias = server
+        .request(
+            "GET",
+            "/api/vocabulary/suggestions?field=event&q=blue&limit=20",
+            &[],
+        )
+        .await;
+    assert_eq!(200, alias.status);
+    assert_eq!("Event Canonical", alias.json["items"][0]["name"]);
+    assert_eq!(2, alias.json["items"][0]["count"]);
+    assert_eq!(
+        serde_json::json!(["Blue Search Alias", "Event Common"]),
+        alias.json["items"][0]["aliases"]
+    );
+
+    let manual = server
+        .request_json(
+            "PUT",
+            &format!("/api/collections/{}/metadata/event", collection_ids[2]),
+            &serde_json::json!({"value": "Event Canonical"}),
+        )
+        .await;
+    assert_eq!(200, manual.status);
+    assert_eq!("Event Canonical", manual.json["event"]);
+    let after_manual = server
+        .request(
+            "GET",
+            "/api/vocabulary/suggestions?field=event&q=canonical&limit=20",
+            &[],
+        )
+        .await;
+    assert_eq!(3, after_manual.json["items"][0]["count"]);
+
+    for (path, code) in [
+        ("/api/vocabulary/suggestions", "missing_vocabulary_field"),
+        (
+            "/api/vocabulary/suggestions?field=tag",
+            "invalid_vocabulary_field",
+        ),
+        (
+            "/api/vocabulary/suggestions?field=event&unknown=1",
+            "invalid_vocabulary_query",
+        ),
+        (
+            "/api/vocabulary/suggestions?field=event&field=circle",
+            "invalid_vocabulary_query",
+        ),
+        (
+            "/api/vocabulary/suggestions?field=event&q=a&q=b",
+            "invalid_vocabulary_query",
+        ),
+        (
+            "/api/vocabulary/suggestions?field=event&limit=0",
+            "invalid_vocabulary_limit",
+        ),
+        (
+            "/api/vocabulary/suggestions?field=event&limit=51",
+            "invalid_vocabulary_limit",
+        ),
+    ] {
+        let invalid = server.request("GET", path, &[]).await;
+        assert_eq!(400, invalid.status, "{path}");
+        assert_eq!(code, invalid.json["error"]["code"], "{path}");
+    }
     server.stop().await;
 }
 

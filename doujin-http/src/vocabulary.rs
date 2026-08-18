@@ -5,17 +5,24 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{RawQuery, State};
 use doujin_files::RecycleBin;
 use doujin_storage::vocabulary::{
-    VocabularyCandidateGroup, VocabularyMergePreflight, VocabularyMergeResult,
+    VocabularyCandidateGroup, VocabularyMergePreflight, VocabularyMergeResult, VocabularySuggestion,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::error::ApiError;
-use crate::params::{parse_vocabulary_field, parse_vocabulary_query};
+use crate::params::{
+    parse_vocabulary_field, parse_vocabulary_query, parse_vocabulary_suggestions_query,
+};
 use crate::{HttpState, lock_interactive_application};
 
 #[derive(Debug, Serialize)]
 pub(crate) struct VocabularyCandidatesResponse {
     groups: Vec<VocabularyCandidateGroup>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct VocabularySuggestionsResponse {
+    items: Vec<VocabularySuggestion>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,6 +65,25 @@ where
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(VocabularyCandidatesResponse { groups }))
+}
+
+pub(crate) async fn list_vocabulary_suggestions<R>(
+    State(state): State<HttpState<R>>,
+    RawQuery(raw_query): RawQuery,
+) -> Result<Json<VocabularySuggestionsResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let (field, search, limit) = parse_vocabulary_suggestions_query(raw_query.as_deref())?;
+    let items = tokio::task::spawn_blocking(move || {
+        let application = lock_interactive_application(&state.application)?;
+        application
+            .vocabulary_suggestions(field, &search, limit)
+            .map_err(ApiError::from_application)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(VocabularySuggestionsResponse { items }))
 }
 
 pub(crate) async fn preflight_vocabulary_merge<R>(

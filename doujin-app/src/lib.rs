@@ -45,6 +45,7 @@ use doujin_storage::thumbnails::{
 };
 use doujin_storage::vocabulary::{
     VocabularyCandidateGroup, VocabularyField, VocabularyMergePreflight, VocabularyMergeResult,
+    VocabularySuggestion,
 };
 use doujin_storage::work_baskets::{WorkBasketSnapshot, WorkBasketSummary};
 use doujin_storage::{CatalogRepository, IngestOutcome, StorageError};
@@ -1333,6 +1334,17 @@ impl<R: RecycleBin> ApplicationService<R> {
         field: Option<VocabularyField>,
     ) -> ApplicationResult<Vec<VocabularyCandidateGroup>> {
         Ok(self.repository.vocabulary_candidates(field)?)
+    }
+
+    pub fn vocabulary_suggestions(
+        &self,
+        field: VocabularyField,
+        search: &str,
+        limit: u32,
+    ) -> ApplicationResult<Vec<VocabularySuggestion>> {
+        Ok(self
+            .repository
+            .vocabulary_suggestions(field, search, limit)?)
     }
 
     pub fn vocabulary_merge_preflight(

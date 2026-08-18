@@ -226,6 +226,50 @@ pub(crate) fn parse_vocabulary_query(
     Ok(field)
 }
 
+pub(crate) fn parse_vocabulary_suggestions_query(
+    raw_query: Option<&str>,
+) -> Result<(VocabularyField, String, u32), ApiError> {
+    let mut field = None;
+    let mut search = String::new();
+    let mut limit = 20;
+    let mut scalar_keys = HashSet::new();
+    for (key, value) in form_urlencoded::parse(raw_query.unwrap_or_default().as_bytes()) {
+        let key = key.as_ref();
+        let value = value.as_ref();
+        match key {
+            "field" => {
+                ensure_single_vocabulary_parameter(&mut scalar_keys, key)?;
+                field = Some(parse_vocabulary_field(value)?);
+            }
+            "q" => {
+                ensure_single_vocabulary_parameter(&mut scalar_keys, key)?;
+                search = value.trim().to_owned();
+            }
+            "limit" => {
+                ensure_single_vocabulary_parameter(&mut scalar_keys, key)?;
+                limit = value
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|limit| (1..=50).contains(limit))
+                    .ok_or_else(|| {
+                        ApiError::bad_request(
+                            "invalid_vocabulary_limit",
+                            "limit 必須是 1 到 50 的整數",
+                        )
+                    })?;
+            }
+            _ => return Err(invalid_vocabulary_query()),
+        }
+    }
+    let field = field.ok_or_else(|| {
+        ApiError::bad_request(
+            "missing_vocabulary_field",
+            "vocabulary suggestions 查詢必須指定 field",
+        )
+    })?;
+    Ok((field, search, limit))
+}
+
 pub(crate) fn parse_vocabulary_field(value: &str) -> Result<VocabularyField, ApiError> {
     VocabularyField::parse(value).map_err(|_| {
         ApiError::bad_request(
@@ -403,6 +447,17 @@ pub(crate) fn ensure_single_parameter(
     }
 }
 
+fn ensure_single_vocabulary_parameter(
+    scalar_keys: &mut HashSet<String>,
+    key: &str,
+) -> Result<(), ApiError> {
+    if scalar_keys.insert(key.to_owned()) {
+        Ok(())
+    } else {
+        Err(invalid_vocabulary_query())
+    }
+}
+
 pub(crate) fn required_filter_value(value: &str) -> Result<String, ApiError> {
     let value = value.trim();
     if value.is_empty() {
@@ -423,6 +478,13 @@ pub(crate) fn invalid_review_query() -> ApiError {
     ApiError::bad_request(
         "invalid_review_query",
         "review queue 只支援 page、per_page 與 kind=all|missing|candidate",
+    )
+}
+
+fn invalid_vocabulary_query() -> ApiError {
+    ApiError::bad_request(
+        "invalid_vocabulary_query",
+        "vocabulary suggestions 只支援 field、q 與 limit",
     )
 }
 

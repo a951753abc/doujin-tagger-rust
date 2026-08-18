@@ -91,6 +91,13 @@ pub struct VocabularyCandidateGroup {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VocabularySuggestion {
+    pub name: String,
+    pub count: i64,
+    pub aliases: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VocabularySavedViewImpact {
     pub id: i64,
     pub name: String,
@@ -136,7 +143,85 @@ struct VariantAccumulator {
     representatives: Vec<VocabularyRepresentative>,
 }
 
+#[derive(Default)]
+struct SuggestionAccumulator {
+    name: String,
+    mapped: bool,
+    collections: BTreeSet<i64>,
+    aliases: BTreeSet<String>,
+}
+
 impl CatalogRepository {
+    pub fn vocabulary_suggestions(
+        &self,
+        field: VocabularyField,
+        search: &str,
+        limit: u32,
+    ) -> StorageResult<Vec<VocabularySuggestion>> {
+        let entities = load_suggestion_entities(&self.connection, field)?;
+        let mut names = HashMap::new();
+        for (entity_id, entity) in &entities {
+            names.insert(entity.canonical.clone(), *entity_id);
+        }
+        for (entity_id, entity) in &entities {
+            for alias in &entity.aliases {
+                names.insert(alias.clone(), *entity_id);
+            }
+        }
+
+        let mut suggestions = BTreeMap::<String, SuggestionAccumulator>::new();
+        for row in selected_values(&self.connection, field)? {
+            let (name, mapped, aliases) = if let Some(entity) = names
+                .get(&row.value)
+                .and_then(|entity_id| entities.get(entity_id))
+            {
+                (entity.canonical.clone(), true, entity.aliases.clone())
+            } else {
+                (row.value.clone(), false, BTreeSet::new())
+            };
+            let suggestion = suggestions.entry(name.to_ascii_lowercase()).or_default();
+            if suggestion.name.is_empty()
+                || (mapped && !suggestion.mapped)
+                || (mapped == suggestion.mapped && name < suggestion.name)
+            {
+                suggestion.name = name;
+                suggestion.mapped = mapped;
+            }
+            suggestion.collections.insert(row.collection_id);
+            suggestion.aliases.extend(aliases);
+        }
+
+        let search = search.trim().to_lowercase();
+        let mut items = suggestions
+            .into_values()
+            .filter(|suggestion| {
+                search.is_empty()
+                    || suggestion.name.to_lowercase().contains(&search)
+                    || suggestion
+                        .aliases
+                        .iter()
+                        .any(|alias| alias.to_lowercase().contains(&search))
+            })
+            .map(|mut suggestion| {
+                suggestion.aliases.remove(&suggestion.name);
+                VocabularySuggestion {
+                    name: suggestion.name,
+                    count: suggestion.collections.len() as i64,
+                    aliases: suggestion.aliases.into_iter().collect(),
+                }
+            })
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| {
+            right
+                .count
+                .cmp(&left.count)
+                .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        items.truncate(limit.clamp(1, 50) as usize);
+        Ok(items)
+    }
+
     pub fn vocabulary_candidates(
         &self,
         field: Option<VocabularyField>,
@@ -376,6 +461,47 @@ impl CatalogRepository {
         transaction.commit()?;
         Ok(changed)
     }
+}
+
+#[derive(Default)]
+struct SuggestionEntity {
+    canonical: String,
+    aliases: BTreeSet<String>,
+}
+
+fn load_suggestion_entities(
+    connection: &Connection,
+    field: VocabularyField,
+) -> StorageResult<HashMap<i64, SuggestionEntity>> {
+    let mut statement = connection.prepare(
+        "SELECT entity.id, entity.canonical_name, alias.alias
+         FROM canonical_entities AS entity
+         LEFT JOIN vocabulary_aliases AS alias
+           ON alias.entity_id = entity.id AND alias.field_name = ?1
+         WHERE entity.entity_kind = ?2 AND entity.status = 'active'
+         ORDER BY entity.id, alias.alias",
+    )?;
+    let rows = statement
+        .query_map(
+            params![field.as_str(), field.entity_kind().as_str()],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut entities = HashMap::<i64, SuggestionEntity>::new();
+    for (entity_id, canonical, alias) in rows {
+        let entity = entities.entry(entity_id).or_default();
+        entity.canonical = canonical;
+        if let Some(alias) = alias {
+            entity.aliases.insert(alias);
+        }
+    }
+    Ok(entities)
 }
 
 pub fn normalize_vocabulary_name(value: &str) -> String {
