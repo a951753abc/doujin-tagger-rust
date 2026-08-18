@@ -5919,6 +5919,33 @@ dialog::backdrop {
 .review-actions kbd {
   background: color-mix(in srgb, var(--paper-raised) 72%, transparent);
 }
+.review-external-status {
+  display: grid;
+  gap: 7px;
+  margin: 2px 0 5px;
+  padding: 11px;
+}
+.review-external-status .external-job-header strong {
+  font-size: 0.9375rem;
+}
+.review-external-status .external-job-result {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.review-external-status .external-job-result dt,
+.review-external-status .external-job-result dd {
+  grid-row: auto;
+  padding: 4px 0 0;
+  text-align: left;
+}
+.review-external-status .external-job-result dd {
+  text-align: right;
+}
+.review-external-guidance {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
 .review-navigation {
   display: flex;
   margin-top: auto;
@@ -6268,6 +6295,7 @@ dialog::backdrop {
     border-top: 1px solid var(--line);
   }
   .review-actions > p,
+  .review-external-status,
   .review-navigation {
     grid-column: 1 / -1;
   }
