@@ -37,6 +37,7 @@ use doujin_storage::metadata::{
 use doujin_storage::roots::LibraryRootSnapshot;
 use doujin_storage::saved_views::{SavedViewQuery, SavedViewSnapshot};
 use doujin_storage::scan::{ScanCompletion, ScanCompletionStatus, ScanIssueRecord};
+use doujin_storage::settings::DEFAULT_LIBRARY_BATCH_SIZE;
 use doujin_storage::statistics::{CollectionFacet, CollectionStatistics, NamedCount};
 use doujin_storage::thumbnails::{
     BACKGROUND_THUMBNAIL_PRIORITY, BATCH_THUMBNAIL_PRIORITY, DEFAULT_THUMBNAIL_PRIORITY,
@@ -319,6 +320,7 @@ pub struct ApplicationSettingsSnapshot {
     pub thumbnail_size_overridden_by_environment: bool,
     pub thumbnail_quality_overridden_by_environment: bool,
     pub default_archive_root_id: Option<i64>,
+    pub library_batch_size: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1213,6 +1215,10 @@ impl<R: RecycleBin> ApplicationService<R> {
         let default_archive_root_id = stored
             .as_ref()
             .and_then(|settings| settings.default_archive_root_id);
+        let library_batch_size = stored
+            .as_ref()
+            .map(|settings| settings.library_batch_size)
+            .unwrap_or(DEFAULT_LIBRARY_BATCH_SIZE);
         Ok(ApplicationSettingsSnapshot {
             reader_path: self.reader_path.clone(),
             thumbnail_width: config.width,
@@ -1232,6 +1238,7 @@ impl<R: RecycleBin> ApplicationService<R> {
                 .thumbnail_quality
                 .is_some(),
             default_archive_root_id,
+            library_batch_size,
         })
     }
 
@@ -1242,6 +1249,7 @@ impl<R: RecycleBin> ApplicationService<R> {
         thumbnail_height: u32,
         thumbnail_quality: u8,
         default_archive_root_id: Option<i64>,
+        library_batch_size: u32,
     ) -> ApplicationResult<SaveSettingsOutcome> {
         if reader_path
             .as_deref()
@@ -1307,6 +1315,7 @@ impl<R: RecycleBin> ApplicationService<R> {
             thumbnail_quality,
             &effective_thumbnail.settings_fingerprint(),
             default_archive_root_id,
+            library_batch_size,
         )?;
         self.reader_path = effective_reader;
         self.thumbnail_config = Some(effective_thumbnail);

@@ -788,6 +788,7 @@ mod tests {
             thumbnail_height: 400,
             thumbnail_quality: 70,
             default_archive_root_id: None,
+            library_batch_size: doujin_storage::settings::DEFAULT_LIBRARY_BATCH_SIZE,
             updated_at: "2026-08-12T00:00:00.000Z".to_owned(),
         };
         let environment = EnvironmentSettings {

@@ -812,7 +812,7 @@
 
         <div class="settings-layout">
           <section class="settings-section preferences-settings" aria-labelledby="reader-settings-heading">
-            <h2 id="reader-settings-heading">閱讀與縮圖</h2>
+            <h2 id="reader-settings-heading">瀏覽、閱讀與縮圖</h2>
             <p class="settings-intro" id="environment-overrides">正在讀取設定優先權…</p>
             <form id="settings-form">
               <label>閱讀器執行檔
@@ -822,6 +822,16 @@
               <label>預設典藏庫
                 <select name="default_archive_root_id" id="default-archive-root" aria-describedby="default-archive-root-note"></select>
                 <span class="field-note" id="default-archive-root-note" hidden></span>
+              </label>
+              <label>全部藏書每批顯示
+                <select name="library_batch_size" id="library-batch-size" aria-describedby="library-batch-size-note" required>
+                  <option value="24">24 本</option>
+                  <option value="48">48 本</option>
+                  <option value="96">96 本</option>
+                  <option value="144">144 本</option>
+                  <option value="192">192 本</option>
+                </select>
+                <span class="field-note" id="library-batch-size-note">影響首次載入與每次載入更多的筆數；不改變符合條件的總收藏數。</span>
               </label>
               <label class="settings-checkbox-field">
                 <input name="triage_auto_advance" id="triage-auto-advance" type="checkbox" aria-describedby="triage-auto-advance-note">

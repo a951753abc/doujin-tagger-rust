@@ -6,7 +6,8 @@
   const EXTERNAL_JOB_KEY = "doujin-library.external-jobs.v1";
   const TRIAGE_AUTO_ADVANCE_KEY = "doujin-library.triage-auto-advance.v1";
   const RECENT_LIMIT = 20;
-  const PER_PAGE = 48;
+  const DEFAULT_LIBRARY_BATCH_SIZE = 48;
+  const LIBRARY_BATCH_SIZE_CHOICES = Object.freeze([24, 48, 96, 144, 192]);
   const TRIAGE_PER_PAGE = 100;
   const SHELF_LIMIT = 8;
   const SAVED_VIEW_SHELF_LIMIT = 6;
@@ -16,6 +17,7 @@
   const THUMBNAIL_REQUEST_CONCURRENCY = 4;
   const THUMBNAIL_POLL_DELAYS = [1000, 2000, 3000, 5000];
   const THUMBNAIL_NETWORK_DELAYS = [1000, 2000, 5000, 10000, 30000];
+  const APPLICATION_BUSY_RETRY_DELAYS = [100, 250, 500, 1000];
   const FILTER_NAMES = ["source", "classification", "missing", "event", "circle", "author", "parody", "subcategory", "tag", "untagged"];
   const FILTER_LABELS = {
     q: "搜尋",
@@ -139,6 +141,8 @@
     workBasketSelectedIds: new Set(),
     sort: "created",
     direction: "desc",
+    libraryBatchSize: DEFAULT_LIBRARY_BATCH_SIZE,
+    libraryBatchSizeReady: false,
     layout: readStorage(LAYOUT_KEY, "grid"),
     recent: readStorage(RECENT_KEY, []),
     requestNumber: 0,
@@ -631,7 +635,10 @@
     initializeLibraryInfiniteScroll();
     renderRecent();
     setLayout(state.layout);
-    routeFromHash();
+    bootstrapLibraryBatchSize().finally(() => {
+      state.libraryBatchSizeReady = true;
+      routeFromHash();
+    });
     loadWorkBasket();
     loadSavedViews();
     startActivityMonitoring();
@@ -884,6 +891,7 @@
   }
 
   function routeFromHash() {
+    if (!state.libraryBatchSizeReady) return Promise.resolve(false);
     const previousRoute = state.route;
     const parsedRoute = parseRouteHash();
     const route = parsedRoute.route;
@@ -2609,17 +2617,62 @@
   }
 
   function collectionPageParams(page) {
+    return buildCollectionPageParams(page, state.libraryBatchSize, state.sort, state.direction, state.filters);
+  }
+
+  function buildCollectionPageParams(page, batchSize, sort, direction, filters = {}) {
     const params = new URLSearchParams({
       page: String(page),
-      per_page: String(PER_PAGE),
-      sort: state.sort,
-      direction: state.direction,
+      per_page: String(normalizeLibraryBatchSize(batchSize)),
+      sort,
+      direction,
     });
-    Object.entries(state.filters).forEach(([name, value]) => {
+    Object.entries(filters).forEach(([name, value]) => {
       if (Array.isArray(value)) value.forEach((entry) => params.append(name, entry));
       else params.set(name, value);
     });
     return params;
+  }
+
+  function normalizeLibraryBatchSize(value) {
+    const size = Number(value);
+    return LIBRARY_BATCH_SIZE_CHOICES.includes(size) ? size : DEFAULT_LIBRARY_BATCH_SIZE;
+  }
+
+  async function bootstrapLibraryBatchSize() {
+    try {
+      const settings = await retryApplicationBusy(() => api("/api/settings"));
+      state.libraryBatchSize = normalizeLibraryBatchSize(settings.library_batch_size);
+      state.settingsSnapshot = settings;
+    } catch (_) {
+      state.libraryBatchSize = DEFAULT_LIBRARY_BATCH_SIZE;
+    }
+  }
+
+  async function retryApplicationBusy(operation, delays = APPLICATION_BUSY_RETRY_DELAYS) {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await operation();
+      } catch (error) {
+        if (error?.code !== "application_busy" || attempt >= delays.length) throw error;
+        await new Promise((resolve) => window.setTimeout(resolve, delays[attempt]));
+      }
+    }
+  }
+
+  function applyLibraryBatchSize(value, { invalidateLibrary = false } = {}) {
+    const next = normalizeLibraryBatchSize(value);
+    const changed = next !== state.libraryBatchSize;
+    state.libraryBatchSize = next;
+    if (changed && invalidateLibrary) {
+      state.requestNumber += 1;
+      state.libraryLoaded = false;
+      state.libraryLoading = false;
+      state.libraryLoadError = false;
+      state.libraryRestorePage = 1;
+      state.libraryScrollY = 0;
+    }
+    return changed;
   }
 
   async function loadCollections({ preserveSelection = false, restoreThroughPage = 1 } = {}) {
@@ -6590,6 +6643,7 @@
           thumb_size: current.overrides.thumb_size ? current.saved_thumb_size : current.thumb_size,
           thumb_quality: current.overrides.thumb_quality ? current.saved_thumb_quality : current.thumb_quality,
           default_archive_root_id: rootId,
+          library_batch_size: current.library_batch_size,
         },
       });
     } catch (error) {
@@ -6807,8 +6861,10 @@
       : ui.results.querySelector(`[data-collection-id="${anchorId}"]`)?.getBoundingClientRect().top;
     state.items = remaining;
     state.total = Math.max(0, (Number(state.total) || 0) - removal.size);
-    state.page = Math.floor(state.items.length / PER_PAGE);
-    state.totalPages = state.items.length >= state.total ? state.page : Math.max(state.page + 1, Math.ceil(state.total / PER_PAGE));
+    state.page = Math.floor(state.items.length / state.libraryBatchSize);
+    state.totalPages = state.items.length >= state.total
+      ? state.page
+      : Math.max(state.page + 1, Math.ceil(state.total / state.libraryBatchSize));
     if (state.items.length && loadedRemoved) {
       const nextIndex = Math.min(anchor, state.items.length - 1);
       renderCollectionWindow({ anchorIndex: nextIndex, force: true });
@@ -7477,16 +7533,16 @@
   async function loadSettingsPage() {
     stopThumbnailCachePolling();
     try {
-      const [settings, roots, cacheJobs, exportRoots] = await Promise.all([
-        api("/api/settings"),
-        api("/api/library-roots"),
-        api("/api/thumbnail-cache-jobs/current"),
-        api("/api/export-roots"),
-      ]);
+      const settings = await retryApplicationBusy(() => api("/api/settings"));
+      const roots = await retryApplicationBusy(() => api("/api/library-roots"));
+      const cacheJobs = await retryApplicationBusy(() => api("/api/thumbnail-cache-jobs/current"));
+      const exportRoots = await retryApplicationBusy(() => api("/api/export-roots"));
       ui.settingsForm.elements.viewer_path.value = settings.viewer_path;
       ui.settingsForm.elements.thumb_size.value = settings.thumb_size;
       ui.settingsForm.elements.thumb_quality.value = settings.thumb_quality;
+      ui.settingsForm.elements.library_batch_size.value = String(normalizeLibraryBatchSize(settings.library_batch_size));
       ui.triageAutoAdvance.checked = state.triageAutoAdvance;
+      applyLibraryBatchSize(settings.library_batch_size, { invalidateLibrary: true });
       state.settingsSnapshot = settings;
       syncSettingsOverride("viewer_path", ui.viewerPathOverride, settings.overrides.viewer_path, settings.viewer_path, settings.saved_viewer_path);
       syncSettingsOverride("thumb_size", ui.thumbSizeOverride, settings.overrides.thumb_size, settings.thumb_size, settings.saved_thumb_size);
@@ -7555,6 +7611,7 @@
           thumb_size: settingsSnapshot.saved_thumb_size,
           thumb_quality: settingsSnapshot.saved_thumb_quality,
           default_archive_root_id: settingsSnapshot.default_archive_root_id ?? null,
+          library_batch_size: settingsSnapshot.library_batch_size ?? state.libraryBatchSize,
         },
       });
       const activeSources = new Set(state.settingsRoots.filter((root) => root.active).map((root) => root.source));
@@ -7897,10 +7954,15 @@
           default_archive_root_id: form.get("default_archive_root_id")
             ? Number(form.get("default_archive_root_id"))
             : null,
+          library_batch_size: Number(form.get("library_batch_size")),
         },
       });
+      const batchSizeChanged = applyLibraryBatchSize(settings.library_batch_size, { invalidateLibrary: true });
       const requeued = settings.thumbnails_requeued || 0;
-      toast(requeued ? `設定已儲存，${formatNumber(requeued)} 張縮圖已排入重建` : "設定已儲存");
+      const message = requeued
+        ? `設定已儲存，${formatNumber(requeued)} 張縮圖已排入重建`
+        : batchSizeChanged ? "設定已儲存；全部藏書將從第一批重新載入" : "設定已儲存";
+      toast(message);
       await loadSettingsPage();
     } catch (error) {
       toast(error.message, true);
@@ -8671,7 +8733,9 @@
   if (typeof module !== "undefined" && module.exports) {
     module.exports = {
       batchStatusLabel,
+      buildCollectionPageParams,
       claimReviewTerminalJobs,
+      collectionWindowRange,
       createCoalescedReviewQueueRefresh,
       exportRequest,
       externalBatchNeedsAttention,
@@ -8680,8 +8744,10 @@
       metadataSuggestionRequestIsCurrent,
       metadataVocabularyField,
       mergeExternalActivityProjection,
+      normalizeLibraryBatchSize,
       replaceOperationSelection,
       reconcileReviewExternalActivity,
+      retryApplicationBusy,
       reviewExternalDisplaySignature,
       reviewExternalSearchMode,
       selectReviewExternalJob,

@@ -159,7 +159,7 @@ fn duplicate_fingerprint(collection_id: i64, source: &str, content: char) -> Dup
 fn migration_enables_required_sqlite_features() {
     let repository = CatalogRepository::open_in_memory().expect("open catalog");
 
-    assert_eq!(18, repository.schema_version().expect("schema version"));
+    assert_eq!(19, repository.schema_version().expect("schema version"));
     assert!(repository.foreign_keys_enabled().expect("foreign keys"));
     assert!(
         repository
@@ -1073,7 +1073,8 @@ fn version_seventeen_external_search_activity_uses_selected_assertion_time_for_l
     connection
         .execute_batch(
             "DROP TABLE external_search_job_resolutions;
-             DELETE FROM schema_migrations WHERE version = 18;
+             ALTER TABLE application_settings DROP COLUMN library_batch_size;
+             DELETE FROM schema_migrations WHERE version IN (18, 19);
              PRAGMA user_version = 17;",
         )
         .expect("rewind external activity migration");
@@ -1081,7 +1082,7 @@ fn version_seventeen_external_search_activity_uses_selected_assertion_time_for_l
 
     let mut repository =
         CatalogRepository::open(&database).expect("upgrade legacy activity catalog");
-    assert_eq!(18, repository.schema_version().expect("upgraded schema"));
+    assert_eq!(19, repository.schema_version().expect("upgraded schema"));
     let activity = repository
         .external_search_activity()
         .expect("legacy external activity");
@@ -1550,12 +1551,21 @@ fn typed_settings_save_atomically_and_requeue_changed_thumbnail_settings() {
             .expect("empty settings")
     );
     let saved = repository
-        .save_application_settings(Some(&reader_path), 360, 480, 85, "360x480-q85-webp-v1", None)
+        .save_application_settings(
+            Some(&reader_path),
+            360,
+            480,
+            85,
+            "360x480-q85-webp-v1",
+            None,
+            96,
+        )
         .expect("save settings");
     assert_eq!(Some(reader_path), saved.settings.reader_path);
     assert_eq!(360, saved.settings.thumbnail_width);
     assert_eq!(480, saved.settings.thumbnail_height);
     assert_eq!(85, saved.settings.thumbnail_quality);
+    assert_eq!(96, saved.settings.library_batch_size);
     assert_eq!(1, saved.thumbnails_requeued);
     let requeued = repository
         .thumbnail_state(collection_id)
@@ -1565,14 +1575,21 @@ fn typed_settings_save_atomically_and_requeue_changed_thumbnail_settings() {
     assert_eq!(0, requeued.attempts);
 
     let unchanged = repository
-        .save_application_settings(None, 360, 480, 85, "360x480-q85-webp-v1", None)
+        .save_application_settings(None, 360, 480, 85, "360x480-q85-webp-v1", None, 144)
         .expect("save unchanged thumbnail settings");
     assert_eq!(0, unchanged.thumbnails_requeued);
     assert_eq!(None, unchanged.settings.reader_path);
+    assert_eq!(144, unchanged.settings.library_batch_size);
     assert!(matches!(
         repository
-            .save_application_settings(None, 300, 400, 0, "invalid", None)
+            .save_application_settings(None, 300, 400, 0, "invalid", None, 48)
             .expect_err("reject invalid quality"),
+        StorageError::InvalidApplicationSettings(_)
+    ));
+    assert!(matches!(
+        repository
+            .save_application_settings(None, 360, 480, 85, "360x480-q85-webp-v1", None, 25)
+            .expect_err("reject invalid library batch size"),
         StorageError::InvalidApplicationSettings(_)
     ));
     assert_eq!(
@@ -1582,6 +1599,83 @@ fn typed_settings_save_atomically_and_requeue_changed_thumbnail_settings() {
             .expect("settings")
             .expect("row")
             .thumbnail_quality
+    );
+    assert_eq!(
+        144,
+        repository
+            .stored_application_settings()
+            .expect("settings")
+            .expect("row")
+            .library_batch_size
+    );
+}
+
+#[test]
+fn library_batch_size_defaults_round_trips_reopens_and_falls_back_from_invalid_raw() {
+    let tree = TestTree::new("library-batch-size");
+    let database = tree.database();
+    let repository = CatalogRepository::open(&database).expect("open catalog");
+    drop(repository);
+
+    let connection = Connection::open(&database).expect("open raw catalog");
+    connection
+        .execute(
+            "INSERT INTO application_settings(
+                 singleton, thumbnail_width, thumbnail_height, thumbnail_quality
+             ) VALUES (1, 300, 400, 80)",
+            [],
+        )
+        .expect("insert settings using schema default");
+    drop(connection);
+
+    let mut repository = CatalogRepository::open(&database).expect("reopen defaulted catalog");
+    assert_eq!(
+        48,
+        repository
+            .stored_application_settings()
+            .expect("defaulted settings")
+            .expect("settings row")
+            .library_batch_size
+    );
+    for value in [24, 48, 96, 144, 192] {
+        let saved = repository
+            .save_application_settings(None, 300, 400, 80, "300x400-q80-webp-v1", None, value)
+            .expect("save allowed library batch size");
+        assert_eq!(value, saved.settings.library_batch_size);
+    }
+    drop(repository);
+
+    let repository = CatalogRepository::open(&database).expect("reopen saved catalog");
+    assert_eq!(
+        192,
+        repository
+            .stored_application_settings()
+            .expect("reopened settings")
+            .expect("settings row")
+            .library_batch_size
+    );
+    drop(repository);
+
+    let connection = Connection::open(&database).expect("open raw catalog");
+    connection
+        .pragma_update(None, "ignore_check_constraints", true)
+        .expect("allow invalid legacy value");
+    connection
+        .execute(
+            "UPDATE application_settings SET library_batch_size = 25 WHERE singleton = 1",
+            [],
+        )
+        .expect("seed invalid legacy value");
+    drop(connection);
+
+    let repository = CatalogRepository::open(&database).expect("reopen invalid catalog");
+    assert_eq!(
+        48,
+        repository
+            .stored_application_settings()
+            .expect("fallback settings")
+            .expect("settings row")
+            .library_batch_size
     );
 }
 
@@ -1609,7 +1703,7 @@ fn version_one_catalog_upgrades_through_all_migrations_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade catalog");
 
-    assert_eq!(18, repository.schema_version().expect("schema version"));
+    assert_eq!(19, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     drop(repository);
     let connection = Connection::open(&database).expect("inspect upgraded catalog");
@@ -1675,15 +1769,16 @@ fn version_eight_catalog_removes_is_dl_event_fallback_without_overwriting_manual
              DROP TABLE export_job_items;
              DROP TABLE export_jobs;
              DROP TABLE export_roots;
+             ALTER TABLE application_settings DROP COLUMN library_batch_size;
              ALTER TABLE application_settings DROP COLUMN default_archive_root_id;
-             DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12, 13, 14, 15, 16, 17, 18);
+             DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19);
              PRAGMA user_version = 8;",
         )
         .expect("seed v8 metadata");
     drop(connection);
 
     let repository = CatalogRepository::open(&database).expect("upgrade catalog");
-    assert_eq!(18, repository.schema_version().expect("schema version"));
+    assert_eq!(19, repository.schema_version().expect("schema version"));
     drop(repository);
 
     let connection = Connection::open(&database).expect("inspect upgraded catalog");
@@ -1787,7 +1882,7 @@ fn version_six_catalog_adds_thumbnail_priority_without_losing_state() {
         .thumbnail_state(1)
         .expect("preserved thumbnail state");
 
-    assert_eq!(18, repository.schema_version().expect("schema version"));
+    assert_eq!(19, repository.schema_version().expect("schema version"));
     assert_eq!(ThumbnailStatus::Pending, state.status);
     assert_eq!(BACKGROUND_THUMBNAIL_PRIORITY, state.priority);
     assert!(state.requested_at.is_some());
@@ -1834,7 +1929,7 @@ fn version_two_catalog_upgrades_external_search_jobs_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v2 catalog");
 
-    assert_eq!(18, repository.schema_version().expect("schema version"));
+    assert_eq!(19, repository.schema_version().expect("schema version"));
     let job = repository
         .external_search_job(job_id)
         .expect("preserved external search job");
@@ -1884,7 +1979,7 @@ fn version_three_catalog_adds_consolidation_audit_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v3 catalog");
 
-    assert_eq!(18, repository.schema_version().expect("schema version"));
+    assert_eq!(19, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert_eq!(
         None,
@@ -1939,7 +2034,7 @@ fn version_four_catalog_adds_thumbnail_state_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v4 catalog");
 
-    assert_eq!(18, repository.schema_version().expect("schema version"));
+    assert_eq!(19, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert!(
         repository
@@ -1998,7 +2093,7 @@ fn version_five_catalog_adds_typed_application_settings_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v5 catalog");
 
-    assert_eq!(18, repository.schema_version().expect("schema version"));
+    assert_eq!(19, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert!(
         repository
