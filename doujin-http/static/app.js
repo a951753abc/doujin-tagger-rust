@@ -10,7 +10,7 @@
   const LIBRARY_BATCH_SIZE_CHOICES = Object.freeze([24, 48, 96, 144, 192]);
   const TRIAGE_PER_PAGE = 100;
   const SHELF_LIMIT = 8;
-  const SAVED_VIEW_SHELF_LIMIT = 6;
+  const SAVED_VIEW_SHELF_LIMIT = 10;
   const BATCH_REQUEST_SIZE = 100;
   const COLLECTION_WINDOW_SIZE = 384;
   const COLLECTION_WINDOW_OVERSCAN = 96;
@@ -1653,11 +1653,26 @@
       const item = el("li", "saved-view-item");
       const button = el("button", "saved-view-button");
       button.type = "button";
+      const countLabel = `${formatNumber(view.result_count)} 本`;
+      button.setAttribute("aria-label", `開啟智慧書架「${view.name}」，${countLabel}`);
       button.addEventListener("click", () => openSavedView(view));
+      const kicker = el("span", "saved-view-card-kicker", "SMART COLLECTION / 智慧書架");
+      kicker.setAttribute("aria-hidden", "true");
       const heading = el("span", "saved-view-button-heading");
-      heading.append(el("strong", "", view.name), el("b", "", formatNumber(view.result_count)));
-      const summary = savedViewSummary(view.query).filter((part) => !part.startsWith("排列：")).slice(0, 3).join(" · ");
-      button.append(heading, el("small", "", summary || "全部藏書"));
+      heading.append(el("strong", "", view.name), el("b", "", countLabel));
+      const summary = el("span", "saved-view-card-summary");
+      summary.setAttribute("aria-hidden", "true");
+      const summaryParts = savedViewSummary(view.query)
+        .filter((part) => !part.startsWith("排列："))
+        .slice(0, 3)
+        .map((part) => part.replace(/^排序：/, ""));
+      (summaryParts.length ? summaryParts : ["全部藏書"]).forEach((part) => {
+        summary.append(el("span", "saved-view-chip", part));
+      });
+      const action = el("span", "saved-view-card-action", "開啟書架");
+      action.append(el("span", "", " →"));
+      action.setAttribute("aria-hidden", "true");
+      button.append(kicker, heading, summary, action);
       item.append(button);
       ui.savedViewList.append(item);
     });
@@ -1755,8 +1770,12 @@
   function savedViewSummary(query) {
     const parts = [];
     if (query.q) parts.push(`搜尋「${query.q}」`);
+    const sourceLabels = {
+      downloads: "新收藏",
+      archive: "典藏庫",
+    };
+    if (query.source) parts.push(sourceLabels[query.source] || "指定來源");
     const labels = {
-      source: "來源",
       classification: "種類",
       event: "場次",
       circle: "社團",
