@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>私藏編目室</title>
-  <link rel="stylesheet" href="/assets/app.css?v=56">
-  <script src="/assets/app.js?v=56" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=57">
+  <script src="/assets/app.js?v=57" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -74,53 +74,11 @@
             <a href="#workbench">前往工作台 <span aria-hidden="true">→</span></a>
           </aside>
 
-          <section class="saved-view-shelf" aria-labelledby="saved-view-shelf-heading">
-            <header class="shelf-heading">
-              <div>
-                <p class="eyebrow">SMART COLLECTIONS / 智慧書架</p>
-                <h1 id="saved-view-shelf-heading">我的書架</h1>
-              </div>
-              <button type="button" class="shelf-link" id="manage-saved-views">前往全部藏書 <span aria-hidden="true">→</span></button>
-            </header>
-            <ol class="saved-view-list" id="saved-view-list" aria-label="已釘選的 Saved Views"></ol>
-          </section>
-
-          <section class="book-shelf" aria-labelledby="recent-shelf-heading">
-            <header class="shelf-heading">
-              <div><h1 id="recent-shelf-heading">最近加入</h1><span id="recent-shelf-count"></span></div>
-              <button type="button" class="shelf-link" data-shelf-target="recent">檢視全部 <span aria-hidden="true">→</span></button>
-            </header>
-            <div class="shelf-scroll-shell">
-              <button class="shelf-scroll-button previous" data-shelf-scroll="previous" type="button" aria-label="向左捲動最近加入" hidden>‹</button>
-              <ol class="shelf-books" id="recent-shelf-books" tabindex="0" aria-label="最近加入收藏"></ol>
-              <button class="shelf-scroll-button next" data-shelf-scroll="next" type="button" aria-label="向右捲動最近加入" hidden>›</button>
-            </div>
-          </section>
-
-          <section class="featured-shelf" id="featured-shelf" aria-labelledby="featured-shelf-heading">
-            <header class="featured-heading">
-              <span>最大原作書架</span>
-              <h2 id="featured-shelf-heading">收藏選輯</h2>
-              <small id="featured-shelf-count"></small>
-            </header>
-            <div class="shelf-scroll-shell">
-              <button class="shelf-scroll-button previous" data-shelf-scroll="previous" type="button" aria-label="向左捲動最大原作書架" hidden>‹</button>
-              <ol class="shelf-books" id="featured-shelf-books" tabindex="0" aria-label="最大原作書架收藏"></ol>
-              <button class="shelf-scroll-button next" data-shelf-scroll="next" type="button" aria-label="向右捲動最大原作書架" hidden>›</button>
-            </div>
-          </section>
-
-          <section class="book-shelf event-shelf" aria-labelledby="event-shelf-heading">
-            <header class="shelf-heading">
-              <div><h2 id="event-shelf-heading">場次書架</h2><span id="event-shelf-count"></span></div>
-              <button type="button" class="shelf-link" data-shelf-target="event">檢視全部 <span aria-hidden="true">→</span></button>
-            </header>
-            <div class="shelf-scroll-shell">
-              <button class="shelf-scroll-button previous" data-shelf-scroll="previous" type="button" aria-label="向左捲動場次書架" hidden>‹</button>
-              <ol class="shelf-books" id="event-shelf-books" tabindex="0" aria-label="場次書架收藏"></ol>
-              <button class="shelf-scroll-button next" data-shelf-scroll="next" type="button" aria-label="向右捲動場次書架" hidden>›</button>
-            </div>
-          </section>
+          <div class="shelf-composition-heading">
+            <p><span class="eyebrow">HOME SHELVES / 首頁書牆</span>依你的編目與閱讀習慣排列。</p>
+            <button class="secondary-button" id="edit-shelf-composition" type="button" aria-haspopup="dialog">編輯首頁書牆</button>
+          </div>
+          <div id="shelf-composition" aria-live="polite"></div>
 
           <footer class="shelf-footer">
             <span id="shelf-footer-status">收藏已編目 · 本機服務正常</span>
@@ -1059,8 +1017,18 @@
       <p class="dialog-intro" id="saved-view-dialog-intro">保存的是目前查詢規則；新收藏與 metadata 變更會自動反映。</p>
       <label>檢視名稱<input name="name" id="saved-view-name" type="text" maxlength="80" required autocomplete="off"></label>
       <div class="saved-view-rule-summary" id="saved-view-rule-summary" aria-live="polite"></div>
-      <label class="saved-view-pin"><input name="pinned" type="checkbox" checked> <span><strong>釘在「我的書架」</strong><small>書架會顯示依目前 catalog 即時計算的冊數。</small></span></label>
+      <label class="saved-view-pin"><input name="pinned" type="checkbox" checked> <span><strong>優先顯示於 Saved Views</strong><small>只調整檢視清單排序；首頁書牆請用「編輯首頁書牆」加入。</small></span></label>
       <div class="dialog-footer"><button class="text-button" data-close-dialog type="button">取消</button><button class="primary-button" id="confirm-saved-view" type="submit">儲存檢視</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="shelf-composition-dialog" aria-labelledby="shelf-composition-dialog-heading">
+    <form class="dialog-shell shelf-composition-dialog" id="shelf-composition-form">
+      <header><div><p class="eyebrow">HOME SHELVES / 首頁書牆</p><h2 id="shelf-composition-dialog-heading">編輯首頁書牆</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉首頁書牆編輯">×</button></header>
+      <p class="dialog-intro">調整顯示、順序與預覽冊數。智慧書架沿用既有 Saved View 規則，不會保存固定收藏清單。</p>
+      <ol class="shelf-composition-list" id="shelf-composition-list" aria-label="首頁書牆順序"></ol>
+      <div class="shelf-composition-add"><label for="shelf-composition-saved-view">加入智慧書架</label><select id="shelf-composition-saved-view"><option value="">選擇既有 Saved View</option></select><button class="secondary-button" id="add-saved-view-shelf" type="button">加入</button></div>
+      <div class="dialog-footer split-footer"><button class="text-button" id="reset-shelf-composition" type="button">恢復預設首頁</button><span><button class="text-button" data-close-dialog type="button">取消</button><button class="primary-button" id="save-shelf-composition" type="submit">儲存首頁書牆</button></span></div>
     </form>
   </dialog>
 

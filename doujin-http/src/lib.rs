@@ -36,6 +36,7 @@ mod saved_views;
 mod scan;
 mod service;
 mod settings;
+mod shelf_configuration;
 mod statistics;
 mod thumbnails;
 mod vocabulary;
@@ -223,6 +224,15 @@ where
             get(saved_views::get_saved_view::<R>)
                 .put(saved_views::update_saved_view::<R>)
                 .delete(saved_views::delete_saved_view::<R>),
+        )
+        .route(
+            "/api/shelf-configuration",
+            get(shelf_configuration::get_shelf_configuration::<R>)
+                .put(shelf_configuration::replace_shelf_configuration::<R>),
+        )
+        .route(
+            "/api/shelf-configuration/reset",
+            post(shelf_configuration::reset_shelf_configuration::<R>),
         )
         .route(
             "/api/work-baskets",

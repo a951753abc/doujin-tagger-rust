@@ -38,6 +38,7 @@ use doujin_storage::roots::LibraryRootSnapshot;
 use doujin_storage::saved_views::{SavedViewQuery, SavedViewSnapshot};
 use doujin_storage::scan::{ScanCompletion, ScanCompletionStatus, ScanIssueRecord};
 use doujin_storage::settings::DEFAULT_LIBRARY_BATCH_SIZE;
+use doujin_storage::shelf_composition::ShelfConfigurationItem;
 use doujin_storage::statistics::{CollectionFacet, CollectionStatistics, NamedCount};
 use doujin_storage::thumbnails::{
     BACKGROUND_THUMBNAIL_PRIORITY, BATCH_THUMBNAIL_PRIORITY, DEFAULT_THUMBNAIL_PRIORITY,
@@ -979,6 +980,21 @@ impl<R: RecycleBin> ApplicationService<R> {
 
     pub fn delete_saved_view(&mut self, saved_view_id: i64) -> ApplicationResult<()> {
         Ok(self.repository.delete_saved_view(saved_view_id)?)
+    }
+
+    pub fn shelf_configuration(&self) -> ApplicationResult<Vec<ShelfConfigurationItem>> {
+        Ok(self.repository.shelf_configuration()?)
+    }
+
+    pub fn replace_shelf_configuration(
+        &mut self,
+        items: &[ShelfConfigurationItem],
+    ) -> ApplicationResult<Vec<ShelfConfigurationItem>> {
+        Ok(self.repository.replace_shelf_configuration(items)?)
+    }
+
+    pub fn reset_shelf_configuration(&mut self) -> ApplicationResult<Vec<ShelfConfigurationItem>> {
+        Ok(self.repository.reset_shelf_configuration()?)
     }
 
     pub fn collection(&self, collection_id: i64) -> ApplicationResult<CollectionSnapshot> {
