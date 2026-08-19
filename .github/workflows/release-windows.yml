@@ -50,7 +50,7 @@ jobs:
           $checksumPath = "$archivePath.sha256"
 
           New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
-          Copy-Item target\release\doujin-tagger.exe (Join-Path $packageRoot '私藏編目室.exe')
+          Copy-Item target\release\doujin-tagger.exe (Join-Path $packageRoot 'JP6 Doujin Archive.exe')
           Copy-Item target\release\doujin-launcher.exe $packageRoot
           Copy-Item target\release\doujin-http.exe $packageRoot
           Copy-Item README.md $packageRoot
@@ -112,7 +112,7 @@ jobs:
 
           1. 下載 `*-setup.exe` 安裝檔。
           2. 雙擊安裝（僅安裝到目前使用者帳號，不需要系統管理員權限）。
-          3. 從開始功能表或桌面捷徑開啟「私藏編目室」。
+          3. 從開始功能表或桌面捷徑開啟「JP6 Doujin Archive」。
 
           原生視窗版，關閉視窗即完全結束程式，不需要另外操作終端機或瀏覽器。
 
@@ -120,7 +120,7 @@ jobs:
 
           1. 下載 `Doujin-Tagger-${{ github.ref_name }}-Windows-x64.zip`。
           2. 解壓縮到一般資料夾。
-          3. 雙擊 `私藏編目室.exe`。
+          3. 雙擊 `JP6 Doujin Archive.exe`。
 
           第一次啟動會引導建立或選擇 catalog、設定收藏來源與閱讀器，之後會自動開啟瀏覽器。一般使用不需要輸入指令。
 

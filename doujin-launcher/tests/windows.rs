@@ -52,5 +52,5 @@ fn windows_install_script_is_valid_powershell() {
 
     let contents = fs::read_to_string(script).expect("read install script");
     assert!(contents.contains("doujin-tagger.exe"));
-    assert!(contents.contains("私藏編目室.exe"));
+    assert!(contents.contains("JP6 Doujin Archive.exe"));
 }

@@ -977,7 +977,7 @@
     if (state.route === "stats") loadStats();
     if (state.route === "settings") loadSettingsPage();
     if (state.route !== "library") window.scrollTo({ top: 0, behavior: "auto" });
-    document.title = `${routeTitle(state.route)}｜私藏編目室`;
+    document.title = `${routeTitle(state.route)}｜JP6 Doujin Archive`;
     return libraryReady;
   }
 

@@ -52,7 +52,7 @@ fn show_windows_message(message: &str, icon: &str) {
 
     let escaped = message.replace('`', "``").replace('\'', "''");
     let script = format!(
-        "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('{escaped}', '私藏編目室', 'OK', '{icon}') | Out-Null"
+        "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('{escaped}', 'JP6 Doujin Archive', 'OK', '{icon}') | Out-Null"
     );
     let _ = Command::new("powershell.exe")
         .args(["-NoProfile", "-STA", "-Command", &script])

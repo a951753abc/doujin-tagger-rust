@@ -6,7 +6,7 @@ fn main() {
     let result = Launcher::discover()
         .and_then(|launcher| launcher.execute(LauncherCommand::Open { catalog: None }));
     if let Err(error) = result {
-        show_error(&format!("無法開啟私藏編目室：{error}"));
+        show_error(&format!("無法開啟 JP6 Doujin Archive：{error}"));
         std::process::exit(1);
     }
 }
@@ -19,7 +19,7 @@ fn show_error(message: &str) {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let escaped = message.replace('`', "``").replace('\'', "''");
     let script = format!(
-        "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('{escaped}', '私藏編目室', 'OK', 'Error') | Out-Null"
+        "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('{escaped}', 'JP6 Doujin Archive', 'OK', 'Error') | Out-Null"
     );
     let _ = Command::new("powershell.exe")
         .args(["-NoProfile", "-STA", "-Command", &script])
