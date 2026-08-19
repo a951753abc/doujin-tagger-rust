@@ -31,6 +31,7 @@ use doujin_storage::metadata::{
     MetadataField, MetadataSource, MetadataValue,
 };
 use doujin_storage::saved_views::{SavedViewLayout, SavedViewQuery};
+use doujin_storage::shelf_composition::{ShelfConfigurationItem, ShelfType};
 use doujin_storage::statistics::CollectionFacet;
 use doujin_storage::thumbnails::{
     BACKGROUND_THUMBNAIL_PRIORITY, ThumbnailErrorKind, ThumbnailStatus,
@@ -159,7 +160,7 @@ fn duplicate_fingerprint(collection_id: i64, source: &str, content: char) -> Dup
 fn migration_enables_required_sqlite_features() {
     let repository = CatalogRepository::open_in_memory().expect("open catalog");
 
-    assert_eq!(19, repository.schema_version().expect("schema version"));
+    assert_eq!(20, repository.schema_version().expect("schema version"));
     assert!(repository.foreign_keys_enabled().expect("foreign keys"));
     assert!(
         repository
@@ -670,6 +671,174 @@ fn saved_views_persist_allowlisted_query_rules_and_support_explicit_crud() {
 }
 
 #[test]
+fn shelf_configuration_persists_validates_resets_and_cleans_up_deleted_saved_views() {
+    let tree = TestTree::new("shelf-configuration");
+    let database = tree.database();
+    let mut repository = CatalogRepository::open(&database).expect("open catalog");
+    let defaults = repository.shelf_configuration().expect("default shelves");
+    assert_eq!(3, defaults.len());
+    assert_eq!(ShelfType::Recent, defaults[0].shelf_type);
+    assert_eq!(ShelfType::Featured, defaults[1].shelf_type);
+    assert_eq!(ShelfType::Event, defaults[2].shelf_type);
+    assert!(
+        defaults
+            .iter()
+            .all(|item| item.enabled && item.preview_limit == 8)
+    );
+
+    let query =
+        SavedViewQuery::from_collection_query(&CollectionQuery::default(), SavedViewLayout::Grid);
+    let saved_view = repository
+        .create_saved_view("首頁智慧書架", &query, true)
+        .expect("create saved view");
+    let custom = vec![
+        ShelfConfigurationItem {
+            shelf_type: ShelfType::SavedView,
+            saved_view_id: Some(saved_view.id),
+            position: 0,
+            enabled: true,
+            preview_limit: 12,
+        },
+        ShelfConfigurationItem {
+            shelf_type: ShelfType::Recent,
+            saved_view_id: None,
+            position: 1,
+            enabled: false,
+            preview_limit: 6,
+        },
+        ShelfConfigurationItem {
+            shelf_type: ShelfType::Featured,
+            saved_view_id: None,
+            position: 2,
+            enabled: true,
+            preview_limit: 16,
+        },
+        ShelfConfigurationItem {
+            shelf_type: ShelfType::Event,
+            saved_view_id: None,
+            position: 3,
+            enabled: true,
+            preview_limit: 8,
+        },
+    ];
+    assert_eq!(
+        custom,
+        repository
+            .replace_shelf_configuration(&custom)
+            .expect("save custom shelves")
+    );
+    drop(repository);
+
+    let mut repository = CatalogRepository::open(&database).expect("reopen catalog");
+    assert_eq!(
+        custom,
+        repository.shelf_configuration().expect("persisted shelves")
+    );
+    let invalid = vec![
+        ShelfConfigurationItem {
+            position: 0,
+            ..custom[0].clone()
+        },
+        ShelfConfigurationItem {
+            position: 1,
+            ..custom[1].clone()
+        },
+        ShelfConfigurationItem {
+            position: 2,
+            ..custom[2].clone()
+        },
+        ShelfConfigurationItem {
+            position: 4,
+            ..custom[3].clone()
+        },
+    ];
+    assert!(matches!(
+        repository
+            .replace_shelf_configuration(&invalid)
+            .expect_err("reject non-contiguous positions"),
+        StorageError::InvalidShelfConfiguration(_)
+    ));
+    assert_eq!(
+        custom,
+        repository
+            .shelf_configuration()
+            .expect("invalid update is atomic")
+    );
+
+    repository
+        .reset_shelf_configuration()
+        .expect("reset shelf configuration");
+    assert_eq!(
+        1,
+        repository
+            .saved_views()
+            .expect("saved view remains after reset")
+            .len()
+    );
+    repository
+        .replace_shelf_configuration(&custom)
+        .expect("restore custom shelves for delete cleanup");
+    repository
+        .delete_saved_view(saved_view.id)
+        .expect("delete referenced saved view");
+    let after_delete = repository
+        .shelf_configuration()
+        .expect("cascade shelf cleanup");
+    assert_eq!(3, after_delete.len());
+    assert!(after_delete.iter().all(|item| item.saved_view_id.is_none()));
+    assert_eq!(
+        vec![0, 1, 2],
+        after_delete
+            .iter()
+            .map(|item| item.position)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn version_nineteen_catalog_backfills_pinned_saved_views_into_shelf_configuration() {
+    let tree = TestTree::new("upgrade-v19-shelf-composition");
+    let database = tree.database();
+    let mut repository = CatalogRepository::open(&database).expect("create current catalog");
+    let query =
+        SavedViewQuery::from_collection_query(&CollectionQuery::default(), SavedViewLayout::Grid);
+    let pinned = repository
+        .create_saved_view("既有釘選檢視", &query, true)
+        .expect("create pinned saved view");
+    let unpinned = repository
+        .create_saved_view("既有未釘選檢視", &query, false)
+        .expect("create unpinned saved view");
+    drop(repository);
+
+    let connection = Connection::open(&database).expect("rewind catalog to v19");
+    connection
+        .execute_batch(
+            "DROP TABLE shelf_configuration;
+             DELETE FROM schema_migrations WHERE version = 20;
+             PRAGMA user_version = 19;",
+        )
+        .expect("rewind shelf composition migration");
+    drop(connection);
+
+    let repository = CatalogRepository::open(&database).expect("upgrade v19 catalog");
+    assert_eq!(20, repository.schema_version().expect("schema version"));
+    let configuration = repository
+        .shelf_configuration()
+        .expect("upgraded shelf configuration");
+    assert_eq!(4, configuration.len());
+    assert_eq!(ShelfType::Recent, configuration[0].shelf_type);
+    assert_eq!(ShelfType::Featured, configuration[1].shelf_type);
+    assert_eq!(ShelfType::Event, configuration[2].shelf_type);
+    assert_eq!(ShelfType::SavedView, configuration[3].shelf_type);
+    assert_eq!(Some(pinned.id), configuration[3].saved_view_id);
+    assert!(
+        configuration
+            .iter()
+            .all(|item| item.saved_view_id != Some(unpinned.id))
+    );
+}
+
+#[test]
 fn library_roots_can_be_listed_deactivated_and_reactivated() {
     let tree = TestTree::new("library-roots");
     let root = tree.path.join("library");
@@ -1072,9 +1241,10 @@ fn version_seventeen_external_search_activity_uses_selected_assertion_time_for_l
         .expect("date unchanged assertion before job");
     connection
         .execute_batch(
-            "DROP TABLE external_search_job_resolutions;
+            "DROP TABLE shelf_configuration;
+             DROP TABLE external_search_job_resolutions;
              ALTER TABLE application_settings DROP COLUMN library_batch_size;
-             DELETE FROM schema_migrations WHERE version IN (18, 19);
+             DELETE FROM schema_migrations WHERE version IN (18, 19, 20);
              PRAGMA user_version = 17;",
         )
         .expect("rewind external activity migration");
@@ -1082,7 +1252,7 @@ fn version_seventeen_external_search_activity_uses_selected_assertion_time_for_l
 
     let mut repository =
         CatalogRepository::open(&database).expect("upgrade legacy activity catalog");
-    assert_eq!(19, repository.schema_version().expect("upgraded schema"));
+    assert_eq!(20, repository.schema_version().expect("upgraded schema"));
     let activity = repository
         .external_search_activity()
         .expect("legacy external activity");
@@ -1703,7 +1873,7 @@ fn version_one_catalog_upgrades_through_all_migrations_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade catalog");
 
-    assert_eq!(19, repository.schema_version().expect("schema version"));
+    assert_eq!(20, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     drop(repository);
     let connection = Connection::open(&database).expect("inspect upgraded catalog");
@@ -1769,16 +1939,17 @@ fn version_eight_catalog_removes_is_dl_event_fallback_without_overwriting_manual
              DROP TABLE export_job_items;
              DROP TABLE export_jobs;
              DROP TABLE export_roots;
+             DROP TABLE shelf_configuration;
              ALTER TABLE application_settings DROP COLUMN library_batch_size;
              ALTER TABLE application_settings DROP COLUMN default_archive_root_id;
-             DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19);
+             DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20);
              PRAGMA user_version = 8;",
         )
         .expect("seed v8 metadata");
     drop(connection);
 
     let repository = CatalogRepository::open(&database).expect("upgrade catalog");
-    assert_eq!(19, repository.schema_version().expect("schema version"));
+    assert_eq!(20, repository.schema_version().expect("schema version"));
     drop(repository);
 
     let connection = Connection::open(&database).expect("inspect upgraded catalog");
@@ -1882,7 +2053,7 @@ fn version_six_catalog_adds_thumbnail_priority_without_losing_state() {
         .thumbnail_state(1)
         .expect("preserved thumbnail state");
 
-    assert_eq!(19, repository.schema_version().expect("schema version"));
+    assert_eq!(20, repository.schema_version().expect("schema version"));
     assert_eq!(ThumbnailStatus::Pending, state.status);
     assert_eq!(BACKGROUND_THUMBNAIL_PRIORITY, state.priority);
     assert!(state.requested_at.is_some());
@@ -1929,7 +2100,7 @@ fn version_two_catalog_upgrades_external_search_jobs_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v2 catalog");
 
-    assert_eq!(19, repository.schema_version().expect("schema version"));
+    assert_eq!(20, repository.schema_version().expect("schema version"));
     let job = repository
         .external_search_job(job_id)
         .expect("preserved external search job");
@@ -1979,7 +2150,7 @@ fn version_three_catalog_adds_consolidation_audit_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v3 catalog");
 
-    assert_eq!(19, repository.schema_version().expect("schema version"));
+    assert_eq!(20, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert_eq!(
         None,
@@ -2034,7 +2205,7 @@ fn version_four_catalog_adds_thumbnail_state_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v4 catalog");
 
-    assert_eq!(19, repository.schema_version().expect("schema version"));
+    assert_eq!(20, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert!(
         repository
@@ -2093,7 +2264,7 @@ fn version_five_catalog_adds_typed_application_settings_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v5 catalog");
 
-    assert_eq!(19, repository.schema_version().expect("schema version"));
+    assert_eq!(20, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert!(
         repository

@@ -2125,6 +2125,43 @@ main {
 .shelf-content {
   min-width: 0;
 }
+.shelf-composition-heading {
+  display: flex;
+  width: calc(100% - 2 * var(--page-pad));
+  max-width: 1536px;
+  margin: 0 auto;
+  padding: 16px 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--line);
+}
+.shelf-composition-heading p {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.shelf-composition-heading .eyebrow {
+  color: var(--accent);
+}
+.configured-shelf .shelf-heading h2 {
+  max-width: min(62vw, 900px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shelf-composition-empty {
+  width: calc(100% - 2 * var(--page-pad));
+  max-width: 1536px;
+  margin: 24px auto;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper-raised);
+  color: var(--muted);
+}
 
 .tidy-strip {
   display: flex;
@@ -2927,6 +2964,97 @@ dialog select {
 .saved-view-dialog {
   display: grid;
   gap: 16px;
+}
+.shelf-composition-dialog {
+  display: grid;
+  width: 100%;
+  gap: 16px;
+}
+.shelf-composition-list {
+  display: grid;
+  gap: 8px;
+  max-height: min(54vh, 560px);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.shelf-composition-row {
+  display: grid;
+  min-height: 56px;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper-raised);
+}
+.shelf-composition-row[draggable="true"] {
+  cursor: grab;
+}
+.shelf-composition-row:focus-within {
+  border-color: var(--accent);
+}
+.shelf-composition-handle {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 1.125rem;
+  font-weight: 700;
+  text-align: center;
+}
+.shelf-composition-row > strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--accent-dark);
+  font-family: var(--serif);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shelf-composition-row-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.shelf-composition-row-controls select,
+.shelf-composition-enabled,
+.shelf-composition-row-controls .icon-button,
+.shelf-composition-row-controls .text-button {
+  min-height: 44px;
+}
+.shelf-composition-enabled {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding-inline: 6px;
+  color: var(--ink-soft);
+  font-size: 0.8125rem;
+}
+.shelf-composition-enabled input {
+  width: 18px;
+  height: 18px;
+}
+.shelf-composition-row-controls .icon-button {
+  width: 44px;
+  font-size: 1.125rem;
+}
+.shelf-composition-add {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.shelf-composition-add label {
+  color: var(--accent-dark);
+  font-family: var(--serif);
+  font-weight: 700;
+}
+.shelf-composition-add select,
+.shelf-composition-add button {
+  min-height: 44px;
 }
 .saved-view-dialog .dialog-intro {
   margin: 0;
@@ -5092,6 +5220,9 @@ dialog::backdrop {
 #quick-archive-dialog {
   width: min(720px, calc(100% - 24px));
 }
+#shelf-composition-dialog {
+  width: min(760px, calc(100% - 24px));
+}
 .quick-archive-summary {
   display: flex;
   flex-wrap: wrap;
@@ -6965,6 +7096,29 @@ dialog::backdrop {
   .empty-state-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+}
+
+@media (max-width: 899px) {
+  .shelf-composition-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .shelf-composition-heading .secondary-button {
+    width: 100%;
+    min-height: 44px;
+  }
+  .shelf-composition-row {
+    grid-template-columns: 24px minmax(0, 1fr);
+  }
+  .shelf-composition-row-controls {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+  .shelf-composition-add {
+    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 }
 

@@ -220,6 +220,9 @@ impl ApiError {
             StorageError::InvalidApplicationSettings(reason) => {
                 Self::bad_request("invalid_settings", &reason)
             }
+            StorageError::InvalidShelfConfiguration(reason) => {
+                Self::bad_request("invalid_shelf_configuration", &reason)
+            }
             StorageError::SavedViewNotFound(_) => Self::new(
                 StatusCode::NOT_FOUND,
                 "saved_view_not_found",

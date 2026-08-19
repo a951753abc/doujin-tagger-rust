@@ -10,7 +10,8 @@
   const LIBRARY_BATCH_SIZE_CHOICES = Object.freeze([24, 48, 96, 144, 192]);
   const TRIAGE_PER_PAGE = 100;
   const SHELF_LIMIT = 8;
-  const SAVED_VIEW_SHELF_LIMIT = 10;
+  const SHELF_PREVIEW_LIMITS = Object.freeze([6, 8, 12, 16]);
+  const SHELF_TYPES = Object.freeze(["recent", "featured", "event", "saved_view"]);
   const BATCH_REQUEST_SIZE = 100;
   const COLLECTION_WINDOW_SIZE = 384;
   const COLLECTION_WINDOW_OVERSCAN = 96;
@@ -150,6 +151,8 @@
     statsData: null,
     shelfLoaded: false,
     shelfData: null,
+    shelfConfiguration: { items: [] },
+    shelfCompositionDraft: [],
     savedViewsLoaded: false,
     savedViews: [],
     savedViewsPromise: null,
@@ -318,10 +321,14 @@
       activityAnnouncer: byId("activity-announcer"),
       shelfLoading: byId("shelf-loading"),
       shelfContent: byId("shelf-content"),
-      recentShelfBooks: byId("recent-shelf-books"),
-      featuredShelfBooks: byId("featured-shelf-books"),
-      eventShelfBooks: byId("event-shelf-books"),
-      savedViewList: byId("saved-view-list"),
+      shelfComposition: byId("shelf-composition"),
+      editShelfComposition: byId("edit-shelf-composition"),
+      shelfCompositionDialog: byId("shelf-composition-dialog"),
+      shelfCompositionForm: byId("shelf-composition-form"),
+      shelfCompositionList: byId("shelf-composition-list"),
+      shelfCompositionSavedView: byId("shelf-composition-saved-view"),
+      addSavedViewShelf: byId("add-saved-view-shelf"),
+      resetShelfComposition: byId("reset-shelf-composition"),
       searchForm: byId("search-form"),
       searchInput: byId("search-input"),
       headerSearchScope: byId("header-search-scope"),
@@ -727,19 +734,12 @@
     document.querySelectorAll(".quick-filter").forEach((button) => {
       button.addEventListener("click", () => showShelfFilter(button.dataset.filter, button.dataset.value));
     });
-    document.querySelectorAll("[data-shelf-target]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const target = button.dataset.shelfTarget;
-        if (target === "event") showShelfFilter("event", state.shelfData?.eventName);
-        else showShelfFilter(null, null);
-      });
-    });
-    byId("manage-saved-views").addEventListener("click", () => {
-      state.activeSavedViewId = null;
-      setAppliedFilters({});
-      navigateLibrary();
-    });
-    initializeShelfScrollControls();
+    ui.editShelfComposition.addEventListener("click", openShelfCompositionDialog);
+    ui.shelfCompositionForm.addEventListener("submit", saveShelfComposition);
+    ui.addSavedViewShelf.addEventListener("click", addSavedViewShelfToDraft);
+    ui.resetShelfComposition.addEventListener("click", resetShelfComposition);
+    bindShelfCompositionEditor();
+    window.addEventListener("resize", () => document.querySelectorAll(".shelf-scroll-shell").forEach(updateShelfScrollControls), { passive: true });
     byId("clear-recent").addEventListener("click", clearRecent);
     byId("clear-filters-and-focus").addEventListener("click", clearFiltersAndFocus);
     ui.metadataField.addEventListener("change", syncMetadataEditor);
@@ -995,6 +995,11 @@
     if (query) values.q = query;
     FILTER_NAMES.forEach((name) => {
       if (name === "tag") return;
+      if (name === "missing") {
+        const missing = params.getAll("missing").map((value) => value.trim()).filter(Boolean);
+        if (missing.length) values.missing = missing;
+        return;
+      }
       const value = String(params.get(name) || "").trim();
       if (value) values[name] = value;
     });
@@ -1546,35 +1551,27 @@
     ui.shelfLoading.hidden = false;
     ui.shelfContent.hidden = true;
     try {
-      const [stats, recent, downloads, candidateData, savedViews] = await Promise.all([
+      const [stats, downloads, candidateData, savedViews, configuration] = await Promise.all([
         api("/api/stats"),
-        shelfCollectionPage(),
         shelfCollectionPage({ source: "downloads" }, 1),
         api("/api/tombstone-candidates"),
         loadSavedViews(),
+        loadShelfConfiguration(),
       ]);
       const featuredName = stats.top_parody?.[0]?.name || null;
       const quickParodyName = stats.top_parody?.find((entry) => entry.name !== "オリジナル")?.name || featuredName;
       const eventName = stats.top_event?.[0]?.name || null;
-      const featured = featuredName ? await shelfCollectionPage({ parody: featuredName }) : recent;
-      const eventShelf = eventName ? await shelfCollectionPage({ event: eventName }) : recent;
 
       state.statsData = stats;
       state.candidates = candidateData.items || [];
       state.workbenchLoaded = true;
-      state.shelfData = { recent, featured, eventShelf, featuredName, eventName };
+      state.shelfData = { featuredName, eventName };
       state.shelfLoaded = true;
 
       const pending = state.candidates.filter((candidate) => candidate.decision === "pending");
       const pendingGroups = new Set(pending.map((candidate) => candidate.tombstone_collection_id)).size;
       byId("shelf-tidy-summary").textContent = `${formatNumber(stats.missing_metadata)} 冊缺 metadata · ${formatNumber(pendingGroups)} 組同名待裁決 · ${formatNumber(downloads.pagination.total)} 冊新收藏`;
       byId("shelf-footer-status").textContent = `${formatNumber(stats.total)} 冊已編目 · 本機服務正常`;
-
-      byId("recent-shelf-count").textContent = `${formatNumber(recent.items.length)} 冊`;
-      byId("featured-shelf-heading").textContent = featuredName || "編目精選";
-      byId("featured-shelf-count").textContent = `${formatNumber(featured.pagination.total)} 冊`;
-      byId("event-shelf-heading").textContent = eventName || "場次書架";
-      byId("event-shelf-count").textContent = `${formatNumber(eventShelf.pagination.total)} 冊`;
 
       if (eventName) {
         const eventQuickFilter = byId("shelf-quick-event");
@@ -1587,11 +1584,7 @@
         parodyQuickFilter.dataset.value = quickParodyName;
       }
 
-      const thumbnailRequestEpoch = nextThumbnailRequestEpoch();
-      renderShelfBooks(ui.recentShelfBooks, recent, null, null, false, thumbnailRequestEpoch);
-      renderShelfBooks(ui.featuredShelfBooks, featured, "parody", featuredName, true, thumbnailRequestEpoch);
-      renderShelfBooks(ui.eventShelfBooks, eventShelf, "event", eventName, false, thumbnailRequestEpoch);
-      renderSavedViewShelf(savedViews);
+      await renderShelfComposition(configuration, stats, savedViews);
       renderTombstoneCandidates();
       updateWorkbenchBadge();
       ui.shelfContent.hidden = false;
@@ -1604,6 +1597,12 @@
     }
   }
 
+  async function loadShelfConfiguration() {
+    const configuration = normalizeShelfConfiguration(await api("/api/shelf-configuration"));
+    state.shelfConfiguration = configuration;
+    return configuration;
+  }
+
   async function loadSavedViews({ force = false } = {}) {
     if (state.savedViewsLoaded && !force) return state.savedViews;
     if (state.savedViewsPromise) return state.savedViewsPromise;
@@ -1613,7 +1612,7 @@
         state.savedViewsLoaded = true;
         restoreSavedViewLayout();
         renderSavedViewContext();
-        if (state.shelfLoaded) renderSavedViewShelf(state.savedViews);
+        if (state.shelfLoaded) renderShelfComposition(state.shelfConfiguration, state.statsData, state.savedViews);
         return state.savedViews;
       })
       .catch((error) => {
@@ -1636,46 +1635,272 @@
     }
   }
 
-  function renderSavedViewShelf(views = state.savedViews) {
-    if (!ui.savedViewList) return;
-    ui.savedViewList.replaceChildren();
-    const pinned = views.filter((view) => view.pinned).slice(0, SAVED_VIEW_SHELF_LIMIT);
-    if (!pinned.length) {
-      const empty = el("li", "saved-view-empty");
-      empty.append(
-        el("strong", "", "還沒有釘選的智慧書架"),
-        el("span", "", "在「全部藏書」組好條件後，儲存目前檢視。"),
-      );
-      ui.savedViewList.append(empty);
+  function normalizeShelfConfiguration(configuration) {
+    const items = Array.isArray(configuration?.items) ? configuration.items : [];
+    return {
+      items: items
+        .filter((item) => SHELF_TYPES.includes(item?.shelf_type) && (item.shelf_type !== "saved_view" || Number.isSafeInteger(Number(item.saved_view_id)) && Number(item.saved_view_id) > 0))
+        .sort((left, right) => Number(left.position) - Number(right.position))
+        .map((item, position) => ({
+          shelf_type: item.shelf_type,
+          saved_view_id: item.shelf_type === "saved_view" ? Number(item.saved_view_id) : null,
+          position,
+          enabled: item.enabled !== false,
+          preview_limit: normalizeShelfPreviewLimit(item.preview_limit),
+        })),
+    };
+  }
+
+  function normalizeShelfPreviewLimit(value) {
+    const limit = Number(value);
+    return SHELF_PREVIEW_LIMITS.includes(limit) ? limit : SHELF_LIMIT;
+  }
+
+  async function renderShelfComposition(configuration = state.shelfConfiguration, stats = state.statsData, views = state.savedViews) {
+    if (!ui.shelfComposition || !stats) return;
+    ui.shelfComposition.replaceChildren();
+    const items = normalizeShelfConfiguration(configuration).items.filter((item) => item.enabled);
+    if (!items.length) {
+      ui.shelfComposition.append(el("p", "shelf-composition-empty", "首頁目前沒有顯示的書牆。你可以使用「編輯首頁書牆」重新啟用。"));
       return;
     }
-    pinned.forEach((view) => {
-      const item = el("li", "saved-view-item");
-      const button = el("button", "saved-view-button");
-      button.type = "button";
-      const countLabel = `${formatNumber(view.result_count)} 本`;
-      button.setAttribute("aria-label", `開啟智慧書架「${view.name}」，${countLabel}`);
-      button.addEventListener("click", () => openSavedView(view));
-      const kicker = el("span", "saved-view-card-kicker", "SMART COLLECTION / 智慧書架");
-      kicker.setAttribute("aria-hidden", "true");
-      const heading = el("span", "saved-view-button-heading");
-      heading.append(el("strong", "", view.name), el("b", "", countLabel));
-      const summary = el("span", "saved-view-card-summary");
-      summary.setAttribute("aria-hidden", "true");
-      const summaryParts = savedViewSummary(view.query)
-        .filter((part) => !part.startsWith("排列："))
-        .slice(0, 3)
-        .map((part) => part.replace(/^排序：/, ""));
-      (summaryParts.length ? summaryParts : ["全部藏書"]).forEach((part) => {
-        summary.append(el("span", "saved-view-chip", part));
-      });
-      const action = el("span", "saved-view-card-action", "開啟書架");
-      action.append(el("span", "", " →"));
-      action.setAttribute("aria-hidden", "true");
-      button.append(kicker, heading, summary, action);
-      item.append(button);
-      ui.savedViewList.append(item);
+    const thumbnailRequestEpoch = nextThumbnailRequestEpoch();
+    await Promise.all(items.map((item) => renderConfiguredShelf(item, stats, views, thumbnailRequestEpoch)));
+  }
+
+  async function renderConfiguredShelf(item, stats, views, thumbnailRequestEpoch) {
+    const savedView = item.shelf_type === "saved_view" ? views.find((view) => view.id === item.saved_view_id) : null;
+    if (item.shelf_type === "saved_view" && !savedView) return;
+    const featuredName = stats.top_parody?.[0]?.name || null;
+    const eventName = stats.top_event?.[0]?.name || null;
+    const descriptor = item.shelf_type === "saved_view"
+      ? { title: savedView.name, label: "智慧書架", query: savedView.query, viewAll: () => openSavedView(savedView) }
+      : item.shelf_type === "featured"
+        ? { title: featuredName || "編目精選", label: "最大原作書架", query: featuredName ? { parody: featuredName } : {}, featured: true, viewAll: () => showShelfFilter("parody", featuredName) }
+        : item.shelf_type === "event"
+          ? { title: eventName || "場次書架", label: "場次書架", query: eventName ? { event: eventName } : {}, viewAll: () => showShelfFilter("event", eventName) }
+          : { title: "最近加入", label: "最近加入", query: {}, viewAll: () => showShelfFilter(null, null) };
+    const headingId = item.shelf_type === "saved_view" ? `shelf-heading-saved-view-${item.saved_view_id}` : `shelf-heading-${item.shelf_type}`;
+    const section = el("section", descriptor.featured ? "featured-shelf configured-shelf" : "book-shelf configured-shelf");
+    section.setAttribute("aria-labelledby", headingId);
+    const heading = el("header", descriptor.featured ? "featured-heading" : "shelf-heading");
+    const count = el(descriptor.featured ? "small" : "span", "", "正在讀取…");
+    if (descriptor.featured) {
+      const all = el("button", "shelf-link", "檢視全部 →");
+      all.type = "button";
+      all.setAttribute("aria-label", `檢視「${descriptor.title}」全部收藏`);
+      all.addEventListener("click", descriptor.viewAll);
+      const title = el("h2", "", descriptor.title);
+      title.id = headingId;
+      heading.append(el("span", "", descriptor.label), title, count, all);
+    }
+    else {
+      const title = el("h2", "", descriptor.title);
+      title.id = headingId;
+      const group = el("div", "");
+      group.append(title, count);
+      const all = el("button", "shelf-link", "檢視全部 →");
+      all.type = "button";
+      all.setAttribute("aria-label", `檢視「${descriptor.title}」全部收藏`);
+      all.addEventListener("click", descriptor.viewAll);
+      heading.append(group, all);
+    }
+    const shell = el("div", "shelf-scroll-shell");
+    const previous = el("button", "shelf-scroll-button previous", "‹");
+    previous.type = "button";
+    previous.dataset.shelfScroll = "previous";
+    previous.setAttribute("aria-label", `向左捲動${descriptor.title}`);
+    previous.hidden = true;
+    const books = el("ol", "shelf-books");
+    books.tabIndex = 0;
+    books.setAttribute("aria-label", `${descriptor.title}收藏`);
+    const next = el("button", "shelf-scroll-button next", "›");
+    next.type = "button";
+    next.dataset.shelfScroll = "next";
+    next.setAttribute("aria-label", `向右捲動${descriptor.title}`);
+    next.hidden = true;
+    shell.append(previous, books, next);
+    section.append(heading, shell);
+    ui.shelfComposition.append(section);
+    initializeShelfScrollShell(shell);
+    try {
+      const page = descriptor.query === savedView?.query
+        ? await shelfCollectionPage(savedViewShelfParams(savedView.query, item.preview_limit))
+        : await shelfCollectionPage(descriptor.query, item.preview_limit);
+      count.textContent = `${formatNumber(page.pagination?.total)} 冊`;
+      renderShelfBooks(books, page, { featured: descriptor.featured, previewLimit: item.preview_limit, onViewAll: descriptor.viewAll, onCollection: (collection) => openShelfBookForQuery(collection, item, savedView) }, thumbnailRequestEpoch);
+    } catch (error) {
+      books.append(el("li", "shelf-empty", `無法讀取這座書架：${error.message}`));
+    }
+  }
+
+  function openShelfBookForQuery(collection, item, savedView) {
+    if (item.shelf_type === "saved_view") {
+      openSavedView(savedView);
+      return navigateToCollection(collection);
+    }
+    const filters = item.shelf_type === "featured" ? { parody: state.statsData?.top_parody?.[0]?.name } : item.shelf_type === "event" ? { event: state.statsData?.top_event?.[0]?.name } : {};
+    state.activeSavedViewId = null;
+    setAppliedFilters(filters);
+    return navigateToCollection(collection);
+  }
+
+  function openShelfCompositionDialog() {
+    state.shelfCompositionDraft = normalizeShelfConfiguration(state.shelfConfiguration).items;
+    renderShelfCompositionEditor();
+    ui.shelfCompositionDialog.showModal();
+  }
+
+  function bindShelfCompositionEditor() {
+    ui.shelfCompositionList.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-shelf-action]");
+      if (!button) return;
+      const position = Number(button.closest("li")?.dataset.position);
+      const action = button.dataset.shelfAction;
+      if (button.dataset.shelfAction === "remove") {
+        state.shelfCompositionDraft.splice(position, 1);
+      } else {
+        const direction = button.dataset.shelfAction === "up" ? -1 : 1;
+        state.shelfCompositionDraft = reorderShelfItem(state.shelfCompositionDraft, position, direction);
+      }
+      renderShelfCompositionEditor();
+      restoreShelfEditorFocus(position, action);
     });
+    ui.shelfCompositionList.addEventListener("change", (event) => {
+      const row = event.target.closest("li[data-position]");
+      const item = state.shelfCompositionDraft[Number(row?.dataset.position)];
+      if (!item) return;
+      if (event.target.matches("[data-shelf-enabled]")) item.enabled = event.target.checked;
+      if (event.target.matches("[data-shelf-preview]")) item.preview_limit = normalizeShelfPreviewLimit(event.target.value);
+    });
+    let draggedPosition = null;
+    ui.shelfCompositionList.addEventListener("dragstart", (event) => {
+      draggedPosition = Number(event.target.closest("li")?.dataset.position);
+      event.dataTransfer.effectAllowed = "move";
+    });
+    ui.shelfCompositionList.addEventListener("dragover", (event) => event.preventDefault());
+    ui.shelfCompositionList.addEventListener("drop", (event) => {
+      event.preventDefault();
+      const destination = Number(event.target.closest("li")?.dataset.position);
+      if (!Number.isInteger(draggedPosition) || !Number.isInteger(destination)) return;
+      state.shelfCompositionDraft = reorderShelfItem(state.shelfCompositionDraft, draggedPosition, destination - draggedPosition);
+      renderShelfCompositionEditor();
+    });
+  }
+
+  function reorderShelfItem(items, position, direction) {
+    const next = [...items];
+    const destination = Math.max(0, Math.min(next.length - 1, position + direction));
+    if (destination === position || !next[position]) return next;
+    const [item] = next.splice(position, 1);
+    next.splice(destination, 0, item);
+    return next.map((entry, index) => ({ ...entry, position: index }));
+  }
+
+  function restoreShelfEditorFocus(previousPosition, action) {
+    const lastPosition = state.shelfCompositionDraft.length - 1;
+    const position = action === "up"
+      ? Math.max(0, previousPosition - 1)
+      : Math.min(lastPosition, previousPosition + (action === "down" ? 1 : 0));
+    const row = ui.shelfCompositionList.querySelector(`li[data-position="${position}"]`);
+    if (!row) return;
+    const sameAction = row.querySelector(`button[data-shelf-action="${action}"]:not(:disabled)`);
+    const fallback = row.querySelector("button[data-shelf-action]:not(:disabled), input, select");
+    (sameAction || fallback)?.focus();
+  }
+
+  function renderShelfCompositionEditor() {
+    ui.shelfCompositionList.replaceChildren();
+    state.shelfCompositionDraft.forEach((item, position) => {
+      const row = el("li", "shelf-composition-row");
+      row.draggable = true;
+      row.dataset.position = String(position);
+      const title = item.shelf_type === "saved_view"
+        ? state.savedViews.find((view) => view.id === item.saved_view_id)?.name || "已刪除的智慧書架"
+        : { recent: "最近加入", featured: "最大原作書架", event: "場次書架" }[item.shelf_type];
+      const handle = el("span", "shelf-composition-handle", "≡");
+      handle.setAttribute("aria-hidden", "true");
+      const enabled = document.createElement("input");
+      enabled.type = "checkbox";
+      enabled.checked = item.enabled;
+      enabled.dataset.shelfEnabled = "";
+      enabled.setAttribute("aria-label", `顯示${title}`);
+      const name = el("strong", "", title);
+      const status = el("label", "shelf-composition-enabled");
+      status.append(enabled, document.createTextNode(" 顯示"));
+      const preview = document.createElement("select");
+      preview.dataset.shelfPreview = "";
+      preview.setAttribute("aria-label", `${title}預覽冊數`);
+      SHELF_PREVIEW_LIMITS.forEach((limit) => {
+        const option = new Option(`${limit} 本`, String(limit), false, item.preview_limit === limit);
+        preview.add(option);
+      });
+      const controls = el("div", "shelf-composition-row-controls");
+      const up = el("button", "icon-button", "↑");
+      up.type = "button";
+      up.dataset.shelfAction = "up";
+      up.disabled = position === 0;
+      up.setAttribute("aria-label", `將${title}上移`);
+      const down = el("button", "icon-button", "↓");
+      down.type = "button";
+      down.dataset.shelfAction = "down";
+      down.disabled = position === state.shelfCompositionDraft.length - 1;
+      down.setAttribute("aria-label", `將${title}下移`);
+      controls.append(status, preview, up, down);
+      if (item.shelf_type === "saved_view") {
+        const remove = el("button", "text-button danger-text", "移除");
+        remove.type = "button";
+        remove.dataset.shelfAction = "remove";
+        remove.setAttribute("aria-label", `從首頁移除${title}`);
+        controls.append(remove);
+      }
+      row.append(handle, name, controls);
+      ui.shelfCompositionList.append(row);
+    });
+    const selected = new Set(state.shelfCompositionDraft.filter((item) => item.shelf_type === "saved_view").map((item) => item.saved_view_id));
+    ui.shelfCompositionSavedView.replaceChildren(new Option("選擇既有 Saved View", ""));
+    state.savedViews.filter((view) => !selected.has(view.id)).forEach((view) => ui.shelfCompositionSavedView.add(new Option(`${view.name}（${formatNumber(view.result_count)} 本）`, String(view.id))));
+    ui.addSavedViewShelf.disabled = ui.shelfCompositionSavedView.options.length === 1;
+  }
+
+  function addSavedViewShelfToDraft() {
+    const savedViewId = Number(ui.shelfCompositionSavedView.value);
+    if (!Number.isSafeInteger(savedViewId) || savedViewId <= 0) return;
+    state.shelfCompositionDraft.push({ shelf_type: "saved_view", saved_view_id: savedViewId, position: state.shelfCompositionDraft.length, enabled: true, preview_limit: SHELF_LIMIT });
+    renderShelfCompositionEditor();
+  }
+
+  async function saveShelfComposition(event) {
+    event.preventDefault();
+    const button = byId("save-shelf-composition");
+    button.disabled = true;
+    try {
+      const configuration = normalizeShelfConfiguration(await api("/api/shelf-configuration", { method: "PUT", body: { items: state.shelfCompositionDraft } }));
+      state.shelfConfiguration = configuration;
+      await renderShelfComposition(configuration, state.statsData, state.savedViews);
+      ui.shelfCompositionDialog.close();
+      toast("首頁書牆已儲存");
+    } catch (error) {
+      toast(`無法儲存首頁書牆：${error.message}`, true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function resetShelfComposition() {
+    ui.resetShelfComposition.disabled = true;
+    try {
+      const configuration = normalizeShelfConfiguration(await api("/api/shelf-configuration/reset", { method: "POST" }));
+      state.shelfConfiguration = configuration;
+      state.shelfCompositionDraft = configuration.items;
+      renderShelfCompositionEditor();
+      await renderShelfComposition(configuration, state.statsData, state.savedViews);
+      toast("首頁書牆已恢復預設配置");
+    } catch (error) {
+      toast(`無法恢復預設首頁：${error.message}`, true);
+    } finally {
+      ui.resetShelfComposition.disabled = false;
+    }
   }
 
   function openSavedView(view) {
@@ -1697,7 +1922,7 @@
       if (query[name]) filters[name] = query[name];
     });
     if (Array.isArray(query.tag) && query.tag.length) filters.tag = [...query.tag];
-    if (Array.isArray(query.missing) && query.missing.length) filters.missing = query.missing[0];
+    if (Array.isArray(query.missing) && query.missing.length) filters.missing = [...query.missing];
     if (query.untagged) filters.untagged = "1";
     return filters;
   }
@@ -1889,11 +2114,13 @@
     try {
       await api(`/api/saved-views/${view.id}`, { method: "DELETE" });
       state.savedViews = state.savedViews.filter((entry) => entry.id !== view.id);
+      const previousLength = state.shelfConfiguration.items.length;
+      state.shelfConfiguration.items = state.shelfConfiguration.items.filter((item) => item.saved_view_id !== view.id);
       state.activeSavedViewId = null;
       navigateLibrary({ replace: true });
       renderSavedViewContext();
-      if (state.shelfLoaded) renderSavedViewShelf();
-      toast("Saved View 已刪除；收藏資料未變更");
+      if (state.shelfLoaded) renderShelfComposition(state.shelfConfiguration, state.statsData, state.savedViews);
+      toast(previousLength !== state.shelfConfiguration.items.length ? "Saved View 已刪除，首頁上的對應智慧書架也已移除；收藏資料未變更" : "Saved View 已刪除；收藏資料未變更");
     } catch (error) {
       toast(error.message, true);
     }
@@ -1903,21 +2130,34 @@
     state.savedViews = [saved, ...state.savedViews.filter((view) => view.id !== saved.id)]
       .sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updated_at.localeCompare(left.updated_at) || right.id - left.id);
     state.savedViewsLoaded = true;
-    if (state.shelfLoaded) renderSavedViewShelf();
+    if (state.shelfLoaded) renderShelfComposition(state.shelfConfiguration, state.statsData, state.savedViews);
+  }
+
+  function savedViewShelfParams(query, perPage) {
+    const params = new URLSearchParams({ page: "1", per_page: String(normalizeShelfPreviewLimit(perPage)), sort: query.sort || "created", direction: query.direction || "desc" });
+    if (query.q) params.set("q", query.q);
+    ["source", "classification", "event", "circle", "author", "parody", "subcategory"].forEach((name) => {
+      if (query[name]) params.set(name, query[name]);
+    });
+    (query.tag || []).forEach((value) => params.append("tag", value));
+    (query.missing || []).forEach((value) => params.append("missing", value));
+    if (query.untagged) params.set("untagged", "1");
+    return params;
   }
 
   function shelfCollectionPage(filters = {}, perPage = SHELF_LIMIT) {
-    const params = new URLSearchParams({ page: "1", per_page: String(perPage) });
-    Object.entries(filters).forEach(([name, value]) => {
-      if (value) params.set(name, value);
+    const params = filters instanceof URLSearchParams ? filters : new URLSearchParams({ page: "1", per_page: String(normalizeShelfPreviewLimit(perPage)) });
+    if (!(filters instanceof URLSearchParams)) Object.entries(filters).forEach(([name, value]) => {
+      if (Array.isArray(value)) value.forEach((entry) => params.append(name, entry));
+      else if (value) params.set(name, value);
     });
     return api(`/api/collections?${params}`);
   }
 
-  function renderShelfBooks(container, page, filterName, filterValue, featured, thumbnailRequestEpoch) {
+  function renderShelfBooks(container, page, { featured = false, previewLimit = SHELF_LIMIT, onViewAll, onCollection }, thumbnailRequestEpoch) {
     unbindThumbnailsWithin(container);
     container.replaceChildren();
-    const books = (page.items || []).slice(0, 7);
+    const books = (page.items || []).slice(0, normalizeShelfPreviewLimit(previewLimit));
     if (!books.length) {
       container.append(el("li", "shelf-empty", "這座書架目前沒有收藏。"));
       updateShelfScrollControls(container.closest(".shelf-scroll-shell"));
@@ -1928,7 +2168,7 @@
       const button = el("button", "shelf-book-button");
       button.type = "button";
       button.setAttribute("aria-label", `在全部藏書檢視 ${displayTitle(collection)}`);
-      button.addEventListener("click", () => openShelfBook(collection, filterName, filterValue));
+      button.addEventListener("click", () => onCollection(collection));
       const cover = document.createElement("img");
       cover.className = "shelf-cover";
       cover.alt = "";
@@ -1948,27 +2188,24 @@
       const more = el("li", "shelf-more");
       const button = el("button", featured ? "shelf-more-button featured" : "shelf-more-button", `+ ${formatNumber(remaining)} 冊 →`);
       button.type = "button";
-      button.addEventListener("click", () => showShelfFilter(filterName, filterValue));
+      button.addEventListener("click", onViewAll);
       more.append(button);
       container.append(more);
     }
     requestAnimationFrame(() => updateShelfScrollControls(container.closest(".shelf-scroll-shell")));
   }
 
-  function initializeShelfScrollControls() {
-    document.querySelectorAll(".shelf-scroll-shell").forEach((shell) => {
-      const scroller = shell.querySelector(".shelf-books");
-      shell.querySelectorAll("[data-shelf-scroll]").forEach((button) => {
-        button.addEventListener("click", () => {
-          const direction = button.dataset.shelfScroll === "previous" ? -1 : 1;
-          const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-          scroller.scrollBy({ left: direction * Math.max(193, scroller.clientWidth * 0.82), behavior: reducedMotion ? "auto" : "smooth" });
-        });
+  function initializeShelfScrollShell(shell) {
+    const scroller = shell.querySelector(".shelf-books");
+    shell.querySelectorAll("[data-shelf-scroll]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const direction = button.dataset.shelfScroll === "previous" ? -1 : 1;
+        const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        scroller.scrollBy({ left: direction * Math.max(193, scroller.clientWidth * 0.82), behavior: reducedMotion ? "auto" : "smooth" });
       });
-      scroller.addEventListener("scroll", () => updateShelfScrollControls(shell), { passive: true });
-      updateShelfScrollControls(shell);
     });
-    window.addEventListener("resize", () => document.querySelectorAll(".shelf-scroll-shell").forEach(updateShelfScrollControls), { passive: true });
+    scroller.addEventListener("scroll", () => updateShelfScrollControls(shell), { passive: true });
+    updateShelfScrollControls(shell);
   }
 
   function updateShelfScrollControls(shell) {
@@ -8764,9 +9001,13 @@
       metadataVocabularyField,
       mergeExternalActivityProjection,
       normalizeLibraryBatchSize,
+      normalizeShelfConfiguration,
       replaceOperationSelection,
+      reorderShelfItem,
       reconcileReviewExternalActivity,
       retryApplicationBusy,
+      savedViewFilters,
+      savedViewShelfParams,
       reviewExternalDisplaySignature,
       reviewExternalSearchMode,
       selectReviewExternalJob,

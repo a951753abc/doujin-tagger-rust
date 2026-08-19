@@ -762,8 +762,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("href=\"/assets/app.css?v=56\""));
-    assert!(document.contains("src=\"/assets/app.js?v=56\" defer"));
+    assert!(document.contains("href=\"/assets/app.css?v=57\""));
+    assert!(document.contains("src=\"/assets/app.js?v=57\" defer"));
     assert!(document.contains("id=\"duplicates-view\""));
     assert!(document.contains("id=\"start-duplicate-scan\""));
     assert!(document.contains("id=\"rename-preflight-form\""));
@@ -803,8 +803,10 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("id=\"save-as-view\""));
     assert!(document.contains("id=\"rename-saved-view\""));
     assert!(document.contains("id=\"delete-saved-view\""));
-    assert!(document.contains("id=\"saved-view-list\""));
-    assert!(document.contains("aria-label=\"已釘選的 Saved Views\""));
+    assert!(document.contains("id=\"edit-shelf-composition\""));
+    assert!(document.contains("id=\"shelf-composition-dialog\""));
+    assert!(document.contains("id=\"shelf-composition-list\""));
+    assert!(document.contains("aria-label=\"首頁書牆順序\""));
     assert!(document.contains("最近修改"));
     assert!(document.contains("全選已載入"));
     assert!(document.contains("新載入結果不會自動加入"));
@@ -839,8 +841,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("id=\"activity-trigger\""));
     assert!(document.contains("id=\"activity-panel\""));
     assert!(document.contains("id=\"activity-announcer\""));
-    assert!(document.contains("最大原作書架"));
-    assert!(document.contains("data-shelf-scroll=\"next\""));
+    assert!(document.contains("id=\"shelf-composition\" aria-live=\"polite\""));
+    assert!(document.contains("恢復預設首頁"));
     assert!(document.contains("role=\"combobox\""));
     assert!(document.contains("id=\"filter-tag-chips\""));
     assert!(document.contains("尚無標籤"));
@@ -925,11 +927,11 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(stylesheet.contains(".sort-control"));
     assert!(stylesheet.contains(".saved-view-context"));
     assert!(stylesheet.contains(".saved-view-rule-summary"));
-    assert!(stylesheet.contains(".saved-view-card-kicker"));
-    assert!(stylesheet.contains(".saved-view-chip"));
-    assert!(stylesheet.contains("repeat(auto-fill, minmax(236px, 1fr))"));
-    assert!(stylesheet.contains("@media (max-width: 1319px)"));
-    assert!(!stylesheet.contains("repeat(auto-fit, minmax(220px, 1fr))"));
+    assert!(stylesheet.contains(".shelf-composition-dialog"));
+    assert!(stylesheet.contains(".shelf-composition-row"));
+    assert!(stylesheet.contains(".shelf-composition-row-controls"));
+    assert!(stylesheet.contains("#shelf-composition-dialog"));
+    assert!(stylesheet.contains("@media (max-width: 899px)"));
     assert!(stylesheet.contains(".missing-metadata-actions"));
     assert!(stylesheet.contains(".tag-suggestion-combobox"));
     assert!(stylesheet.contains(".review-desk"));
@@ -991,12 +993,18 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement || target?.isContentEditable"));
     assert!(script.contains("!event.altKey && !event.ctrlKey && !event.metaKey"));
     assert!(script.contains("/api/saved-views"));
-    assert!(script.contains("const SAVED_VIEW_SHELF_LIMIT = 10"));
-    assert!(script.contains("button.setAttribute(\"aria-label\""));
-    assert!(script.contains("開啟智慧書架「${view.name}」，${countLabel}"));
+    assert!(script.contains("const SHELF_PREVIEW_LIMITS = Object.freeze([6, 8, 12, 16])"));
+    assert!(script.contains("/api/shelf-configuration"));
+    assert!(script.contains("function renderShelfComposition"));
+    assert!(script.contains("function renderConfiguredShelf"));
+    assert!(script.contains("section.setAttribute(\"aria-labelledby\", headingId)"));
+    assert!(script.contains("檢視「${descriptor.title}」全部收藏"));
+    assert!(script.contains("function reorderShelfItem"));
+    assert!(script.contains("row.draggable = true"));
+    assert!(script.contains("data-shelf-action"));
+    assert!(script.contains("function savedViewShelfParams"));
     assert!(script.contains("downloads: \"新收藏\""));
     assert!(script.contains("archive: \"典藏庫\""));
-    assert!(script.contains("summary.setAttribute(\"aria-hidden\", \"true\")"));
     assert!(script.contains("function savedViewIsModified"));
     assert!(script.contains("function openSavedView"));
     assert!(script.contains("function updateActiveSavedView"));
@@ -1958,6 +1966,120 @@ async fn saved_views_crud_validates_allowlisted_rules_and_recounts_current_catal
         .await;
     assert_eq!(404, missing.status);
     assert_eq!("saved_view_not_found", missing.json["error"]["code"]);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn shelf_configuration_is_validated_persisted_reset_and_cleaned_up_with_saved_views() {
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let application = ApplicationService::new(repository, NoopRecycleBin);
+    let server = RunningServer::start(application).await;
+
+    let defaults = server.request("GET", "/api/shelf-configuration", &[]).await;
+    assert_eq!(200, defaults.status);
+    assert_eq!(
+        3,
+        defaults.json["items"]
+            .as_array()
+            .expect("default items")
+            .len()
+    );
+    assert_eq!("recent", defaults.json["items"][0]["shelf_type"]);
+    assert_eq!(8, defaults.json["items"][0]["preview_limit"]);
+
+    let saved = server
+        .request_json(
+            "POST",
+            "/api/saved-views",
+            &serde_json::json!({
+                "name": "首頁待整理",
+                "pinned": true,
+                "query": {
+                    "missing": ["any"], "untagged": false,
+                    "sort": "created", "direction": "desc", "layout": "grid"
+                }
+            }),
+        )
+        .await;
+    assert_eq!(201, saved.status);
+    let saved_view_id = saved.json["id"].as_i64().expect("saved view ID");
+    let custom = serde_json::json!({
+        "items": [
+            {"shelf_type":"saved_view","saved_view_id":saved_view_id,"position":0,"enabled":true,"preview_limit":12},
+            {"shelf_type":"recent","saved_view_id":null,"position":1,"enabled":false,"preview_limit":6},
+            {"shelf_type":"featured","saved_view_id":null,"position":2,"enabled":true,"preview_limit":16},
+            {"shelf_type":"event","saved_view_id":null,"position":3,"enabled":true,"preview_limit":8}
+        ]
+    });
+    let replaced = server
+        .request_json("PUT", "/api/shelf-configuration", &custom)
+        .await;
+    assert_eq!(200, replaced.status);
+    assert_eq!(false, replaced.json["items"][1]["enabled"]);
+    assert_eq!(12, replaced.json["items"][0]["preview_limit"]);
+
+    let invalid = server
+        .request_json(
+            "PUT",
+            "/api/shelf-configuration",
+            &serde_json::json!({
+                "items": [
+                    {"shelf_type":"recent","saved_view_id":null,"position":0,"enabled":true,"preview_limit":8},
+                    {"shelf_type":"featured","saved_view_id":null,"position":1,"enabled":true,"preview_limit":8},
+                    {"shelf_type":"event","saved_view_id":null,"position":3,"enabled":true,"preview_limit":8}
+                ]
+            }),
+        )
+        .await;
+    assert_eq!(400, invalid.status);
+    let unchanged = server.request("GET", "/api/shelf-configuration", &[]).await;
+    assert_eq!(custom["items"], unchanged.json["items"]);
+
+    let mut invalid_preview = custom.clone();
+    invalid_preview["items"][0]["preview_limit"] = serde_json::json!(10);
+    let invalid_preview = server
+        .request_json("PUT", "/api/shelf-configuration", &invalid_preview)
+        .await;
+    assert_eq!(400, invalid_preview.status);
+    assert_eq!(
+        "invalid_shelf_configuration",
+        invalid_preview.json["error"]["code"]
+    );
+    let unchanged = server.request("GET", "/api/shelf-configuration", &[]).await;
+    assert_eq!(custom["items"], unchanged.json["items"]);
+
+    let reset = server
+        .request("POST", "/api/shelf-configuration/reset", &[])
+        .await;
+    assert_eq!(200, reset.status);
+    assert_eq!(
+        3,
+        reset.json["items"].as_array().expect("reset items").len()
+    );
+    let retained = server
+        .request("GET", &format!("/api/saved-views/{saved_view_id}"), &[])
+        .await;
+    assert_eq!(200, retained.status);
+
+    let restored = server
+        .request_json("PUT", "/api/shelf-configuration", &custom)
+        .await;
+    assert_eq!(200, restored.status);
+    let deleted = server
+        .request("DELETE", &format!("/api/saved-views/{saved_view_id}"), &[])
+        .await;
+    assert_eq!(204, deleted.status);
+    let cleaned = server.request("GET", "/api/shelf-configuration", &[]).await;
+    assert!(
+        cleaned.json["items"]
+            .as_array()
+            .expect("cleaned shelves")
+            .iter()
+            .all(|item| item["saved_view_id"].is_null())
+    );
+    assert_eq!(0, cleaned.json["items"][0]["position"]);
+    assert_eq!(1, cleaned.json["items"][1]["position"]);
+    assert_eq!(2, cleaned.json["items"][2]["position"]);
     server.stop().await;
 }
 
