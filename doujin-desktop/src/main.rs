@@ -1,5 +1,5 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
-//! 原生視窗版私藏編目室：同 process 跑 doujin-http 服務，關閉視窗即結束整個程式。
+//! 原生視窗版 JP6 Doujin Archive：同 process 跑 doujin-http 服務，關閉視窗即結束整個程式。
 
 use std::fs;
 use std::net::SocketAddr;
@@ -72,7 +72,7 @@ fn main() {
     let application = match application {
         Ok(application) => application,
         Err(error) => {
-            eprintln!("無法開啟私藏編目室：{error}");
+            eprintln!("無法開啟 JP6 Doujin Archive：{error}");
             std::process::exit(1);
         }
     };
@@ -134,7 +134,7 @@ fn choose_catalog(app: &AppHandle) -> Result<Option<PathBuf>, String> {
         .message(
             "選擇「建立新的 catalog」開始全新的編目資料庫，或選擇「開啟既有 catalog」沿用現有的 .db 檔。",
         )
-        .title("私藏編目室首次啟動")
+        .title("JP6 Doujin Archive 首次啟動")
         .buttons(MessageDialogButtons::YesNoCancelCustom(
             CREATE_CATALOG.to_owned(),
             OPEN_CATALOG.to_owned(),
@@ -151,7 +151,7 @@ fn choose_catalog(app: &AppHandle) -> Result<Option<PathBuf>, String> {
     let selected = if create {
         app.dialog()
             .file()
-            .set_title("建立私藏編目室 catalog")
+            .set_title("建立 JP6 Doujin Archive catalog")
             .add_filter("Doujin catalog", &["db"])
             .set_file_name("catalog.db")
             .blocking_save_file()
@@ -298,7 +298,7 @@ fn open_window(app: &AppHandle, url: &str, port: u16) -> Result<(), String> {
 
 fn build_window(app: &AppHandle, url: Url, port: u16) -> tauri::Result<()> {
     WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::External(url))
-        .title("私藏編目室")
+        .title("JP6 Doujin Archive")
         .inner_size(1280.0, 800.0)
         .min_inner_size(960.0, 600.0)
         .resizable(true)
@@ -358,8 +358,8 @@ fn focus_main_window(app: &AppHandle) {
 /// 服務還沒起來就失敗：沒有東西需要收尾，顯示錯誤後直接結束。
 fn fail(app: &AppHandle, message: &str) -> ! {
     app.dialog()
-        .message(format!("無法開啟私藏編目室：{message}"))
-        .title("私藏編目室")
+        .message(format!("無法開啟 JP6 Doujin Archive：{message}"))
+        .title("JP6 Doujin Archive")
         .kind(MessageDialogKind::Error)
         .blocking_show();
     std::process::exit(1);
@@ -373,8 +373,8 @@ fn fail_after_start(app: &AppHandle, message: &str) {
     }
     EXIT_CODE.store(1, Ordering::Release);
     app.dialog()
-        .message(format!("私藏編目室無法繼續執行：{message}"))
-        .title("私藏編目室")
+        .message(format!("JP6 Doujin Archive 無法繼續執行：{message}"))
+        .title("JP6 Doujin Archive")
         .kind(MessageDialogKind::Error)
         .blocking_show();
     app.exit(1);

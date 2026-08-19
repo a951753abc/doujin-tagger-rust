@@ -26,19 +26,19 @@ if (-not (Test-Path -LiteralPath $httpSource -PathType Leaf) -or
 New-Item -ItemType Directory -Path $install -Force | Out-Null
 Copy-Item -LiteralPath $httpSource -Destination (Join-Path $install 'doujin-http.exe') -Force
 Copy-Item -LiteralPath $launcherSource -Destination (Join-Path $install 'doujin-launcher.exe') -Force
-Copy-Item -LiteralPath $desktopSource -Destination (Join-Path $install '私藏編目室.exe') -Force
+Copy-Item -LiteralPath $desktopSource -Destination (Join-Path $install 'JP6 Doujin Archive.exe') -Force
 
 $shell = New-Object -ComObject WScript.Shell
 $programs = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Doujin Tagger'
 New-Item -ItemType Directory -Path $programs -Force | Out-Null
 $launcher = Join-Path $install 'doujin-launcher.exe'
-$desktop = Join-Path $install '私藏編目室.exe'
+$desktop = Join-Path $install 'JP6 Doujin Archive.exe'
 
 $shortcuts = @(
-    @{ Name = '開啟私藏編目室'; Target = $desktop; Arguments = '' },
-    @{ Name = '重新啟動私藏編目室'; Target = $launcher; Arguments = 'restart' },
-    @{ Name = '停止私藏編目室'; Target = $launcher; Arguments = 'stop' },
-    @{ Name = '私藏編目室服務狀態'; Target = $launcher; Arguments = 'status' }
+    @{ Name = '開啟 JP6 Doujin Archive'; Target = $desktop; Arguments = '' },
+    @{ Name = '重新啟動 JP6 Doujin Archive'; Target = $launcher; Arguments = 'restart' },
+    @{ Name = '停止 JP6 Doujin Archive'; Target = $launcher; Arguments = 'stop' },
+    @{ Name = 'JP6 Doujin Archive 服務狀態'; Target = $launcher; Arguments = 'status' }
 )
 
 foreach ($entry in $shortcuts) {
@@ -50,10 +50,10 @@ foreach ($entry in $shortcuts) {
     $shortcut.Save()
 }
 
-$desktopShortcut = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) '私藏編目室.lnk'))
+$desktopShortcut = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'JP6 Doujin Archive.lnk'))
 $desktopShortcut.TargetPath = $desktop
 $desktopShortcut.WorkingDirectory = $install
-$desktopShortcut.Description = '開啟私藏編目室'
+$desktopShortcut.Description = '開啟 JP6 Doujin Archive'
 $desktopShortcut.Save()
 
 Write-Host "Launcher 已安裝：$install"

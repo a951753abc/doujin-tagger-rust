@@ -1,4 +1,4 @@
-# Doujin Tagger（私藏編目室）
+# Doujin Tagger（JP6 Doujin Archive）
 
 Doujin Tagger 是一套以 Rust 開發、在本機執行的同人作品收藏管理工具。它會掃描使用者指定的資料夾，從 ZIP 檔名解析作品資訊，建立可搜尋的 SQLite catalog，並提供書架、編目、批次整理與檔案管理介面：安裝版為原生視窗程式，portable 版則透過瀏覽器開啟。
 
@@ -40,7 +40,7 @@ Doujin Tagger 是一套以 Rust 開發、在本機執行的同人作品收藏管
 
 - 採「目前使用者」安裝（per-user），不需要系統管理員權限。
 - 若系統尚未安裝 WebView2，安裝程式會自動下載並安裝，不需要另外處理。
-- 安裝完成後，可從開始功能表或桌面捷徑開啟「私藏編目室」。
+- 安裝完成後，可從開始功能表或桌面捷徑開啟「JP6 Doujin Archive」。
 
 > 目前執行檔尚未進行程式碼簽章。Windows SmartScreen 若顯示警告，或部分防毒軟體（如卡巴斯基）將其誤判為風險，請先確認檔案來自本專案 GitHub Releases，並可用 Release 同頁的 `.sha256` 檔核對下載內容。
 
@@ -57,7 +57,7 @@ Doujin Tagger 是一套以 Rust 開發、在本機執行的同人作品收藏管
 將 ZIP **完整解壓縮**到一般資料夾，不要留在 ZIP 內直接執行，接著雙擊解壓縮資料夾內的：
 
 ```text
-私藏編目室.exe
+JP6 Doujin Archive.exe
 ```
 
 程式會自動啟動本機服務並開啟瀏覽器。日常使用也只需要再次雙擊同一個 EXE；若服務已在執行，會直接開啟原本的 UI，不會啟動第二份互相競爭的服務。
@@ -133,7 +133,7 @@ Doujin Tagger 是一套以 Rust 開發、在本機執行的同人作品收藏管
 
 ## 進階與開發者用法
 
-以下指令不是一般安裝或日常使用的必要步驟。一般使用者只需下載 Release 並依安裝精靈安裝（或改用免安裝版，解壓縮並雙擊 `私藏編目室.exe`）。
+以下指令不是一般安裝或日常使用的必要步驟。一般使用者只需下載 Release 並依安裝精靈安裝（或改用免安裝版，解壓縮並雙擊 `JP6 Doujin Archive.exe`）。
 
 ### 直接執行本機服務
 
@@ -262,7 +262,7 @@ cargo run --release -p doujin-migrate -- .\migration\legacy-copy.db .\migration\
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\install_windows_launcher.ps1
 ```
 
-安裝完成後，一般啟動捷徑會使用不顯示命令列視窗的 `私藏編目室.exe`；服務狀態、重新啟動與停止捷徑則由 `doujin-launcher.exe` 處理。
+安裝完成後，一般啟動捷徑會使用不顯示命令列視窗的 `JP6 Doujin Archive.exe`；服務狀態、重新啟動與停止捷徑則由 `doujin-launcher.exe` 處理。
 
 ### 開發驗證
 

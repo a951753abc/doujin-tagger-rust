@@ -559,11 +559,11 @@ fn choose_first_catalog(state_directory: &Path) -> Result<PathBuf, Box<dyn std::
 fn windows_catalog_dialog() -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
     let script = r#"
 Add-Type -AssemblyName System.Windows.Forms
-$choice = [System.Windows.Forms.MessageBox]::Show('選擇「是」建立新的 catalog；選擇「否」開啟既有 catalog。', '私藏編目室首次啟動', 'YesNoCancel', 'Information')
+$choice = [System.Windows.Forms.MessageBox]::Show('選擇「是」建立新的 catalog；選擇「否」開啟既有 catalog。', 'JP6 Doujin Archive 首次啟動', 'YesNoCancel', 'Information')
 if ($choice -eq 'Cancel') { exit 2 }
 if ($choice -eq 'Yes') {
   $dialog = New-Object System.Windows.Forms.SaveFileDialog
-  $dialog.Title = '建立私藏編目室 catalog'
+  $dialog.Title = '建立 JP6 Doujin Archive catalog'
   $dialog.Filter = 'Doujin catalog (*.db)|*.db'
   $dialog.FileName = 'catalog.db'
 } else {

@@ -39,7 +39,7 @@ pub fn window_url(address: SocketAddr, onboarding: bool) -> String {
 /// 把服務啟動失敗的原始訊息轉成使用者看得懂的說明；service lock 被占用是最常見的情況。
 pub fn describe_start_failure(message: &str) -> String {
     if message.contains("已由另一個 doujin-http instance 使用") {
-        "此 catalog 已有另一個服務在使用（可能是舊版 私藏編目室.exe 啟動的背景服務）；\
+        "此 catalog 已有另一個服務在使用（可能是舊版 JP6 Doujin Archive.exe 啟動的背景服務）；\
          請先結束該服務再重新開啟"
             .to_owned()
     } else {
@@ -110,7 +110,7 @@ mod tests {
     fn a_busy_service_lock_names_the_background_service() {
         let described =
             describe_start_failure("此 catalog 已由另一個 doujin-http instance 使用 (os error 33)");
-        assert!(described.contains("舊版 私藏編目室.exe"));
+        assert!(described.contains("舊版 JP6 Doujin Archive.exe"));
         assert_eq!(
             "catalog 不是一般檔案",
             describe_start_failure("catalog 不是一般檔案")

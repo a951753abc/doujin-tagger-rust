@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "私藏編目室",
-  "mainBinaryName": "私藏編目室",
-  "version": "0.1.4",
+  "productName": "JP6 Doujin Archive",
+  "mainBinaryName": "JP6 Doujin Archive",
+  "version": "0.1.5",
   "identifier": "io.github.a951753abc.doujin-tagger",
   "build": {
     "frontendDist": "dist"
@@ -17,7 +17,7 @@
     "active": true,
     "targets": ["nsis"],
     "publisher": "a951753abc",
-    "shortDescription": "私藏編目室",
+    "shortDescription": "JP6 Doujin Archive",
     "longDescription": "本機同人誌編目室：原生視窗版，內建 loopback 服務。",
     "icon": [
       "icons/32x32.png",

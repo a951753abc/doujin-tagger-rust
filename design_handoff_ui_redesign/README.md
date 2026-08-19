@@ -1,7 +1,7 @@
-# Handoff: 私藏編目室 UI/UX 重新設計（暖紙色編輯風）
+# Handoff: JP6 Doujin Archive UI/UX 重新設計（暖紙色編輯風）
 
 ## Overview
-本設計是「私藏編目室」（doujin-tagger-rust 專案中 `doujin-http/static/` 的同人誌收藏管理 Web UI）的完整重新設計。目標：**每頁呈現更多書籍、同時封面夠大**，並將原本的淺色紙質介面升級為「暖紙色編輯風」——米白紙面、襯線標題、橘色 kicker、藏青主色，靈感來自書店電商的編輯式排版。
+本設計是「JP6 Doujin Archive」（doujin-tagger-rust 專案中 `doujin-http/static/` 的同人誌收藏管理 Web UI）的完整重新設計。目標：**每頁呈現更多書籍、同時封面夠大**，並將原本的淺色紙質介面升級為「暖紙色編輯風」——米白紙面、襯線標題、橘色 kicker、藏青主色，靈感來自書店電商的編輯式排版。
 
 資訊架構由原本 4 個分頁（藏書／工作台／統計／設定）改為 5 個：
 
@@ -57,7 +57,7 @@
 ## Screens / Views
 
 ### 共用頁首
-- 白底（#fffdf8）、下緣 1px #e9e1d2。品牌「私藏編目室」Noto Serif TC 20px/700 藏青。
+- 白底（#fffdf8）、下緣 1px #e9e1d2。品牌「JP6 Doujin Archive」Noto Serif TC 20px/700 藏青。
 - 導覽列靠右：書架｜全部藏書｜工作台 (N)｜統計｜設定，13px；現用分頁橘字＋2px 橘底線；工作台待辦數直接寫在文字括號內（不用圓形徽章）。
 - 書架首頁另有：頂端 utility 細列（服務狀態、最近開啟、鍵盤提示，11px #8a8071）與置中搜尋框（白底、1px #d9cfba、右側放大鏡圖示藏青）。
 
