@@ -2790,71 +2790,139 @@ dialog select {
 }
 .saved-view-shelf {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
-  padding-block: clamp(18px, 3vw, 30px);
+  padding: clamp(18px, 3vw, 30px) var(--page-pad);
   border-block: 1px solid var(--line-strong);
+}
+.saved-view-shelf .shelf-heading {
+  margin-bottom: 0;
 }
 .saved-view-shelf .eyebrow {
   margin-bottom: 3px;
 }
 .saved-view-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 0;
-  margin: 0;
+  width: 100%;
+  max-width: 1536px;
+  min-width: 0;
+  grid-template-columns: repeat(auto-fill, minmax(236px, 1fr));
+  gap: 12px;
+  margin: 0 auto;
   padding: 0;
   list-style: none;
-  border-top: 1px solid var(--line);
 }
 .saved-view-item {
-  border-bottom: 1px solid var(--line);
-}
-.saved-view-item:nth-child(odd) {
-  border-inline-end: 1px solid var(--line);
+  min-width: 0;
 }
 .saved-view-button {
   display: grid;
   width: 100%;
-  min-height: 76px;
-  gap: 7px;
-  padding: 13px 16px;
-  border: 0;
-  background: transparent;
+  min-height: 132px;
+  grid-template-rows: auto auto 1fr auto;
+  align-content: start;
+  gap: 8px;
+  padding: 13px 14px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper-raised);
   text-align: start;
 }
-.saved-view-button:hover {
-  background: var(--accent-pale);
+.saved-view-card-kicker {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.25;
 }
 .saved-view-button-heading {
   display: flex;
+  min-width: 0;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 14px;
+  flex-wrap: wrap;
+  gap: 3px 8px;
 }
 .saved-view-button-heading strong {
+  min-width: 0;
+  overflow: hidden;
   color: var(--accent-dark);
   font-family: var(--serif);
   font-size: 1rem;
-}
-.saved-view-button-heading b {
-  color: var(--accent);
-  font-family: var(--serif);
-  font-size: 1.25rem;
-  font-variant-numeric: tabular-nums;
-}
-.saved-view-button small,
-.saved-view-empty span {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 0.75rem;
+  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.saved-view-button-heading b {
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.saved-view-card-summary {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.saved-view-chip {
+  max-width: 100%;
+  padding: 3px 7px;
+  overflow: hidden;
+  border-radius: var(--radius);
+  background: var(--tag-bg);
+  color: var(--tag-fg);
+  font-size: 0.75rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.saved-view-card-action {
+  align-self: end;
+  color: var(--accent-dark);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.saved-view-card-action span {
+  color: var(--accent);
+}
+.saved-view-empty span {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
 .saved-view-empty {
   display: grid;
+  max-width: 480px;
   gap: 4px;
   padding: 17px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper-raised);
   color: var(--accent-dark);
+}
+@media (hover: hover) {
+  .saved-view-button:hover {
+    border-color: var(--line-strong);
+    background: var(--paper-deep);
+  }
+}
+@media (max-width: 1319px) {
+  .saved-view-list {
+    grid-template-columns: none;
+    grid-auto-flow: column;
+    grid-auto-columns: 260px;
+    justify-content: start;
+    padding: 3px 3px 8px;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scroll-padding-inline: 3px;
+    scroll-snap-type: inline proximity;
+    scrollbar-width: thin;
+  }
+  .saved-view-item {
+    scroll-snap-align: start;
+  }
 }
 .saved-view-dialog {
   display: grid;
@@ -6500,9 +6568,6 @@ dialog::backdrop {
   }
   .vocabulary-preflight-facts li:last-child {
     border-bottom: 0;
-  }
-  .saved-view-item:nth-child(odd) {
-    border-inline-end: 0;
   }
   .saved-view-actions {
     width: 100%;

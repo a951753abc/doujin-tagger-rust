@@ -762,8 +762,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("href=\"/assets/app.css?v=55\""));
-    assert!(document.contains("src=\"/assets/app.js?v=55\" defer"));
+    assert!(document.contains("href=\"/assets/app.css?v=56\""));
+    assert!(document.contains("src=\"/assets/app.js?v=56\" defer"));
     assert!(document.contains("id=\"duplicates-view\""));
     assert!(document.contains("id=\"start-duplicate-scan\""));
     assert!(document.contains("id=\"rename-preflight-form\""));
@@ -804,6 +804,7 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("id=\"rename-saved-view\""));
     assert!(document.contains("id=\"delete-saved-view\""));
     assert!(document.contains("id=\"saved-view-list\""));
+    assert!(document.contains("aria-label=\"已釘選的 Saved Views\""));
     assert!(document.contains("最近修改"));
     assert!(document.contains("全選已載入"));
     assert!(document.contains("新載入結果不會自動加入"));
@@ -924,6 +925,11 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(stylesheet.contains(".sort-control"));
     assert!(stylesheet.contains(".saved-view-context"));
     assert!(stylesheet.contains(".saved-view-rule-summary"));
+    assert!(stylesheet.contains(".saved-view-card-kicker"));
+    assert!(stylesheet.contains(".saved-view-chip"));
+    assert!(stylesheet.contains("repeat(auto-fill, minmax(236px, 1fr))"));
+    assert!(stylesheet.contains("@media (max-width: 1319px)"));
+    assert!(!stylesheet.contains("repeat(auto-fit, minmax(220px, 1fr))"));
     assert!(stylesheet.contains(".missing-metadata-actions"));
     assert!(stylesheet.contains(".tag-suggestion-combobox"));
     assert!(stylesheet.contains(".review-desk"));
@@ -985,6 +991,12 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement || target?.isContentEditable"));
     assert!(script.contains("!event.altKey && !event.ctrlKey && !event.metaKey"));
     assert!(script.contains("/api/saved-views"));
+    assert!(script.contains("const SAVED_VIEW_SHELF_LIMIT = 10"));
+    assert!(script.contains("button.setAttribute(\"aria-label\""));
+    assert!(script.contains("開啟智慧書架「${view.name}」，${countLabel}"));
+    assert!(script.contains("downloads: \"新收藏\""));
+    assert!(script.contains("archive: \"典藏庫\""));
+    assert!(script.contains("summary.setAttribute(\"aria-hidden\", \"true\")"));
     assert!(script.contains("function savedViewIsModified"));
     assert!(script.contains("function openSavedView"));
     assert!(script.contains("function updateActiveSavedView"));
