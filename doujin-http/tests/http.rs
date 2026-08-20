@@ -1217,9 +1217,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("openMetadataDialog(field)"));
     assert!(script.contains("前往工作台處理 ${formatNumber(count)} 筆"));
     assert!(script.contains("function selectionImpactSummary"));
-    assert!(script.contains(
-        "numSpan(formatNumber(unaffectedCount)),
-      document.createTextNode(\" 筆不受影響。\"),"
+    assert!(script.replace("\r\n", "\n").contains(
+        "numSpan(formatNumber(unaffectedCount)),\n      document.createTextNode(\" 筆不受影響。\"),"
     ));
     assert!(script.contains("const isCollectionButton"));
     assert!(script.contains("openMobileDetail(button, scrollPosition)"));
