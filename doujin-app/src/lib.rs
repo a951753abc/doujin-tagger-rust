@@ -30,6 +30,7 @@ use doujin_storage::consolidation::{
     ConsolidationPreflight, ConsolidationResolution, ConsolidationSnapshot,
 };
 use doujin_storage::covers::{CoverSelectionSnapshot, CoverSelectionStatus};
+use doujin_storage::exhentai_session::ExHentaiSessionStatus;
 use doujin_storage::lifecycle::{CandidateDecision, TombstoneCandidateSnapshot};
 use doujin_storage::metadata::{
     MetadataAssertionDecision, MetadataField, MetadataHistory, MetadataValue,
@@ -1256,6 +1257,25 @@ impl<R: RecycleBin> ApplicationService<R> {
             default_archive_root_id,
             library_batch_size,
         })
+    }
+
+    pub fn exhentai_cookie(&self) -> ApplicationResult<Option<String>> {
+        Ok(self.repository.exhentai_cookie()?)
+    }
+
+    pub fn exhentai_session_status(&self) -> ApplicationResult<ExHentaiSessionStatus> {
+        Ok(self.repository.exhentai_session_status()?)
+    }
+
+    pub fn save_exhentai_cookie(
+        &mut self,
+        cookie: &str,
+    ) -> ApplicationResult<ExHentaiSessionStatus> {
+        Ok(self.repository.save_exhentai_cookie(cookie)?)
+    }
+
+    pub fn clear_exhentai_cookie(&mut self) -> ApplicationResult<bool> {
+        Ok(self.repository.clear_exhentai_cookie()?)
     }
 
     pub fn save_application_settings(

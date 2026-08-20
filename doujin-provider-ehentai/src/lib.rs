@@ -1,5 +1,17 @@
 //! E-Hentai/ExHentai gallery metadata provider with exact identity and title lookup.
 
+mod cookie;
+mod source;
+
+pub use cookie::{CookieHeader, CookieParseError, CookieStore};
+pub use source::{
+    EhentaiSource, GalleryDetail, GallerySearchPage, GallerySearchQuery, GalleryTorrent,
+    GalleryTorrentList, ReqwestEhentaiSource, ReqwestSourceTransport, SessionStatus, SourceError,
+    SourceErrorKind, SourceGallery, SourceSite, SourceTransport, TorrentDownload,
+    TransportResponse, parse_torrent_list,
+};
+
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
@@ -14,7 +26,7 @@ use doujin_app::external_search::{
 use doujin_parser::domain::{Authors, Classification, Parody};
 use doujin_storage::jobs::ExternalSearchErrorKind;
 use doujin_storage::metadata::{ConfidenceEvidence, MetadataField, MetadataValue};
-use reqwest::header::{CONTENT_TYPE, COOKIE, HeaderMap, HeaderValue};
+use reqwest::header::{CONTENT_TYPE, COOKIE};
 use scraper::{Html, Selector};
 use serde_json::Value;
 
@@ -25,6 +37,13 @@ const USER_AGENT: &str = "doujin-tagger/0.1 (local metadata lookup)";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_GALLERY_CANDIDATES: usize = 25;
+
+thread_local! {
+    // `ExternalMetadataProvider::search` is synchronous. Remembering the site
+    // selected for the last request on that thread keeps the returned source
+    // reference consistent if settings are updated concurrently.
+    static LAST_METADATA_SITE: Cell<Option<&'static str>> = const { Cell::new(None) };
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EhentaiHttpResponse {
@@ -63,8 +82,7 @@ impl Error for EhentaiClientBuildError {
 
 pub struct ReqwestEhentaiClient {
     client: reqwest::blocking::Client,
-    search_url: &'static str,
-    gallery_base_url: &'static str,
+    cookies: CookieStore,
     request_gate: Mutex<RequestGate>,
 }
 
@@ -80,26 +98,23 @@ impl ReqwestEhentaiClient {
             .ok()
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty());
-        let mut headers = HeaderMap::new();
-        let (cookie, search_url, gallery_base_url) = match configured_cookie {
-            Some(cookie) => (cookie, EXHENTAI_SEARCH_URL, "https://exhentai.org"),
-            None => ("nw=1".to_owned(), PUBLIC_SEARCH_URL, "https://e-hentai.org"),
-        };
-        headers.insert(
-            COOKIE,
-            HeaderValue::from_str(&cookie)
-                .map_err(|error| EhentaiClientBuildError(error.to_string()))?,
-        );
+        let cookie = configured_cookie
+            .as_deref()
+            .map(CookieHeader::parse)
+            .transpose()
+            .map_err(|error| EhentaiClientBuildError(error.to_string()))?;
+        Self::with_cookie_store(CookieStore::new(cookie))
+    }
+
+    pub fn with_cookie_store(cookies: CookieStore) -> Result<Self, EhentaiClientBuildError> {
         let client = reqwest::blocking::Client::builder()
-            .default_headers(headers)
             .timeout(REQUEST_TIMEOUT)
             .user_agent(USER_AGENT)
             .build()
             .map_err(|error| EhentaiClientBuildError(error.to_string()))?;
         Ok(Self {
             client,
-            search_url,
-            gallery_base_url,
+            cookies,
             request_gate: Mutex::new(RequestGate {
                 last_started: None,
                 min_interval: DEFAULT_MIN_REQUEST_INTERVAL,
@@ -109,8 +124,14 @@ impl ReqwestEhentaiClient {
 
     fn fetch(
         &self,
-        request: reqwest::blocking::RequestBuilder,
+        mut request: reqwest::blocking::RequestBuilder,
+        cookie: Option<&CookieHeader>,
     ) -> Result<EhentaiHttpResponse, EhentaiHttpError> {
+        if let Some(cookie) = cookie {
+            request = request.header(COOKIE, cookie.request_header_value());
+        } else {
+            request = request.header(COOKIE, "nw=1");
+        }
         let mut gate = self.request_gate.lock().map_err(|_| EhentaiHttpError {
             message: "E-Hentai request gate 已失效".to_owned(),
         })?;
@@ -134,10 +155,16 @@ impl ReqwestEhentaiClient {
 
 impl EhentaiHttpClient for ReqwestEhentaiClient {
     fn search_title(&self, title: &str) -> Result<EhentaiHttpResponse, EhentaiHttpError> {
+        let cookie = self.cookies.snapshot();
+        let (search_url, gallery_base_url) = if cookie.is_some() {
+            (EXHENTAI_SEARCH_URL, "https://exhentai.org")
+        } else {
+            (PUBLIC_SEARCH_URL, "https://e-hentai.org")
+        };
+        LAST_METADATA_SITE.set(Some(gallery_base_url));
         self.fetch(
-            self.client
-                .get(self.search_url)
-                .query(&[("f_search", title)]),
+            self.client.get(search_url).query(&[("f_search", title)]),
+            cookie.as_ref(),
         )
     }
 
@@ -145,6 +172,12 @@ impl EhentaiHttpClient for ReqwestEhentaiClient {
         &self,
         galleries: &[GalleryIdentity],
     ) -> Result<EhentaiHttpResponse, EhentaiHttpError> {
+        let cookie = self.cookies.snapshot();
+        LAST_METADATA_SITE.set(Some(if cookie.is_some() {
+            "https://exhentai.org"
+        } else {
+            "https://e-hentai.org"
+        }));
         let body = serde_json::json!({
             "method": "gdata",
             "gidlist": galleries
@@ -159,11 +192,18 @@ impl EhentaiHttpClient for ReqwestEhentaiClient {
                 .post(API_URL)
                 .header(CONTENT_TYPE, "application/json")
                 .body(body),
+            cookie.as_ref(),
         )
     }
 
     fn gallery_base_url(&self) -> &'static str {
-        self.gallery_base_url
+        LAST_METADATA_SITE.get().unwrap_or_else(|| {
+            if self.cookies.is_configured() {
+                "https://exhentai.org"
+            } else {
+                "https://e-hentai.org"
+            }
+        })
     }
 }
 
@@ -174,6 +214,14 @@ pub struct EhentaiProvider<C> {
 impl EhentaiProvider<ReqwestEhentaiClient> {
     pub fn production() -> Result<Self, EhentaiClientBuildError> {
         Ok(Self::with_client(ReqwestEhentaiClient::new()?))
+    }
+
+    pub fn production_with_cookie_store(
+        cookies: CookieStore,
+    ) -> Result<Self, EhentaiClientBuildError> {
+        Ok(Self::with_client(ReqwestEhentaiClient::with_cookie_store(
+            cookies,
+        )?))
     }
 }
 
@@ -870,5 +918,20 @@ mod tests {
         let error = exact_title_gallery(galleries, "Same").expect_err("ambiguous title");
         assert_eq!(ExternalSearchErrorKind::NoMatch, error.kind);
         assert!(error.message.contains("2 筆"));
+    }
+
+    #[test]
+    fn production_metadata_client_observes_shared_cookie_updates() {
+        let store = CookieStore::default();
+        let client = ReqwestEhentaiClient::with_cookie_store(store.clone()).expect("client");
+        assert_eq!("https://e-hentai.org", client.gallery_base_url());
+
+        store.set(Some(
+            CookieHeader::parse("ipb_member_id=1; ipb_pass_hash=secret").expect("cookie"),
+        ));
+        assert_eq!("https://exhentai.org", client.gallery_base_url());
+
+        store.set(None);
+        assert_eq!("https://e-hentai.org", client.gallery_base_url());
     }
 }

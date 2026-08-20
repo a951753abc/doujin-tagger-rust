@@ -1541,6 +1541,80 @@ fn environment_overrides_remain_effective_while_user_settings_are_persisted() {
 }
 
 #[test]
+fn exhentai_session_forwarding_keeps_cookie_out_of_settings_and_errors() {
+    let tree = TestTree::new("exhentai-session");
+    let database = tree.database();
+    let repository = CatalogRepository::open(&database).expect("open catalog");
+    let thumbnail_config =
+        ThumbnailConfig::new(tree.path.join("cache"), 300, 400, 80).expect("thumbnail config");
+    let mut application =
+        ApplicationService::with_thumbnails(repository, NoopRecycleBin, thumbnail_config);
+    let secret = "ipb_member_id=123; ipb_pass_hash=must-not-leak";
+
+    assert!(
+        !application
+            .exhentai_session_status()
+            .expect("empty session status")
+            .configured
+    );
+    let saved = application
+        .save_exhentai_cookie(secret)
+        .expect("save ExHentai Cookie");
+    assert!(saved.configured);
+    assert!(saved.updated_at.is_some());
+    assert_eq!(
+        Some(secret.to_owned()),
+        application.exhentai_cookie().expect("read ExHentai Cookie")
+    );
+    assert_eq!(
+        saved,
+        application
+            .exhentai_session_status()
+            .expect("configured session status")
+    );
+    assert!(!format!("{saved:?}").contains(secret));
+    assert!(
+        !format!(
+            "{:?}",
+            application
+                .application_settings()
+                .expect("application settings snapshot")
+        )
+        .contains(secret)
+    );
+
+    let connection = Connection::open(&database).expect("open raw catalog");
+    connection
+        .execute(
+            "UPDATE exhentai_session SET encrypted_cookie = X'010203' WHERE singleton = 1",
+            [],
+        )
+        .expect("damage ciphertext");
+    drop(connection);
+    let error = application
+        .exhentai_cookie()
+        .expect_err("damaged Cookie must fail safely");
+    assert!(matches!(
+        &error,
+        ApplicationError::Storage(StorageError::ExHentaiCookieUnavailable)
+    ));
+    assert!(!error.to_string().contains(secret));
+    assert!(!format!("{error:?}").contains(secret));
+
+    application
+        .save_exhentai_cookie("ipb_member_id=456; ipb_pass_hash=replacement")
+        .expect("replace damaged Cookie");
+    assert!(application.clear_exhentai_cookie().expect("clear Cookie"));
+    assert_eq!(None, application.exhentai_cookie().expect("cleared Cookie"));
+    assert!(
+        !application
+            .exhentai_session_status()
+            .expect("cleared session status")
+            .configured
+    );
+}
+
+#[test]
 fn stale_thumbnail_result_is_ignored_after_settings_requeue() {
     let tree = TestTree::new("stale-thumbnail-result");
     let source = tree.zip("[circle] settings-race.zip");

@@ -22,6 +22,7 @@ mod collections;
 mod consolidation;
 mod covers;
 mod duplicates;
+mod ehentai;
 mod error;
 mod exports;
 mod external_search;
@@ -42,6 +43,7 @@ mod thumbnails;
 mod vocabulary;
 mod work_baskets;
 
+pub use ehentai::{EhentaiHttpServices, MagnetLauncher};
 pub use instance::ServiceInstanceConfig;
 pub use service::{ServiceOptions, run_service};
 
@@ -51,6 +53,7 @@ use crate::error::ApiError;
 pub enum ServerError {
     Io(std::io::Error),
     NonLoopbackAddress(SocketAddr),
+    EhentaiInitialization(String),
 }
 
 impl fmt::Display for ServerError {
@@ -63,6 +66,7 @@ impl fmt::Display for ServerError {
                     "HTTP server 只允許 localhost loopback：{address}"
                 )
             }
+            Self::EhentaiInitialization(message) => write!(formatter, "{message}"),
         }
     }
 }
@@ -71,7 +75,7 @@ impl Error for ServerError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
-            Self::NonLoopbackAddress(_) => None,
+            Self::NonLoopbackAddress(_) | Self::EhentaiInitialization(_) => None,
         }
     }
 }
@@ -122,14 +126,39 @@ where
     R: RecycleBin + Send + 'static,
     F: Future<Output = ()> + Send + 'static,
 {
-    serve_shared_with_shutdown_and_instance(listener, application, None, shutdown).await
+    let ehentai = EhentaiHttpServices::production(Arc::clone(&application))
+        .await
+        .map_err(ServerError::EhentaiInitialization)?;
+    serve_shared_with_shutdown_and_ehentai(listener, application, ehentai, shutdown).await
 }
 
-/// 與 [`serve_shared_with_shutdown`] 相同，額外帶入 `instance_id` 供 `/api/health` 回報。
-pub(crate) async fn serve_shared_with_shutdown_and_instance<R, F>(
+/// Starts a loopback server with injected E-Hentai source and magnet services.
+/// This keeps tests deterministic and allows alternative local frontends.
+pub async fn serve_shared_with_shutdown_and_ehentai<R, F>(
+    listener: TcpListener,
+    application: SharedApplication<R>,
+    ehentai: EhentaiHttpServices,
+    shutdown: F,
+) -> Result<(), ServerError>
+where
+    R: RecycleBin + Send + 'static,
+    F: Future<Output = ()> + Send + 'static,
+{
+    serve_shared_with_shutdown_and_instance_and_ehentai(
+        listener,
+        application,
+        None,
+        ehentai,
+        shutdown,
+    )
+    .await
+}
+
+pub(crate) async fn serve_shared_with_shutdown_and_instance_and_ehentai<R, F>(
     listener: TcpListener,
     application: SharedApplication<R>,
     instance_id: Option<String>,
+    ehentai: EhentaiHttpServices,
     shutdown: F,
 ) -> Result<(), ServerError>
 where
@@ -137,13 +166,17 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     validate_loopback_address(listener.local_addr()?)?;
-    axum::serve(listener, build_router(application, instance_id))
+    axum::serve(listener, build_router(application, instance_id, ehentai))
         .with_graceful_shutdown(shutdown)
         .await?;
     Ok(())
 }
 
-fn build_router<R>(application: SharedApplication<R>, instance_id: Option<String>) -> Router
+fn build_router<R>(
+    application: SharedApplication<R>,
+    instance_id: Option<String>,
+    ehentai: EhentaiHttpServices,
+) -> Router
 where
     R: RecycleBin + Send + 'static,
 {
@@ -151,12 +184,37 @@ where
         application,
         thumbnail_cache_jobs: Arc::new(Mutex::new(ThumbnailCacheJobs::default())),
         instance_id,
+        ehentai,
     };
     Router::new()
         .route("/", get(frontend::frontend_index))
         .route("/assets/app.css", get(frontend::frontend_css))
         .route("/assets/app.js", get(frontend::frontend_javascript))
         .route("/api/health", get(health::<R>))
+        .route(
+            "/api/ehentai/session",
+            get(ehentai::get_session::<R>)
+                .put(ehentai::put_session::<R>)
+                .delete(ehentai::delete_session::<R>),
+        )
+        .route(
+            "/api/ehentai/session/test",
+            post(ehentai::test_session::<R>),
+        )
+        .route("/api/ehentai/search", get(ehentai::search::<R>))
+        .route(
+            "/api/ehentai/galleries/{gid}/{token}",
+            get(ehentai::gallery::<R>),
+        )
+        .route(
+            "/api/ehentai/galleries/{gid}/{token}/torrents",
+            get(ehentai::torrents::<R>),
+        )
+        .route(
+            "/api/ehentai/torrents/download",
+            post(ehentai::download_torrent::<R>),
+        )
+        .route("/api/ehentai/magnets/open", post(ehentai::open_magnet::<R>))
         .route(
             "/api/settings",
             get(settings::get_settings::<R>).put(settings::update_settings::<R>),
@@ -461,6 +519,7 @@ pub(crate) struct HttpState<R> {
     pub(crate) application: Arc<Mutex<ApplicationService<R>>>,
     pub(crate) thumbnail_cache_jobs: Arc<Mutex<ThumbnailCacheJobs>>,
     pub(crate) instance_id: Option<String>,
+    pub(crate) ehentai: EhentaiHttpServices,
 }
 
 impl<R> Clone for HttpState<R> {
@@ -469,6 +528,7 @@ impl<R> Clone for HttpState<R> {
             application: Arc::clone(&self.application),
             thumbnail_cache_jobs: Arc::clone(&self.thumbnail_cache_jobs),
             instance_id: self.instance_id.clone(),
+            ehentai: self.ehentai.clone(),
         }
     }
 }

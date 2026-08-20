@@ -5,6 +5,7 @@ pub mod collections;
 pub mod consolidation;
 pub mod covers;
 pub mod duplicates;
+pub mod exhentai_session;
 mod exports;
 pub mod external_search_batches;
 pub use exports::*;
@@ -44,7 +45,7 @@ use crate::metadata::{
     MetadataAssertionDecision, MetadataField, MetadataSource, MetadataValue, SelectionSnapshot,
 };
 
-const SCHEMA_VERSION: i64 = 20;
+const SCHEMA_VERSION: i64 = 21;
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const SCAN_RUN_GUARD_MIGRATION: &str = include_str!("../migrations/0002_scan_run_guard.sql");
 const EXTERNAL_SEARCH_JOBS_MIGRATION: &str =
@@ -76,6 +77,7 @@ const EXTERNAL_SEARCH_ACTIVITY_MIGRATION: &str =
 const LIBRARY_BATCH_SIZE_MIGRATION: &str =
     include_str!("../migrations/0019_library_batch_size.sql");
 const SHELF_COMPOSITION_MIGRATION: &str = include_str!("../migrations/0020_shelf_composition.sql");
+const EXHENTAI_SESSION_MIGRATION: &str = include_str!("../migrations/0021_exhentai_session.sql");
 
 struct Migration {
     version: i64,
@@ -184,6 +186,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "0020_shelf_composition",
         sql: SHELF_COMPOSITION_MIGRATION,
     },
+    Migration {
+        version: 21,
+        name: "0021_exhentai_session",
+        sql: EXHENTAI_SESSION_MIGRATION,
+    },
 ];
 
 #[derive(Debug)]
@@ -229,6 +236,9 @@ pub enum StorageError {
     ThumbnailStateUnavailable(i64),
     InvalidThumbnailState(String),
     InvalidApplicationSettings(String),
+    InvalidExHentaiCookie,
+    ExHentaiCookieProtectionFailed,
+    ExHentaiCookieUnavailable,
     InvalidShelfConfiguration(String),
     SavedViewNotFound(i64),
     SavedViewNameConflict(String),
@@ -341,6 +351,14 @@ impl fmt::Display for StorageError {
             Self::InvalidApplicationSettings(reason) => {
                 write!(formatter, "application settings 無效：{reason}")
             }
+            Self::InvalidExHentaiCookie => write!(formatter, "ExHentai Cookie 不得為空白"),
+            Self::ExHentaiCookieProtectionFailed => {
+                write!(formatter, "無法安全儲存 ExHentai Cookie")
+            }
+            Self::ExHentaiCookieUnavailable => write!(
+                formatter,
+                "已儲存的 ExHentai Cookie 無法讀取，請重新設定 Cookie"
+            ),
             Self::InvalidShelfConfiguration(reason) => {
                 write!(formatter, "shelf configuration 無效：{reason}")
             }
@@ -400,6 +418,9 @@ impl Error for StorageError {
             | Self::ThumbnailStateUnavailable(_)
             | Self::InvalidThumbnailState(_)
             | Self::InvalidApplicationSettings(_)
+            | Self::InvalidExHentaiCookie
+            | Self::ExHentaiCookieProtectionFailed
+            | Self::ExHentaiCookieUnavailable
             | Self::InvalidShelfConfiguration(_)
             | Self::SavedViewNotFound(_)
             | Self::SavedViewNameConflict(_)

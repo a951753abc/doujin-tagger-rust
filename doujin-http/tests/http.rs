@@ -9,10 +9,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use doujin_app::{ApplicationService, ApplicationSettingsOverrides};
 use doujin_files::{CollectionLauncher, RecycleBin};
 use doujin_http::{
-    SharedApplication, bind_loopback, serve_shared_with_shutdown, share_application,
+    EhentaiHttpServices, MagnetLauncher, SharedApplication, bind_loopback,
+    serve_shared_with_shutdown, serve_shared_with_shutdown_and_ehentai, share_application,
     validate_loopback_address,
 };
 use doujin_parser::domain::{Authors, Parody};
+use doujin_provider_ehentai::{
+    CookieHeader, CookieStore, EhentaiSource, GalleryDetail, GallerySearchPage, GallerySearchQuery,
+    GalleryTorrent, GalleryTorrentList, SessionStatus, SourceError, SourceErrorKind, SourceGallery,
+    SourceSite, TorrentDownload,
+};
 use doujin_scanner::{ScanRoot, SourceKind};
 use doujin_storage::CatalogRepository;
 use doujin_storage::external_search_batches::ExternalSearchBatchStrategy;
@@ -78,6 +84,114 @@ impl RecordingLauncher {
 
     fn calls(&self) -> Vec<LaunchCall> {
         self.calls.lock().expect("launcher calls").clone()
+    }
+}
+
+#[derive(Clone, Default)]
+struct RecordingMagnetLauncher {
+    calls: Arc<Mutex<Vec<String>>>,
+    fail: bool,
+}
+
+impl RecordingMagnetLauncher {
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().expect("magnet calls").clone()
+    }
+}
+
+impl MagnetLauncher for RecordingMagnetLauncher {
+    fn open_magnet(&self, magnet_uri: &str) -> Result<(), String> {
+        if self.fail {
+            return Err("simulated failure".to_owned());
+        }
+        self.calls
+            .lock()
+            .expect("magnet calls")
+            .push(magnet_uri.to_owned());
+        Ok(())
+    }
+}
+
+struct FakeEhentaiSource {
+    cookies: CookieStore,
+    error: Option<SourceErrorKind>,
+}
+
+impl FakeEhentaiSource {
+    fn result<T>(&self, value: T) -> Result<T, SourceError> {
+        match self.error {
+            Some(kind) => Err(SourceError {
+                kind,
+                message: "fake source URL https://example.invalid/?secret=hidden".to_owned(),
+            }),
+            None => Ok(value),
+        }
+    }
+
+    fn gallery_value(&self) -> SourceGallery {
+        SourceGallery {
+            source: SourceSite::Ehentai,
+            gid: 123,
+            token: "0123456789".to_owned(),
+            title: "Romanized".to_owned(),
+            title_jpn: Some("日本語".to_owned()),
+            category: "Doujinshi".to_owned(),
+            thumb: Some("https://ehgt.org/thumb.jpg".to_owned()),
+            uploader: Some("alice".to_owned()),
+            posted: Some("1700000000".to_owned()),
+            rating: Some(4.75),
+            tags: vec!["language:japanese".to_owned()],
+            pages: Some(42),
+        }
+    }
+}
+
+impl EhentaiSource for FakeEhentaiSource {
+    fn validate_session(&self) -> SessionStatus {
+        if self.cookies.is_configured() {
+            SessionStatus::Exhentai
+        } else {
+            SessionStatus::NotConfigured
+        }
+    }
+
+    fn search(&self, query: &GallerySearchQuery) -> Result<GallerySearchPage, SourceError> {
+        self.result(GallerySearchPage {
+            source: SourceSite::Ehentai,
+            page: query.page,
+            has_next: true,
+            next_cursor: query.cursor.clone(),
+            previous_cursor: Some("prev:4127000".to_owned()),
+            galleries: vec![self.gallery_value()],
+        })
+    }
+
+    fn gallery(&self, _: u64, _: &str) -> Result<GalleryDetail, SourceError> {
+        self.result(self.gallery_value())
+    }
+
+    fn torrents(&self, _: u64, _: &str) -> Result<GalleryTorrentList, SourceError> {
+        self.result(GalleryTorrentList {
+            source: SourceSite::Ehentai,
+            torrents: vec![GalleryTorrent {
+                name: "Fixture".to_owned(),
+                posted_at: "2026-01-02T03:04:05Z".to_owned(),
+                size: "12 MiB".to_owned(),
+                seeds: 9,
+                peers: 8,
+                downloads: 7,
+                outdated: false,
+                torrent_url: "https://ehtracker.org/get/fixture".to_owned(),
+                magnet_url: Some(format!("magnet:?xt=urn:btih:{}", "a".repeat(40))),
+            }],
+        })
+    }
+
+    fn download_torrent(&self, _: &str) -> Result<TorrentDownload, SourceError> {
+        self.result(TorrentDownload {
+            bytes: b"d4:infod4:name7:fixtureee".to_vec(),
+            content_type: Some("application/x-bittorrent".to_owned()),
+        })
     }
 }
 
@@ -212,6 +326,33 @@ impl RunningServer {
         let task = tokio::spawn(serve_shared_with_shutdown(listener, application, async {
             let _ = receiver.await;
         }));
+        Self {
+            address,
+            shutdown: Some(shutdown),
+            task,
+        }
+    }
+
+    async fn start_with_ehentai<R>(
+        application: ApplicationService<R>,
+        ehentai: EhentaiHttpServices,
+    ) -> Self
+    where
+        R: RecycleBin + Send + 'static,
+    {
+        let listener = bind_loopback(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .expect("bind loopback");
+        let address = listener.local_addr().expect("listener address");
+        let (shutdown, receiver) = oneshot::channel();
+        let task = tokio::spawn(serve_shared_with_shutdown_and_ehentai(
+            listener,
+            share_application(application),
+            ehentai,
+            async {
+                let _ = receiver.await;
+            },
+        ));
         Self {
             address,
             shutdown: Some(shutdown),
@@ -758,12 +899,24 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(policy.contains("default-src 'none'"));
     assert!(policy.contains("connect-src 'self'"));
     assert!(policy.contains("frame-ancestors 'none'"));
+    assert!(policy.contains("img-src 'self' data: https://ehgt.org https://*.ehgt.org"));
+    let image_sources = policy
+        .split(';')
+        .map(str::trim)
+        .find(|directive| directive.starts_with("img-src "))
+        .expect("img-src directive");
+    assert!(
+        !image_sources
+            .split_whitespace()
+            .any(|source| source == "https:")
+    );
+    assert!(!policy.contains("example.com"));
     let document = String::from_utf8(index.body).expect("UTF-8 frontend document");
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("href=\"/assets/app.css?v=57\""));
-    assert!(document.contains("src=\"/assets/app.js?v=57\" defer"));
+    assert!(document.contains("href=\"/assets/app.css?v=59\""));
+    assert!(document.contains("src=\"/assets/app.js?v=59\" defer"));
     assert!(document.contains("id=\"duplicates-view\""));
     assert!(document.contains("id=\"start-duplicate-scan\""));
     assert!(document.contains("id=\"rename-preflight-form\""));
@@ -3739,6 +3892,309 @@ impl HttpResult {
                 .then_some(value.trim())
         })
     }
+}
+
+fn fake_ehentai_services(
+    cookies: CookieStore,
+    error: Option<SourceErrorKind>,
+    launcher: RecordingMagnetLauncher,
+    environment_override: bool,
+) -> EhentaiHttpServices {
+    EhentaiHttpServices::new(
+        cookies.clone(),
+        Arc::new(FakeEhentaiSource { cookies, error }),
+        Arc::new(launcher),
+        environment_override,
+    )
+}
+
+#[tokio::test]
+async fn ehentai_api_updates_shared_session_and_maps_source_dtos_without_cookie_leakage() {
+    let store = CookieStore::default();
+    let launcher = RecordingMagnetLauncher::default();
+    let services = fake_ehentai_services(store.clone(), None, launcher.clone(), false);
+    let application = ApplicationService::new(
+        CatalogRepository::open_in_memory().expect("catalog"),
+        NoopRecycleBin,
+    );
+    let server = RunningServer::start_with_ehentai(application, services).await;
+
+    let initial = server.request("GET", "/api/ehentai/session", &[]).await;
+    assert_eq!(200, initial.status);
+    assert_eq!(false, initial.json["configured"]);
+    assert_eq!(false, initial.json["environment_override"]);
+    assert_eq!(Value::Null, initial.json["session"]);
+
+    let secret = "ipb_member_id=1; ipb_pass_hash=do-not-leak; igneous=fixture";
+    let saved = server
+        .request_json(
+            "PUT",
+            "/api/ehentai/session",
+            &serde_json::json!({"cookie": secret}),
+        )
+        .await;
+    assert_eq!(200, saved.status);
+    assert_eq!(true, saved.json["configured"]);
+    assert!(!String::from_utf8_lossy(&saved.body).contains("do-not-leak"));
+    assert!(store.is_configured());
+
+    let tested = server
+        .request("POST", "/api/ehentai/session/test", &[])
+        .await;
+    assert_eq!(200, tested.status);
+    assert_eq!("exhentai", tested.json["session"]);
+
+    let search = server
+        .request(
+            "GET",
+            "/api/ehentai/search?q=fixture&page=2&cursor=4126558",
+            &[],
+        )
+        .await;
+    assert_eq!(200, search.status);
+    assert_eq!("ehentai", search.json["source"]);
+    assert_eq!(2, search.json["page"]);
+    assert_eq!(true, search.json["has_next"]);
+    assert_eq!("4126558", search.json["next_cursor"]);
+    assert_eq!("prev:4127000", search.json["previous_cursor"]);
+    assert_eq!("1700000000", search.json["items"][0]["posted_at"]);
+    assert_eq!(42, search.json["items"][0]["pages"]);
+
+    let invalid_cursor = server
+        .request(
+            "GET",
+            "/api/ehentai/search?q=fixture&page=2&cursor=not-digits",
+            &[],
+        )
+        .await;
+    assert_eq!(400, invalid_cursor.status);
+    assert_eq!("invalid_search_query", invalid_cursor.json["error"]["code"]);
+
+    let previous_cursor = server
+        .request(
+            "GET",
+            "/api/ehentai/search?q=fixture&page=1&cursor=prev%3A4127000",
+            &[],
+        )
+        .await;
+    assert_eq!(200, previous_cursor.status);
+
+    let detail = server
+        .request("GET", "/api/ehentai/galleries/123/0123456789", &[])
+        .await;
+    assert_eq!(200, detail.status);
+    assert_eq!("ehentai", detail.json["source"]);
+    assert_eq!("日本語", detail.json["gallery"]["title_jpn"]);
+
+    let torrents = server
+        .request("GET", "/api/ehentai/galleries/123/0123456789/torrents", &[])
+        .await;
+    assert_eq!(200, torrents.status);
+    assert_eq!(9, torrents.json["items"][0]["seeds"]);
+    assert_eq!(7, torrents.json["items"][0]["downloads"]);
+
+    let download = server
+        .request_json(
+            "POST",
+            "/api/ehentai/torrents/download",
+            &serde_json::json!({
+                "url": "https://ehtracker.org/get/fixture?secret=hidden",
+                "name": "bad:\r\n名稱/part"
+            }),
+        )
+        .await;
+    assert_eq!(200, download.status);
+    assert_eq!(
+        Some("application/x-bittorrent"),
+        download.header("content-type")
+    );
+    let disposition = download
+        .header("content-disposition")
+        .expect("attachment header");
+    assert!(disposition.starts_with("attachment; filename=\""));
+    assert!(disposition.ends_with(".torrent\""));
+    assert!(!disposition.contains(['\r', '\n']));
+    assert!(download.body.starts_with(b"d4:info"));
+
+    let magnet = format!("magnet:?xt=urn:btih:{}", "a".repeat(40));
+    let opened = server
+        .request_json(
+            "POST",
+            "/api/ehentai/magnets/open",
+            &serde_json::json!({"magnet_uri": magnet}),
+        )
+        .await;
+    assert_eq!(200, opened.status);
+    assert_eq!(true, opened.json["opened"]);
+    assert_eq!(1, launcher.calls().len());
+
+    let invalid_magnet = server
+        .request_json(
+            "POST",
+            "/api/ehentai/magnets/open",
+            &serde_json::json!({"magnet_uri": "magnet:?xt=urn:btih:short%0d%0a"}),
+        )
+        .await;
+    assert_eq!(400, invalid_magnet.status);
+    assert_eq!("invalid_magnet", invalid_magnet.json["error"]["code"]);
+    assert_eq!(1, launcher.calls().len());
+
+    let cleared = server.request("DELETE", "/api/ehentai/session", &[]).await;
+    assert_eq!(200, cleared.status);
+    assert_eq!(false, cleared.json["configured"]);
+    assert_eq!("not_configured", cleared.json["session"]);
+    assert!(!store.is_configured());
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn ehentai_environment_override_keeps_effective_cookie_while_catalog_backup_changes() {
+    let environment =
+        CookieHeader::parse("ipb_member_id=1; ipb_pass_hash=environment-secret; igneous=fixture")
+            .expect("environment cookie");
+    let store = CookieStore::new(Some(environment));
+    let services = fake_ehentai_services(
+        store.clone(),
+        None,
+        RecordingMagnetLauncher::default(),
+        true,
+    );
+    let application = ApplicationService::new(
+        CatalogRepository::open_in_memory().expect("catalog"),
+        NoopRecycleBin,
+    );
+    let server = RunningServer::start_with_ehentai(application, services).await;
+
+    let saved = server
+        .request_json(
+            "PUT",
+            "/api/ehentai/session",
+            &serde_json::json!({
+                "cookie": "ipb_member_id=2; ipb_pass_hash=catalog-secret"
+            }),
+        )
+        .await;
+    assert_eq!(200, saved.status);
+    assert_eq!(true, saved.json["configured"]);
+    assert_eq!(true, saved.json["environment_override"]);
+    assert!(
+        store
+            .snapshot()
+            .expect("effective cookie")
+            .request_header_value()
+            .to_str()
+            .expect("header")
+            .contains("environment-secret")
+    );
+
+    let cleared = server.request("DELETE", "/api/ehentai/session", &[]).await;
+    assert_eq!(200, cleared.status);
+    assert_eq!(true, cleared.json["configured"]);
+    assert_eq!(true, cleared.json["environment_override"]);
+    assert!(store.is_configured());
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn ehentai_source_errors_use_stable_codes_and_redact_provider_messages() {
+    let services = fake_ehentai_services(
+        CookieStore::default(),
+        Some(SourceErrorKind::NetworkError),
+        RecordingMagnetLauncher::default(),
+        false,
+    );
+    let application = ApplicationService::new(
+        CatalogRepository::open_in_memory().expect("catalog"),
+        NoopRecycleBin,
+    );
+    let server = RunningServer::start_with_ehentai(application, services).await;
+    let response = server
+        .request("GET", "/api/ehentai/search?q=fixture", &[])
+        .await;
+    assert_eq!(502, response.status);
+    assert_eq!("network_error", response.json["error"]["code"]);
+    let body = String::from_utf8_lossy(&response.body);
+    assert!(!body.contains("secret=hidden"));
+    assert!(!body.contains("example.invalid"));
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn ehentai_unavailable_catalog_cookie_can_be_cleared_and_replaced() {
+    let tree = TestTree::new("ehentai-damaged-cookie");
+    let database = tree.path.join("catalog.db");
+    let mut repository = CatalogRepository::open(&database).expect("catalog");
+    let secret = "ipb_member_id=1; ipb_pass_hash=do-not-leak";
+    repository
+        .save_exhentai_cookie(secret)
+        .expect("save protected cookie");
+    drop(repository);
+    rusqlite::Connection::open(&database)
+        .expect("raw catalog")
+        .execute(
+            "UPDATE exhentai_session SET encrypted_cookie = X'010203' WHERE singleton = 1",
+            [],
+        )
+        .expect("damage protected cookie");
+    let application = ApplicationService::new(
+        CatalogRepository::open(&database).expect("reopen catalog"),
+        NoopRecycleBin,
+    );
+    let services = fake_ehentai_services(
+        CookieStore::default(),
+        None,
+        RecordingMagnetLauncher::default(),
+        false,
+    );
+    let server = RunningServer::start_with_ehentai(application, services).await;
+
+    let unavailable = server.request("GET", "/api/ehentai/session", &[]).await;
+    assert_eq!(409, unavailable.status);
+    assert_eq!("invalid_cookie", unavailable.json["error"]["code"]);
+    assert!(!String::from_utf8_lossy(&unavailable.body).contains("do-not-leak"));
+
+    let cleared = server.request("DELETE", "/api/ehentai/session", &[]).await;
+    assert_eq!(200, cleared.status);
+    let replacement = server
+        .request_json(
+            "PUT",
+            "/api/ehentai/session",
+            &serde_json::json!({
+                "cookie": "ipb_member_id=2; ipb_pass_hash=replacement"
+            }),
+        )
+        .await;
+    assert_eq!(200, replacement.status);
+    assert_eq!(true, replacement.json["configured"]);
+    server.stop().await;
+
+    rusqlite::Connection::open(&database)
+        .expect("raw catalog after replacement")
+        .execute(
+            "UPDATE exhentai_session SET encrypted_cookie = X'010203' WHERE singleton = 1",
+            [],
+        )
+        .expect("damage replacement cookie");
+    let environment_store = CookieStore::new(Some(
+        CookieHeader::parse("ipb_member_id=9; ipb_pass_hash=environment")
+            .expect("environment cookie"),
+    ));
+    let services = fake_ehentai_services(
+        environment_store,
+        None,
+        RecordingMagnetLauncher::default(),
+        true,
+    );
+    let application = ApplicationService::new(
+        CatalogRepository::open(&database).expect("reopen damaged catalog"),
+        NoopRecycleBin,
+    );
+    let server = RunningServer::start_with_ehentai(application, services).await;
+    let overridden = server.request("GET", "/api/ehentai/session", &[]).await;
+    assert_eq!(200, overridden.status);
+    assert_eq!(true, overridden.json["configured"]);
+    assert_eq!(true, overridden.json["environment_override"]);
+    server.stop().await;
 }
 
 fn thumbnail_application(tree: &TestTree) -> (ApplicationService<NoopRecycleBin>, i64) {

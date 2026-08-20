@@ -1747,6 +1747,7 @@ html[data-route]:not([data-route="shelf"]) .utility-row {
 }
 html[data-route="basket"] .header-search,
 html[data-route="workbench"] .header-search,
+html[data-route="ehentai"] .header-search,
 html[data-route="stats"] .header-search,
 html[data-route="settings"] .header-search {
   display: none;
@@ -3974,6 +3975,7 @@ img[data-thumbnail-status="failed"] {
 
 /* 6. Workbench and shared route padding */
 #workbench-view,
+#ehentai-view,
 #stats-view,
 #settings-view {
   padding: 28px var(--page-pad) 64px;
@@ -4566,7 +4568,361 @@ img[data-thumbnail-status="failed"] {
   text-decoration: none;
 }
 
-/* 8. Settings */
+/* 8. ExHentai external archive */
+.ehentai-view {
+  min-height: calc(100vh - 116px);
+}
+.ehentai-page-heading {
+  max-width: 1536px;
+}
+.ehentai-heading-copy {
+  display: grid;
+  align-content: end;
+  justify-items: start;
+  gap: 10px;
+}
+.ehentai-heading-copy p {
+  max-width: 54ch;
+  margin: 0;
+  color: var(--ink-soft);
+}
+.ehentai-source-status {
+  display: inline-flex;
+  min-height: 30px;
+  padding: 4px 9px;
+  align-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: var(--paper-raised);
+  color: var(--accent-dark);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.ehentai-search,
+.ehentai-workbench,
+.ehentai-loading,
+.ehentai-error,
+.ehentai-empty {
+  width: 100%;
+  max-width: 1536px;
+  margin-inline: auto;
+}
+.ehentai-search {
+  display: grid;
+  margin-bottom: clamp(24px, 4vw, 40px);
+  padding-block: 18px;
+  gap: 6px;
+  border-block: 1px solid var(--line-strong);
+}
+.ehentai-search > div {
+  display: grid;
+  gap: 8px;
+}
+.ehentai-search input {
+  min-height: 48px;
+  margin: 0;
+  border-color: var(--line-strong);
+  font-size: 1rem;
+}
+.ehentai-search > p {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.ehentai-loading,
+.ehentai-detail-loading,
+.ehentai-torrent-loading {
+  display: flex;
+  min-height: 120px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--ink-soft);
+}
+.ehentai-error,
+.ehentai-detail-error,
+.ehentai-torrent-error {
+  padding: 16px 18px;
+  border-inline-start: 3px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+  color: var(--ink);
+}
+.ehentai-error strong,
+.ehentai-detail-error strong,
+.ehentai-torrent-error strong {
+  color: var(--danger);
+}
+.ehentai-error p,
+.ehentai-detail-error p,
+.ehentai-torrent-error p {
+  margin: 4px 0 12px;
+  color: var(--ink-soft);
+  font-size: 0.875rem;
+}
+.ehentai-empty {
+  display: flex;
+  min-height: 260px;
+  padding: 36px 0;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  border-block: 1px solid var(--line);
+}
+.ehentai-empty > span {
+  display: grid;
+  flex: 0 0 auto;
+  width: 64px;
+  height: 64px;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  color: var(--accent);
+  font-family: var(--serif);
+  font-size: 1.5rem;
+}
+.ehentai-empty h2 {
+  margin: 0 0 5px;
+  color: var(--accent-dark);
+  font-family: var(--serif);
+  font-size: 1.35rem;
+}
+.ehentai-empty p {
+  max-width: 56ch;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.875rem;
+}
+.ehentai-workbench {
+  border-block: 1px solid var(--line-strong);
+}
+.ehentai-results-pane {
+  min-width: 0;
+  padding: 22px 0 28px;
+}
+.ehentai-results-pane > header {
+  display: flex;
+  min-height: 54px;
+  padding-bottom: 14px;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 2px solid var(--ink);
+}
+.ehentai-results-pane h2 {
+  margin: 0;
+  color: var(--accent-dark);
+  font-family: var(--serif);
+  font-size: 1.4rem;
+}
+.ehentai-results-pane > header > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.ehentai-results {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ehentai-gallery-card {
+  border-bottom: 1px solid var(--line);
+}
+.ehentai-gallery-button {
+  display: grid;
+  width: 100%;
+  min-height: 164px;
+  padding: 14px 8px;
+  grid-template-columns: 100px minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+  border: 0;
+  border-inline-start: 3px solid transparent;
+  background: transparent;
+  text-align: left;
+}
+.ehentai-gallery-button:hover {
+  background: color-mix(in srgb, var(--paper-deep) 58%, transparent);
+}
+.ehentai-gallery-button[aria-current="true"] {
+  border-inline-start-color: var(--accent);
+  background: var(--accent-pale);
+}
+.ehentai-gallery-cover {
+  display: grid;
+  width: 100px;
+  aspect-ratio: 3 / 4;
+  overflow: hidden;
+  place-items: center;
+  border: 1px solid var(--line);
+  background: var(--paper-deep);
+}
+.ehentai-gallery-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.ehentai-cover-placeholder {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.ehentai-gallery-copy {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 5px;
+}
+.ehentai-gallery-ledger,
+.ehentai-gallery-byline,
+.ehentai-gallery-rating {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.ehentai-gallery-ledger {
+  color: var(--accent);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.ehentai-gallery-copy strong {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 1.05rem;
+  line-height: 1.42;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.ehentai-gallery-title-jpn {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.ehentai-gallery-tags,
+#ehentai-detail-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.ehentai-gallery-tags > span,
+.ehentai-tag {
+  padding: 2px 6px;
+  border-radius: 2px;
+  background: var(--tag-bg);
+  color: var(--tag-fg);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+.ehentai-pagination {
+  display: grid;
+  margin-top: 18px;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 10px;
+}
+.ehentai-pagination button:first-child {
+  justify-self: start;
+}
+.ehentai-pagination button:last-child {
+  justify-self: end;
+}
+.ehentai-pagination span {
+  color: var(--ink-soft);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+.ehentai-detail-pane {
+  min-width: 0;
+  border-top: 1px solid var(--line-strong);
+}
+.ehentai-detail-loading {
+  min-height: 280px;
+}
+.ehentai-detail-error {
+  margin: 24px;
+}
+.ehentai-detail {
+  padding: 22px 0 36px;
+}
+.ehentai-detail-cover {
+  position: relative;
+  width: min(260px, 72%);
+  margin: 0 0 20px;
+}
+.ehentai-detail-cover img {
+  width: 100%;
+  max-height: 370px;
+  object-fit: contain;
+  object-position: left center;
+  background: var(--paper-deep);
+}
+.ehentai-detail-cover figcaption {
+  display: flex;
+  margin-top: 7px;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.ehentai-detail-copy {
+  min-width: 0;
+}
+.ehentai-detail-kicker {
+  margin: 0 0 6px;
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+.ehentai-detail-copy h2 {
+  margin: 0;
+  color: var(--accent-dark);
+  font-family: var(--serif);
+  font-size: clamp(1.35rem, 3vw, 1.85rem);
+  line-height: 1.3;
+}
+.ehentai-title-jpn {
+  margin: 8px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.8125rem;
+}
+.ehentai-facts {
+  display: grid;
+  margin: 20px 0;
+  grid-template-columns: 84px minmax(0, 1fr);
+  border-top: 1px solid var(--line);
+}
+.ehentai-facts dt,
+.ehentai-facts dd {
+  margin: 0;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.8125rem;
+}
+.ehentai-facts dt {
+  color: var(--muted);
+  font-weight: 700;
+}
+.ehentai-facts dd {
+  color: var(--ink);
+}
+.ehentai-tags {
+  margin: 0 0 22px;
+}
+.ehentai-tags h3 {
+  margin: 0 0 8px;
+  color: var(--ink-soft);
+  font-size: 0.8125rem;
+}
+.ehentai-tags-empty {
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+/* 9. Settings */
 .settings-layout {
   display: grid;
   max-width: 1536px;
@@ -4929,6 +5285,79 @@ img[data-thumbnail-status="failed"] {
 .thumbnail-cache-actions .secondary-button {
   min-height: 36px;
 }
+.ehentai-session-settings {
+  display: grid;
+  margin-top: 32px;
+  padding-top: 24px;
+  gap: 14px;
+  border-top: 2px solid var(--accent-dark);
+}
+.ehentai-session-settings h3 {
+  margin: 0;
+  color: var(--accent-dark);
+  font-family: var(--serif);
+  font-size: 1.2rem;
+}
+.ehentai-session-settings > div:first-child > p:last-child {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  line-height: 1.65;
+}
+.ehentai-session-status {
+  display: flex;
+  flex-wrap: wrap;
+  border-block: 1px solid var(--line);
+}
+.ehentai-session-status span {
+  flex: 1 1 132px;
+  padding: 8px 10px;
+  border-inline-end: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.ehentai-session-status span:last-child {
+  border-inline-end: 0;
+}
+.ehentai-session-status .is-ready {
+  color: var(--success);
+}
+.ehentai-session-status .is-override {
+  color: var(--warning);
+}
+.ehentai-session-status .is-error {
+  color: var(--danger);
+}
+.ehentai-session-settings form {
+  gap: 7px;
+}
+.ehentai-session-settings input {
+  font-family: var(--mono);
+  letter-spacing: 0.04em;
+}
+.ehentai-session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  align-items: center;
+  gap: 8px 12px;
+}
+.ehentai-session-message {
+  margin: 0;
+  padding: 9px 11px;
+  background: color-mix(in srgb, var(--success) 8%, transparent);
+  color: var(--success);
+  font-size: 0.8125rem;
+}
+.ehentai-session-message.is-error {
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  color: var(--danger);
+}
+.ehentai-session-message.is-warning {
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
+  color: var(--warning);
+}
 .roots-settings {
   padding-top: 28px;
   border-top: 1px solid var(--line);
@@ -5222,6 +5651,99 @@ dialog::backdrop {
 }
 #shelf-composition-dialog {
   width: min(760px, calc(100% - 24px));
+}
+#ehentai-torrent-dialog {
+  width: min(940px, calc(100% - 24px));
+}
+.ehentai-torrent-shell {
+  min-height: min(520px, calc(100dvh - 24px));
+}
+.ehentai-torrent-loading {
+  min-height: 230px;
+}
+.ehentai-torrent-empty {
+  margin: 24px 0;
+  padding: 32px 16px;
+  border-block: 1px solid var(--line);
+  color: var(--ink-soft);
+  text-align: center;
+}
+.ehentai-torrent-section {
+  margin-top: 22px;
+}
+.ehentai-torrent-section > h3 {
+  margin: 0;
+  color: var(--accent-dark);
+  font-family: var(--serif);
+  font-size: 1.05rem;
+}
+.ehentai-torrent-section > p {
+  margin: 3px 0 10px;
+  color: var(--warning);
+  font-size: 0.75rem;
+}
+.ehentai-torrent-section > ol {
+  margin: 10px 0 0;
+  padding: 0;
+  border-top: 2px solid var(--ink);
+  list-style: none;
+}
+.ehentai-torrent-section.is-outdated {
+  padding-top: 18px;
+  border-top: 1px dashed var(--line-strong);
+  opacity: 0.76;
+}
+.ehentai-torrent-item {
+  display: grid;
+  padding: 14px 0;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.ehentai-torrent-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+.ehentai-torrent-copy strong {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 0.875rem;
+}
+.ehentai-torrent-copy time {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.ehentai-torrent-facts {
+  display: grid;
+  margin: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--line);
+}
+.ehentai-torrent-facts > div {
+  display: flex;
+  min-width: 0;
+  padding: 6px 8px;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--paper);
+  font-size: 0.75rem;
+}
+.ehentai-torrent-facts dt {
+  color: var(--muted);
+}
+.ehentai-torrent-facts dd {
+  margin: 0;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.ehentai-torrent-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.ehentai-torrent-actions button {
+  min-height: 40px;
 }
 .quick-archive-summary {
   display: flex;
@@ -6814,6 +7336,38 @@ dialog::backdrop {
 }
 
 @media (min-width: 900px) {
+  .ehentai-page-heading {
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 0.72fr);
+  }
+  .ehentai-search > div {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .ehentai-workbench {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(340px, 0.62fr);
+    align-items: start;
+  }
+  .ehentai-results-pane {
+    padding-inline-end: 28px;
+  }
+  .ehentai-detail-pane {
+    position: sticky;
+    top: 73px;
+    max-height: calc(100vh - 73px);
+    padding: 22px 0 36px 28px;
+    overflow-y: auto;
+    border-top: 0;
+    border-inline-start: 1px solid var(--line-strong);
+    scrollbar-gutter: stable;
+  }
+  .ehentai-torrent-item {
+    grid-template-columns: minmax(220px, 1fr) minmax(250px, 0.72fr);
+    align-items: center;
+    column-gap: 18px;
+  }
+  .ehentai-torrent-actions {
+    grid-column: 1 / -1;
+  }
   .masthead {
     grid-template-columns: auto 1fr auto;
   }
@@ -7000,6 +7554,51 @@ dialog::backdrop {
 }
 
 @media (max-width: 599px) {
+  .ehentai-empty {
+    min-height: 220px;
+    padding: 28px 8px;
+    align-items: flex-start;
+    justify-content: flex-start;
+  }
+  .ehentai-empty > span {
+    width: 50px;
+    height: 50px;
+  }
+  .ehentai-results-pane > header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .ehentai-gallery-button {
+    min-height: 142px;
+    grid-template-columns: 82px minmax(0, 1fr);
+    gap: 12px;
+  }
+  .ehentai-gallery-cover {
+    width: 82px;
+  }
+  .ehentai-detail-cover {
+    width: min(230px, 82%);
+  }
+  .ehentai-session-actions,
+  .ehentai-torrent-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .ehentai-session-actions button,
+  .ehentai-torrent-actions button {
+    width: 100%;
+  }
+  .ehentai-session-status span {
+    flex-basis: 100%;
+    border-inline-end: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .ehentai-session-status span:last-child {
+    border-bottom: 0;
+  }
+  .ehentai-torrent-facts {
+    grid-template-columns: 1fr;
+  }
   .vocabulary-heading {
     align-items: flex-start;
     flex-direction: column;
@@ -7100,6 +7699,12 @@ dialog::backdrop {
 }
 
 @media (max-width: 899px) {
+  .ehentai-detail-pane {
+    padding-top: 6px;
+  }
+  .ehentai-detail {
+    scroll-margin-top: 112px;
+  }
   .shelf-composition-heading {
     align-items: flex-start;
     flex-direction: column;

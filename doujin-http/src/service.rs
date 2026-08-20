@@ -29,7 +29,8 @@ use serde::Deserialize;
 
 use crate::instance::{ServiceInstanceConfig, ServiceInstanceGuard};
 use crate::{
-    SharedApplication, bind_loopback, serve_shared_with_shutdown_and_instance, share_application,
+    EhentaiHttpServices, SharedApplication, bind_loopback,
+    serve_shared_with_shutdown_and_instance_and_ehentai, share_application,
 };
 
 const WORKER_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -143,14 +144,21 @@ where
     if let Some(instance) = instance.as_ref() {
         instance.publish(&database, local_address)?;
     }
+    let application = share_application(application);
+    let ehentai = EhentaiHttpServices::production(Arc::clone(&application))
+        .await
+        .map_err(|message| -> Box<dyn Error + Send + Sync> { message.into() })?;
+    let metadata_cookie_store = ehentai.cookie_store();
     // reqwest's blocking client owns a small internal runtime. Building it on
     // Tokio's async worker can panic when that runtime is dropped, so create it
     // on the same kind of blocking thread that will ultimately own it.
-    let primary = tokio::task::spawn_blocking(EhentaiProvider::production).await??;
+    let primary = tokio::task::spawn_blocking(move || {
+        EhentaiProvider::production_with_cookie_store(metadata_cookie_store)
+    })
+    .await??;
     let fallback = tokio::task::spawn_blocking(DlsiteExactProvider::production).await??;
     let provider = MetadataProviderChain { primary, fallback };
 
-    let application = share_application(application);
     let stopping = Arc::new(AtomicBool::new(false));
     // worker spawn 是最後一個可能失敗的步驟；中途失敗要先停掉已啟動的 worker，
     // 不能留下 detached 執行緒，也不能讓 on_ready 在啟動失敗時被呼叫。
@@ -162,10 +170,11 @@ where
     on_ready(local_address);
 
     let shutdown_stopping = Arc::clone(&stopping);
-    let serve_result = serve_shared_with_shutdown_and_instance(
+    let serve_result = serve_shared_with_shutdown_and_instance_and_ehentai(
         listener,
         application,
         instance_id,
+        ehentai,
         async move {
             shutdown.await;
             shutdown_stopping.store(true, Ordering::Release);
