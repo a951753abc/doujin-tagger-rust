@@ -658,13 +658,11 @@
             <strong id="review-total">正在清點待審項目…</strong>
             <span id="review-position"></span>
           </div>
-          <label>只看
-            <select id="review-kind">
-              <option value="all">全部問題</option>
-              <option value="candidate">候選待裁決</option>
-              <option value="missing">缺少 metadata</option>
-            </select>
-          </label>
+          <select id="review-kind" aria-label="只看">
+            <option value="all">全部問題</option>
+            <option value="candidate">候選待裁決</option>
+            <option value="missing">缺少 metadata</option>
+          </select>
           <button class="text-button" id="refresh-review" type="button">重新整理 Queue</button>
         </div>
 
