@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>JP6 Doujin Archive</title>
-  <link rel="stylesheet" href="/assets/app.css?v=59">
-  <script src="/assets/app.js?v=59" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=60">
+  <script src="/assets/app.js?v=60" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -15,7 +15,11 @@
   <div class="app-shell">
     <header class="masthead">
       <div class="utility-row">
-        <span class="service-state" id="service-state"><i aria-hidden="true"></i> 連線中</span>
+        <button class="activity-trigger is-checking" id="activity-trigger" type="button" aria-expanded="false" aria-controls="activity-panel">
+          <i aria-hidden="true"></i>
+          <span id="activity-summary">狀態檢查中</span>
+          <b id="activity-count" hidden>0</b>
+        </button>
         <div>
           <button class="utility-button" id="recent-button" type="button" aria-haspopup="dialog">最近開啟 <span id="recent-count">0</span> 冊</button>
           <button class="utility-button" id="shortcuts-button" type="button" aria-haspopup="dialog">J / K 移動 · / 搜尋</button>
@@ -36,17 +40,10 @@
           <button id="header-search-submit" type="submit" form="search-form" aria-label="搜尋"><span aria-hidden="true">⌕</span></button>
         </div>
 
-        <button class="activity-trigger is-checking" id="activity-trigger" type="button" aria-expanded="false" aria-controls="activity-panel">
-          <i aria-hidden="true"></i>
-          <span id="activity-summary">狀態檢查中</span>
-          <b id="activity-count" hidden>0</b>
-        </button>
-
         <nav class="primary-nav" aria-label="主要功能">
           <a href="#shelf" data-route="shelf" aria-current="page">書架</a>
           <a href="#library" data-route="library">全部藏書</a>
           <a href="#triage" data-route="triage">待歸檔 <b class="nav-count" id="triage-count" hidden>0</b></a>
-          <a href="#basket" data-route="basket">工作籃 <b class="nav-count" id="work-basket-count" hidden>0</b></a>
           <a href="#review" data-route="review">品質審核 <b class="nav-count" id="review-count" hidden>0</b></a>
           <a href="#duplicates" data-route="duplicates">重複作品 <b class="nav-count" id="duplicate-count" hidden>0</b></a>
           <a href="#workbench" data-route="workbench">工作台 <b class="nav-count" id="workbench-count" hidden>0</b></a>
@@ -273,7 +270,6 @@
                   <button class="primary-button" id="read-button" type="button">用閱讀器開啟</button>
                   <button class="secondary-button" id="open-button" type="button">在系統中開啟</button>
                   <button class="secondary-button" id="archive-button" type="button" hidden>歸檔到收藏區</button>
-                  <button class="basket-toggle" id="detail-basket-toggle" type="button" disabled>工作籃狀態載入中</button>
                 </div>
 
                 <dl class="metadata-list" id="metadata-list"></dl>
@@ -334,50 +330,21 @@
           <p><strong id="selection-count">0</strong> 筆批次選取</p>
           <span>批次操作只影響已選收藏；新載入結果不會自動加入</span>
           <div>
-            <button class="text-button" id="selection-basket-add" type="button">將已選 0 本加入工作籃</button>
-            <button class="text-button" id="clear-selection" type="button">清除選取</button>
+            <button class="secondary-button" id="clear-selection" type="button">清除選取</button>
             <button class="secondary-button" id="selection-quick-archive" type="button">快速歸檔 0 本</button>
             <a class="primary-button button-link" id="selection-workbench-link" href="#workbench">前往工作台處理 0 筆</a>
           </div>
         </aside>
       </section>
 
-      <section class="view basket-view" id="basket-view" data-view="basket" aria-labelledby="basket-heading" hidden>
-        <header class="page-heading basket-heading">
-          <div>
-            <p class="eyebrow">PERSISTENT LIST / 固定收藏</p>
-            <h1 id="basket-heading">工作籃</h1>
-          </div>
-          <p>跨搜尋累積的固定收藏清單。勾選只決定這次送往工作台的範圍，不會改變藏書頁的批次選取。</p>
-        </header>
-
-        <div class="basket-toolbar" aria-label="工作籃動作">
-          <div>
-            <strong id="work-basket-summary">正在讀取工作籃…</strong>
-            <span id="work-basket-selection-summary">尚未選擇送往工作台的收藏</span>
-          </div>
-          <div>
-            <button class="text-button" id="work-basket-select-all" type="button">全選</button>
-            <button class="text-button" id="work-basket-clear-selection" type="button">取消全選</button>
-            <button class="danger-text-button" id="work-basket-clear" type="button">清空工作籃</button>
-            <button class="primary-button" id="work-basket-send" type="button" disabled>送全部到工作台</button>
-          </div>
-        </div>
-
-        <div class="basket-loading" id="work-basket-loading" role="status"><span class="loader" aria-hidden="true"></span> 正在讀取固定清單…</div>
-        <div class="basket-error" id="work-basket-error" role="alert" hidden>
-          <strong>無法讀取工作籃</strong>
-          <button class="secondary-button" id="retry-work-basket" type="button">再試一次</button>
-        </div>
-        <ol class="basket-list" id="work-basket-list"></ol>
-        <div class="workbench-empty basket-empty" id="work-basket-empty" hidden>
-          <span aria-hidden="true">籃</span>
-          <div><h3>工作籃目前是空的</h3><p>從藏書 Detail 加入單本，或先用核取方塊選取多本後一次加入。</p><a class="text-link" data-library-context-link href="#library">回到全部藏書 <span aria-hidden="true">→</span></a></div>
-        </div>
-      </section>
-
       <section class="view" id="workbench-view" data-view="workbench" aria-labelledby="workbench-heading" hidden>
-        <h1 class="visually-hidden" id="workbench-heading">整理與人工裁決</h1>
+        <header class="page-heading">
+          <div>
+            <p class="eyebrow">WORKBENCH / 批次與裁決</p>
+            <h1 id="workbench-heading">工作台</h1>
+          </div>
+          <p>對已選收藏做批次操作、裁決同名候選、治理 metadata 正式名稱；檔案動作都由後端重新驗證後才執行。</p>
+        </header>
 
         <div class="operations-dashboard">
           <section class="operations-section batch-desk" aria-labelledby="batch-desk-heading">
@@ -530,11 +497,11 @@
 
       <section class="view duplicate-view" id="duplicates-view" data-view="duplicates" aria-labelledby="duplicates-heading" hidden>
         <header class="page-heading duplicate-page-heading">
-          <div><p class="eyebrow">DUPLICATE WORKS / 重複作品</p><h1 id="duplicates-heading">把相似變成可裁決的證據</h1></div>
+          <div><p class="eyebrow">DUPLICATE WORKS / 重複偵測</p><h1 id="duplicates-heading">重複作品</h1></div>
           <p>偵測器只列出候選並保存人工判斷；確認重複不會合併身分，也不會刪除任何檔案。</p>
         </header>
         <section class="duplicate-scan-bar" aria-labelledby="duplicate-scan-heading">
-          <div><p class="section-index">FINGERPRINT INDEX / 內容索引</p><h2 id="duplicate-scan-heading">背景建立作品指紋</h2><p id="duplicate-job-detail">來源未變時沿用快取；工作固定同時處理 2 本，可離開此頁繼續。</p></div>
+          <div><p class="section-index">FINGERPRINT INDEX / 內容索引</p><h2 id="duplicate-scan-heading">背景建立作品指紋</h2><p id="duplicate-job-detail">來源未變時沿用快取；工作固定同時處理 <span class="num">2</span> 本，可離開此頁繼續。</p></div>
           <div class="duplicate-scan-actions">
             <button class="secondary-button" id="start-duplicate-scan" type="button">掃描重複作品</button>
             <button class="text-button" id="retry-duplicate-failures" type="button" hidden>重試失敗項目</button>
@@ -567,8 +534,8 @@
       <section class="view triage-view" id="triage-view" data-view="triage" aria-labelledby="triage-heading" hidden>
         <header class="page-heading triage-page-heading">
           <div>
-            <p class="eyebrow">INBOX TRIAGE / 待歸檔</p>
-            <h1 id="triage-heading">逐本確認去向，一鍵歸檔</h1>
+            <p class="eyebrow">INBOX TRIAGE / 下載區收藏</p>
+            <h1 id="triage-heading">待歸檔</h1>
           </div>
           <p>只列出下載區尚未歸檔的收藏；每本都先做一次歸檔預檢，確認目的地後才動檔案。</p>
         </header>
@@ -641,8 +608,8 @@
       <section class="view review-view" id="review-view" data-view="review" aria-labelledby="review-heading" hidden>
         <header class="page-heading review-page-heading">
           <div>
-            <p class="eyebrow">DATA QUALITY / 品質審核</p>
-            <h1 id="review-heading">逐筆裁決，不離開編目桌</h1>
+            <p class="eyebrow">DATA QUALITY / 資料品質</p>
+            <h1 id="review-heading">品質審核</h1>
           </div>
           <p>Queue 只列出缺少主要 metadata 或仍有候選待裁決的收藏；每次決定都沿用既有來源、信心與優先序。</p>
         </header>
@@ -652,13 +619,11 @@
             <strong id="review-total">正在清點待審項目…</strong>
             <span id="review-position"></span>
           </div>
-          <label>只看
-            <select id="review-kind">
-              <option value="all">全部問題</option>
-              <option value="candidate">候選待裁決</option>
-              <option value="missing">缺少 metadata</option>
-            </select>
-          </label>
+          <select id="review-kind" aria-label="只看">
+            <option value="all">全部問題</option>
+            <option value="candidate">候選待裁決</option>
+            <option value="missing">缺少 metadata</option>
+          </select>
           <button class="text-button" id="refresh-review" type="button">重新整理 Queue</button>
         </div>
 
@@ -716,8 +681,13 @@
       </section>
 
       <section class="view" id="stats-view" data-view="stats" aria-labelledby="stats-heading" hidden>
-        <h1 class="visually-hidden" id="stats-heading">收藏概況</h1>
-        <p class="stats-intro">只計入目前有效的收藏，不包含已移除或被合併的紀錄。名稱皆可點擊，直接帶入藏書篩選。</p>
+        <header class="page-heading">
+          <div>
+            <p class="eyebrow">STATISTICS / 收藏概況</p>
+            <h1 id="stats-heading">統計</h1>
+          </div>
+          <p>只計入目前有效的收藏，不包含已移除或被合併的紀錄。名稱皆可點擊，直接帶入藏書篩選。</p>
+        </header>
         <div class="stat-ledger" id="stat-ledger" aria-live="polite"></div>
         <div class="stat-columns" id="stat-columns"></div>
       </section>
@@ -768,7 +738,7 @@
             <ol class="ehentai-results" id="ehentai-results"></ol>
             <nav class="ehentai-pagination" aria-label="ExHentai 搜尋結果分頁">
               <button class="secondary-button" id="ehentai-previous" type="button">上一頁</button>
-              <span id="ehentai-page-label">第 1 頁</span>
+              <span id="ehentai-page-label">第 <span class="num">1</span> 頁</span>
               <button class="secondary-button" id="ehentai-next" type="button">下一頁</button>
             </nav>
           </section>
@@ -808,7 +778,13 @@
       </section>
 
       <section class="view" id="settings-view" data-view="settings" aria-labelledby="settings-heading" hidden>
-        <h1 class="visually-hidden" id="settings-heading">編目室設定</h1>
+        <header class="page-heading">
+          <div>
+            <p class="eyebrow">SETTINGS / 編目室設定</p>
+            <h1 id="settings-heading">設定</h1>
+          </div>
+          <p>調整閱讀器、縮圖快取、ExHentai 連線與資料夾來源。</p>
+        </header>
 
         <section class="first-run" id="first-run" aria-labelledby="first-run-heading" hidden>
           <div class="first-run-copy">

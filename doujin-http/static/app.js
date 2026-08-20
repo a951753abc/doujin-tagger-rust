@@ -135,11 +135,6 @@
     leavingLibraryContextCaptured: false,
     selectedIds: new Set(),
     selectedRecords: new Map(),
-    workBasket: null,
-    workBasketLoaded: false,
-    workBasketLoading: false,
-    workBasketMembership: new Set(),
-    workBasketSelectedIds: new Set(),
     sort: "created",
     direction: "desc",
     libraryBatchSize: DEFAULT_LIBRARY_BATCH_SIZE,
@@ -296,7 +291,6 @@
   const thumbnailTrackers = new Map();
   const thumbnailRequestQueue = [];
   let libraryLoadPromise = null;
-  let workBasketPromise = null;
   let archiveTargetResolver = null;
   let archiveTargetConfirmed = false;
   let thumbnailRequestsInFlight = 0;
@@ -326,7 +320,6 @@
 
   function init() {
     Object.assign(ui, {
-      serviceState: byId("service-state"),
       activityTrigger: byId("activity-trigger"),
       activitySummary: byId("activity-summary"),
       activityCount: byId("activity-count"),
@@ -542,20 +535,7 @@
       selectionRail: byId("selection-rail"),
       selectionCount: byId("selection-count"),
       selectionWorkbenchLink: byId("selection-workbench-link"),
-      selectionBasketAdd: byId("selection-basket-add"),
       selectionQuickArchive: byId("selection-quick-archive"),
-      workBasketCount: byId("work-basket-count"),
-      detailBasketToggle: byId("detail-basket-toggle"),
-      workBasketSummary: byId("work-basket-summary"),
-      workBasketSelectionSummary: byId("work-basket-selection-summary"),
-      workBasketList: byId("work-basket-list"),
-      workBasketEmpty: byId("work-basket-empty"),
-      workBasketLoading: byId("work-basket-loading"),
-      workBasketError: byId("work-basket-error"),
-      workBasketSelectAll: byId("work-basket-select-all"),
-      workBasketClearSelection: byId("work-basket-clear-selection"),
-      workBasketClear: byId("work-basket-clear"),
-      workBasketSend: byId("work-basket-send"),
       workbenchCount: byId("workbench-count"),
       reviewCount: byId("review-count"),
       duplicateCount: byId("duplicate-count"),
@@ -711,7 +691,6 @@
       state.libraryBatchSizeReady = true;
       routeFromHash();
     });
-    loadWorkBasket();
     loadSavedViews();
     startActivityMonitoring();
   }
@@ -785,7 +764,6 @@
     byId("select-cover-button").addEventListener("click", openCoverSelection);
     byId("rebuild-thumbnail-button").addEventListener("click", rebuildThumbnail);
     ui.clearCoverSelection.addEventListener("click", clearCoverSelection);
-    ui.detailBasketToggle.addEventListener("click", toggleSelectedWorkBasketMembership);
     ui.tagForm.addEventListener("submit", addTag);
     ui.metadataEvidence.addEventListener("toggle", toggleMetadataEvidence);
     byId("refresh-metadata-evidence").addEventListener("click", () => loadMetadataEvidence(true));
@@ -847,11 +825,6 @@
     byId("select-loaded").addEventListener("click", selectLoadedCollections);
     byId("invert-loaded").addEventListener("click", invertLoadedSelection);
     byId("clear-selection").addEventListener("click", clearSelection);
-    ui.selectionBasketAdd.addEventListener("click", addSelectionToWorkBasket);
-    ui.workBasketSelectAll.addEventListener("click", selectAllWorkBasketItems);
-    ui.workBasketClearSelection.addEventListener("click", clearWorkBasketSelection);
-    ui.workBasketClear.addEventListener("click", clearWorkBasket);
-    ui.workBasketSend.addEventListener("click", sendWorkBasketToWorkbench);
     ui.startDuplicateScan.addEventListener("click", startDuplicateScan);
     ui.retryDuplicateFailures.addEventListener("click", retryDuplicateFailures);
     byId("refresh-duplicates").addEventListener("click", () => loadDuplicateCandidates(true));
@@ -859,7 +832,6 @@
       state.duplicateLevel = ui.duplicateLevel.value;
       loadDuplicateCandidates(true);
     });
-    byId("retry-work-basket").addEventListener("click", () => loadWorkBasket({ force: true }));
     ui.batchTagForm.addEventListener("submit", batchAddTag);
     ui.batchMetadataForm.elements.field.addEventListener("change", syncBatchMetadataField);
     ui.batchMetadataForm.addEventListener("submit", batchSetMetadata);
@@ -978,7 +950,7 @@
     const previousRoute = state.route;
     const parsedRoute = parseRouteHash();
     const route = parsedRoute.route;
-    const nextRoute = ["shelf", "library", "triage", "basket", "review", "duplicates", "workbench", "ehentai", "stats", "settings"].includes(route) ? route : "shelf";
+    const nextRoute = ["shelf", "library", "triage", "review", "duplicates", "workbench", "ehentai", "stats", "settings"].includes(route) ? route : "shelf";
     if (previousRoute === "library" && nextRoute !== "library") {
       if (!state.leavingLibraryContextCaptured) rememberLibraryContext();
       state.leavingLibraryContextCaptured = false;
@@ -1050,7 +1022,6 @@
     }
     if (state.route === "workbench") loadWorkbench();
     if (state.route === "duplicates") loadDuplicateCandidates();
-    if (state.route === "basket") loadWorkBasket();
     if (state.route === "review") {
       const preferredId = state.reviewReturnId || currentReviewItem()?.collection.id;
       state.reviewReturnId = null;
@@ -1216,7 +1187,7 @@
   }
 
   function routeTitle(route) {
-    return { shelf: "書架", library: "全部藏書", triage: "待歸檔", basket: "工作籃", review: "品質審核", duplicates: "重複作品", workbench: "工作台", ehentai: "ExHentai", stats: "統計", settings: "設定" }[route];
+    return { shelf: "書架", library: "全部藏書", triage: "待歸檔", review: "品質審核", duplicates: "重複作品", workbench: "工作台", ehentai: "ExHentai", stats: "統計", settings: "設定" }[route];
   }
 
   function startActivityMonitoring() {
@@ -1230,10 +1201,8 @@
     try {
       await api("/api/health");
       state.serviceOnline = true;
-      setServiceState("online", "本機服務正常");
     } catch (_) {
       state.serviceOnline = false;
-      setServiceState("offline", "本機服務無回應");
     }
 
     if (state.serviceOnline) {
@@ -1299,11 +1268,6 @@
     });
     state.activityExternalRefreshPromise = trackedPromise;
     return trackedPromise;
-  }
-
-  function setServiceState(status, label) {
-    ui.serviceState.className = `service-state ${status}`;
-    ui.serviceState.lastChild.textContent = ` ${label}`;
   }
 
   function setActivityPanelOpen(open) {
@@ -3059,7 +3023,8 @@
       await restoreLibraryLoadedWindow(targetPage);
       if (deferFocus) resolveLibraryFocus();
       if (state.route === "library" && state.restoreLibraryContext) restoreLibraryWorkContext();
-      setServiceState("online", "本機服務正常");
+      state.serviceOnline = true;
+      renderActivityCenter();
       return true;
     } catch (error) {
       if (requestNumber !== state.requestNumber) return false;
@@ -3068,7 +3033,8 @@
       ui.results.replaceChildren();
       ui.resultSummary.textContent = "無法讀取收藏";
       renderLibraryLoadState();
-      setServiceState("offline", "要求失敗");
+      state.serviceOnline = false;
+      renderActivityCenter();
       toast(error.message, true);
       return false;
     } finally {
@@ -3210,12 +3176,14 @@
           ? `已載入 ${formatNumber(additions.length)} 筆，尚有 ${formatNumber(remaining)} 筆`
           : `已載入 ${formatNumber(additions.length)} 筆，已顯示全部 ${formatNumber(state.total)} 筆`;
       }
-      setServiceState("online", "本機服務正常");
+      state.serviceOnline = true;
+      renderActivityCenter();
       return true;
     } catch (error) {
       if (requestNumber !== state.requestNumber) return false;
       state.libraryLoadError = true;
-      setServiceState("offline", "要求失敗");
+      state.serviceOnline = false;
+      renderActivityCenter();
       ui.libraryLoadAnnouncer.textContent = "更多收藏載入失敗，可使用重試載入";
       toast(`無法載入更多收藏：${error.message}`, true);
       return false;
@@ -3592,7 +3560,6 @@
     ui.detailTitle.textContent = displayTitle(collection);
     ui.detailFilename.textContent = collection.filename;
     ui.detailPath.textContent = collection.path;
-    updateDetailBasketToggle();
 
     ui.metadataList.replaceChildren();
     const rows = [
@@ -3664,19 +3631,25 @@
     const externalStatus = state.externalJob?.status;
     const thumbnailFailed = ui.detailCover?.dataset.thumbnailStatus === "failed";
     const parts = [];
-    if (missing.length) parts.push(`缺少 ${missing.length} 欄（${missingLabels.join("、")}）`);
-    if (pending) parts.push(`${pending} 筆 assertion 待裁決`);
-    if (["pending", "running"].includes(externalStatus)) parts.push("外部搜尋進行中");
-    if (externalStatus === "partial") parts.push("外部搜尋部分完成");
-    if (externalStatus === "failed") parts.push("外部搜尋失敗");
-    if (thumbnailFailed) parts.push("縮圖失敗");
+    if (missing.length) parts.push([document.createTextNode("缺少 "), numSpan(missing.length), document.createTextNode(` 欄（${missingLabels.join("、")}）`)]);
+    if (pending) parts.push([numSpan(pending), document.createTextNode(" 筆 assertion 待裁決")]);
+    if (["pending", "running"].includes(externalStatus)) parts.push([document.createTextNode("外部搜尋進行中")]);
+    if (externalStatus === "partial") parts.push([document.createTextNode("外部搜尋部分完成")]);
+    if (externalStatus === "failed") parts.push([document.createTextNode("外部搜尋失敗")]);
+    if (thumbnailFailed) parts.push([document.createTextNode("縮圖失敗")]);
 
     const attentionCount = missing.length + pending + Number(["partial", "failed"].includes(externalStatus)) + Number(thumbnailFailed);
     const checking = !state.metadataHistory && state.metadataHistoryCollectionId === state.selected?.id;
     ui.metadataEvidence.classList.toggle("has-data-quality-issues", attentionCount > 0);
     ui.metadataEvidence.classList.toggle("has-data-quality-work", ["pending", "running"].includes(externalStatus));
     if (parts.length) {
-      ui.dataQualitySummary.textContent = `${parts.join(" · ")}。展開可查看來源與處理工具。`;
+      const summaryNodes = [];
+      parts.forEach((part, index) => {
+        if (index > 0) summaryNodes.push(document.createTextNode(" · "));
+        summaryNodes.push(...part);
+      });
+      summaryNodes.push(document.createTextNode("。展開可查看來源與處理工具。"));
+      ui.dataQualitySummary.replaceChildren(...summaryNodes);
       ui.evidenceSummaryCount.textContent = attentionCount > 0 ? `待處理 ${attentionCount}` : "處理中";
     } else if (checking) {
       ui.dataQualitySummary.textContent = "正在檢查編目資料與來源紀錄…";
@@ -3731,7 +3704,6 @@
     unbindThumbnail(ui.detailCover);
     ui.collectionDetail.hidden = true;
     ui.detailPlaceholder.hidden = false;
-    updateDetailBasketToggle();
   }
 
   function metadataValues(value, filter = null, filterValue = null) {
@@ -4193,9 +4165,16 @@
     const value = el("strong", "assertion-value", formatEvidenceValue(assertion.value));
     const references = el("p", "assertion-reference");
     const referenceParts = [];
-    if (assertion.source_reference) referenceParts.push(assertion.source_reference);
-    if (assertion.parser_run_id) referenceParts.push(`parser run #${assertion.parser_run_id}`);
-    references.textContent = referenceParts.length ? referenceParts.join(" · ") : "沒有額外來源參照";
+    if (assertion.source_reference) referenceParts.push([document.createTextNode(assertion.source_reference)]);
+    if (assertion.parser_run_id) referenceParts.push([document.createTextNode("parser run #"), numSpan(assertion.parser_run_id)]);
+    if (referenceParts.length) {
+      referenceParts.forEach((part, index) => {
+        if (index > 0) references.append(document.createTextNode(" · "));
+        references.append(...part);
+      });
+    } else {
+      references.textContent = "沒有額外來源參照";
+    }
     row.append(header, value, references);
     if (assertion.reason) row.append(el("p", "assertion-reason", assertion.reason));
     if (assertion.confidence_total != null) row.append(confidenceEvidence(assertion.confidence_total, assertion.confidence));
@@ -4225,7 +4204,9 @@
     meter.max = 1;
     meter.value = total;
     meter.setAttribute("aria-label", `信心分數 ${formatPercent(total)}`);
-    summary.append(el("span", "", `信心分數 ${formatPercent(total)}`), meter);
+    const scoreLabel = el("span");
+    scoreLabel.append(document.createTextNode("信心分數 "), numSpan(formatPercent(total)));
+    summary.append(scoreLabel, meter);
     wrap.append(summary);
     if (confidence && typeof confidence === "object") {
       const list = el("dl", "confidence-breakdown");
@@ -4257,7 +4238,9 @@
         el("span", `evidence-badge disposition-${result.disposition}`, SEARCH_DISPOSITION_LABELS[result.disposition] || result.disposition),
         el("strong", "", formatEvidenceValue(result.value)),
       );
-      item.append(heading, el("p", "", `${result.source_reference} · 信心 ${formatPercent(result.confidence_total)}`));
+      const evidenceLine = el("p");
+      evidenceLine.append(document.createTextNode(`${result.source_reference} · 信心 `), numSpan(formatPercent(result.confidence_total)));
+      item.append(heading, evidenceLine);
       item.append(el("small", "", result.assertion_id ? `已建立 assertion #${result.assertion_id}` : "僅保留搜尋證據，不能直接套用"));
       list.append(item);
     });
@@ -4700,8 +4683,6 @@
     const count = state.selectedIds.size;
     ui.selectionRail.hidden = count === 0;
     ui.selectionCount.textContent = String(count);
-    ui.selectionBasketAdd.textContent = `將已選 ${formatNumber(count)} 本加入工作籃`;
-    ui.selectionBasketAdd.disabled = count === 0 || state.workBasketLoading;
     ui.selectionQuickArchive.textContent = `快速歸檔 ${formatNumber(count)} 本`;
     ui.selectionQuickArchive.disabled = count === 0;
     ui.selectionWorkbenchLink.textContent = `前往工作台處理 ${formatNumber(count)} 筆`;
@@ -4712,226 +4693,6 @@
 
   function selectedCollections() {
     return Array.from(state.selectedIds, (id) => state.selectedRecords.get(id)).filter(Boolean);
-  }
-
-  async function loadWorkBasket({ force = false } = {}) {
-    if (state.workBasketLoaded && !force) {
-      updateWorkBasketChrome();
-      if (state.route === "basket") renderWorkBasket();
-      return state.workBasket;
-    }
-    if (workBasketPromise && !force) return workBasketPromise;
-    state.workBasketLoading = true;
-    ui.workBasketLoading.hidden = false;
-    ui.workBasketError.hidden = true;
-    updateDetailBasketToggle();
-    updateSelectionUI();
-    workBasketPromise = api("/api/work-baskets/1")
-      .then((basket) => {
-        applyWorkBasket(basket);
-        state.workBasketLoaded = true;
-        return basket;
-      })
-      .catch((error) => {
-        ui.workBasketError.hidden = false;
-        ui.workBasketError.querySelector("strong").textContent = `無法讀取工作籃：${error.message}`;
-        if (state.route === "basket") toast(error.message, true);
-        return null;
-      })
-      .finally(() => {
-        state.workBasketLoading = false;
-        workBasketPromise = null;
-        ui.workBasketLoading.hidden = true;
-        updateDetailBasketToggle();
-        updateSelectionUI();
-      });
-    return workBasketPromise;
-  }
-
-  function applyWorkBasket(basket) {
-    state.workBasket = basket;
-    state.workBasketMembership = new Set(basket.items.map((item) => item.collection.id));
-    state.workBasketSelectedIds = new Set(
-      Array.from(state.workBasketSelectedIds).filter((id) => state.workBasketMembership.has(id)),
-    );
-    updateWorkBasketChrome();
-    if (state.route === "basket") renderWorkBasket();
-  }
-
-  function updateWorkBasketChrome() {
-    const count = state.workBasket?.count || 0;
-    ui.workBasketCount.textContent = String(count);
-    ui.workBasketCount.hidden = count === 0;
-    ui.workBasketCount.title = `${formatNumber(count)} 本固定收藏`;
-    updateDetailBasketToggle();
-  }
-
-  function updateDetailBasketToggle() {
-    if (!ui.detailBasketToggle) return;
-    if (!state.selected) {
-      ui.detailBasketToggle.disabled = true;
-      ui.detailBasketToggle.textContent = "加入工作籃";
-      return;
-    }
-    const included = state.workBasketMembership.has(state.selected.id);
-    ui.detailBasketToggle.disabled = state.workBasketLoading || !state.workBasketLoaded;
-    ui.detailBasketToggle.classList.toggle("is-included", included);
-    ui.detailBasketToggle.textContent = state.workBasketLoading || !state.workBasketLoaded
-      ? "工作籃狀態載入中"
-      : included
-        ? "從工作籃移除"
-        : "加入工作籃";
-    ui.detailBasketToggle.setAttribute("aria-pressed", String(included));
-  }
-
-  async function toggleSelectedWorkBasketMembership() {
-    if (!state.selected || state.workBasketLoading) return;
-    const collection = state.selected;
-    const included = state.workBasketMembership.has(collection.id);
-    ui.detailBasketToggle.disabled = true;
-    try {
-      const basket = included
-        ? await api(`/api/work-baskets/1/collections/${collection.id}`, { method: "DELETE" })
-        : await api("/api/work-baskets/1/collections", {
-            method: "POST",
-            body: { collection_ids: [collection.id] },
-          });
-      applyWorkBasket(basket);
-      toast(included ? "已從工作籃移除" : "已加入工作籃；切換搜尋後仍會保留");
-    } catch (error) {
-      toast(error.message, true);
-    } finally {
-      updateDetailBasketToggle();
-    }
-  }
-
-  async function addSelectionToWorkBasket() {
-    const collectionIds = Array.from(state.selectedIds);
-    if (!collectionIds.length || state.workBasketLoading) return;
-    ui.selectionBasketAdd.disabled = true;
-    try {
-      const basket = await api("/api/work-baskets/1/collections", {
-        method: "POST",
-        body: { collection_ids: collectionIds },
-      });
-      applyWorkBasket(basket);
-      toast(`已將 ${formatNumber(collectionIds.length)} 本加入工作籃；批次選取維持不變`);
-    } catch (error) {
-      toast(error.message, true);
-    } finally {
-      updateSelectionUI();
-    }
-  }
-
-  function renderWorkBasket() {
-    if (!ui.workBasketList || !state.workBasket) return;
-    const basket = state.workBasket;
-    const selectedCount = state.workBasketSelectedIds.size;
-    unbindThumbnailsWithin(ui.workBasketList);
-    ui.workBasketList.replaceChildren();
-    ui.workBasketEmpty.hidden = basket.count !== 0;
-    ui.workBasketSummary.textContent = `固定保存 ${formatNumber(basket.count)} 本 active 收藏`;
-    ui.workBasketSelectionSummary.textContent = selectedCount
-      ? `已勾選 ${formatNumber(selectedCount)} 本，將只送這些收藏到工作台`
-      : "未勾選時會將整個工作籃送到工作台";
-    ui.workBasketSelectAll.disabled = basket.count === 0 || selectedCount === basket.count;
-    ui.workBasketClearSelection.disabled = selectedCount === 0;
-    ui.workBasketClear.disabled = basket.count === 0;
-    ui.workBasketSend.disabled = basket.count === 0;
-    ui.workBasketSend.textContent = selectedCount
-      ? `送已勾選 ${formatNumber(selectedCount)} 本到工作台`
-      : `送全部 ${formatNumber(basket.count)} 本到工作台`;
-
-    basket.items.forEach((entry, index) => {
-      const collection = entry.collection;
-      const item = el("li", "basket-item");
-      const select = document.createElement("input");
-      select.type = "checkbox";
-      select.checked = state.workBasketSelectedIds.has(collection.id);
-      select.setAttribute("aria-label", `選擇 ${displayTitle(collection)} 送到工作台`);
-      select.addEventListener("change", () => {
-        if (select.checked) state.workBasketSelectedIds.add(collection.id);
-        else state.workBasketSelectedIds.delete(collection.id);
-        renderWorkBasket();
-      });
-      const cover = document.createElement("img");
-      cover.className = "basket-cover";
-      cover.alt = "";
-      cover.width = 54;
-      cover.height = 72;
-      cover.loading = "lazy";
-      bindThumbnail(cover, collection.id);
-      const copy = el("div", "basket-item-copy");
-      copy.append(
-        el("span", "basket-sequence", String(index + 1).padStart(3, "0")),
-        el("strong", "", displayTitle(collection)),
-        el("small", "", `${collection.circle || "社團未設定"} · ${collection.filename}`),
-      );
-      const actions = el("div", "basket-item-actions");
-      const view = el("button", "text-button", "查看 Detail");
-      view.type = "button";
-      view.addEventListener("click", () => navigateToCollection(collection));
-      const remove = el("button", "danger-text-button", "移出工作籃");
-      remove.type = "button";
-      remove.addEventListener("click", () => removeWorkBasketItem(collection));
-      actions.append(view, remove);
-      item.append(select, cover, copy, actions);
-      ui.workBasketList.append(item);
-    });
-  }
-
-  function selectAllWorkBasketItems() {
-    state.workBasketSelectedIds = new Set(
-      (state.workBasket?.items || []).map((item) => item.collection.id),
-    );
-    renderWorkBasket();
-  }
-
-  function clearWorkBasketSelection() {
-    state.workBasketSelectedIds.clear();
-    renderWorkBasket();
-  }
-
-  async function removeWorkBasketItem(collection) {
-    try {
-      const basket = await api(`/api/work-baskets/1/collections/${collection.id}`, {
-        method: "DELETE",
-      });
-      applyWorkBasket(basket);
-      toast(`已將「${displayTitle(collection)}」移出工作籃`);
-    } catch (error) {
-      toast(error.message, true);
-    }
-  }
-
-  async function clearWorkBasket() {
-    const count = state.workBasket?.count || 0;
-    if (!count || !window.confirm(`清空工作籃中的 ${formatNumber(count)} 本固定收藏？藏書本身不會刪除。`)) return;
-    try {
-      const basket = await api("/api/work-baskets/1/collections", { method: "DELETE" });
-      applyWorkBasket(basket);
-      toast("已清空工作籃；藏書資料未受影響");
-    } catch (error) {
-      toast(error.message, true);
-    }
-  }
-
-  function sendWorkBasketToWorkbench() {
-    const entries = state.workBasket?.items || [];
-    const chosen = workBasketHandoffEntries(entries, state.workBasketSelectedIds);
-    if (!chosen.length) return;
-    replaceOperationSelection(state.selectedIds, state.selectedRecords, chosen);
-    state.selectionContext = "work_basket";
-    syncResultCheckboxes();
-    updateSelectionUI();
-    location.hash = "workbench";
-    toast(`已將工作籃中的 ${formatNumber(chosen.length)} 本載入工作台操作清單`);
-  }
-
-  function workBasketHandoffEntries(entries, selectedIds) {
-    return selectedIds.size
-      ? entries.filter((item) => selectedIds.has(item.collection.id))
-      : entries.slice();
   }
 
   function replaceOperationSelection(selectedIds, selectedRecords, entries) {
@@ -5323,8 +5084,9 @@
     const available = availableReviewIndices();
     const skippedCount = state.reviewSkipped.size;
     ui.reviewKind.value = state.reviewKind;
-    ui.reviewTotal.textContent = `${formatNumber(state.reviewTotal)} 本收藏需要人工處理`;
-    ui.reviewPosition.textContent = skippedCount ? `本次已略過 ${formatNumber(skippedCount)} 本` : "完成裁決或補值後，Queue 會依最新狀態更新";
+    ui.reviewTotal.replaceChildren(numSpan(formatNumber(state.reviewTotal)), document.createTextNode(" 本收藏需要人工處理"));
+    if (skippedCount) ui.reviewPosition.replaceChildren(document.createTextNode("本次已略過 "), numSpan(formatNumber(skippedCount)), document.createTextNode(" 本"));
+    else ui.reviewPosition.textContent = "完成裁決或補值後，Queue 會依最新狀態更新";
     ui.reviewEmpty.hidden = available.length > 0;
     ui.reviewDesk.hidden = available.length === 0;
     ui.resetReviewSkips.hidden = skippedCount === 0;
@@ -5390,7 +5152,15 @@
     const badges = el("div", "assertion-badges");
     badges.append(el("span", `evidence-badge source-${assertion.source}`, METADATA_SOURCE_LABELS[assertion.source] || assertion.source), el("span", `evidence-badge status-${assertion.status}`, ASSERTION_STATUS_LABELS[assertion.status] || assertion.status));
     column.append(badges, el("strong", "review-evidence-value", formatEvidenceValue(assertion.value)));
-    column.append(el("p", "assertion-reference", assertion.source_reference || (assertion.parser_run_id ? `parser run #${assertion.parser_run_id}` : "沒有額外來源參照")));
+    const reviewReference = el("p", "assertion-reference");
+    if (assertion.source_reference) {
+      reviewReference.textContent = assertion.source_reference;
+    } else if (assertion.parser_run_id) {
+      reviewReference.append(document.createTextNode("parser run #"), numSpan(assertion.parser_run_id));
+    } else {
+      reviewReference.textContent = "沒有額外來源參照";
+    }
+    column.append(reviewReference);
     if (selection) column.append(el("small", "review-selection-kind", `selection：${SELECTION_KIND_LABELS[selection.selected_by] || selection.selected_by}`));
     if (assertion.reason) column.append(el("p", "assertion-reason", assertion.reason));
     if (assertion.confidence_total != null) column.append(confidenceEvidence(assertion.confidence_total, assertion.confidence));
@@ -5407,7 +5177,12 @@
       const item = el("li", "review-issue-row");
       item.append(el("strong", "", issue.type === "candidate" ? `${METADATA_LABELS[issue.field]}候選` : `缺${METADATA_LABELS[issue.field]}`));
       if (issue.type === "candidate") {
-        item.append(el("span", "", formatEvidenceValue(issue.assertion.value)), el("small", "", `${METADATA_SOURCE_LABELS[issue.assertion.source] || issue.assertion.source}${issue.assertion.confidence_total == null ? "" : ` · 信心 ${formatPercent(issue.assertion.confidence_total)}`}`));
+        const sourceSmall = el("small");
+        sourceSmall.textContent = METADATA_SOURCE_LABELS[issue.assertion.source] || issue.assertion.source;
+        if (issue.assertion.confidence_total != null) {
+          sourceSmall.append(document.createTextNode(" · 信心 "), numSpan(formatPercent(issue.assertion.confidence_total)));
+        }
+        item.append(el("span", "", formatEvidenceValue(issue.assertion.value)), sourceSmall);
         if (issue.assertion.reason) item.append(el("p", "", issue.assertion.reason));
       } else item.append(el("span", "metadata-missing", "目前未設定"));
       list.append(item);
@@ -5566,10 +5341,9 @@
     clearTriageArchivedResult();
     const available = availableTriageIndices();
     const skippedCount = state.triageSkipped.size;
-    ui.triageTotal.textContent = `${formatNumber(state.triageTotal)} 本收藏還在下載區等待歸檔`;
-    ui.triagePosition.textContent = skippedCount
-      ? `本次已略過 ${formatNumber(skippedCount)} 本`
-      : "歸檔後這本會從清單移除，並依最新狀態更新計數";
+    ui.triageTotal.replaceChildren(numSpan(formatNumber(state.triageTotal)), document.createTextNode(" 本收藏還在下載區等待歸檔"));
+    if (skippedCount) ui.triagePosition.replaceChildren(document.createTextNode("本次已略過 "), numSpan(formatNumber(skippedCount)), document.createTextNode(" 本"));
+    else ui.triagePosition.textContent = "歸檔後這本會從清單移除，並依最新狀態更新計數";
     ui.resetTriageSkips.hidden = skippedCount === 0;
     ui.triageEmpty.hidden = available.length > 0;
     ui.triageDesk.hidden = available.length === 0;
@@ -5613,9 +5387,15 @@
 
   function renderTriageQuality(collection) {
     const missing = missingMetadataFields(collection);
-    ui.triageQualitySummary.textContent = missing.length
-      ? `缺少 ${formatNumber(missing.length)} 欄（${missing.map(({ label }) => label).join("、")}）；歸檔目的地會依現有欄位決定。`
-      : "主要欄位都已填寫，歸檔後可直接進入對應分類。";
+    if (missing.length) {
+      ui.triageQualitySummary.replaceChildren(
+        document.createTextNode("缺少 "),
+        numSpan(formatNumber(missing.length)),
+        document.createTextNode(` 欄（${missing.map(({ label }) => label).join("、")}）；歸檔目的地會依現有欄位決定。`),
+      );
+    } else {
+      ui.triageQualitySummary.textContent = "主要欄位都已填寫，歸檔後可直接進入對應分類。";
+    }
     ui.triageQualityActions.replaceChildren();
     missing.slice(0, 4).forEach(({ field, label }) => {
       const button = el("button", "text-button", `補上${label}`);
@@ -5796,7 +5576,7 @@
     const result = state.triageArchivedResult;
     if (!result) return;
     setTriageItemActionsEnabled(false);
-    ui.triageTotal.textContent = `${formatNumber(state.triageTotal)} 本收藏還在下載區等待歸檔`;
+    ui.triageTotal.replaceChildren(numSpan(formatNumber(state.triageTotal)), document.createTextNode(" 本收藏還在下載區等待歸檔"));
     ui.triagePosition.textContent = "已歸檔這本，按 J 或「下一本」再處理下一筆。";
     ui.triageStatus.classList.remove("is-warning", "is-blocked");
     ui.triageStatus.classList.add("is-ready");
@@ -6041,9 +5821,15 @@
     const candidates = state.duplicateCandidates;
     ui.duplicateGroups.replaceChildren();
     ui.duplicateEmpty.hidden = candidates.length !== 0;
-    ui.duplicateSummary.textContent = candidates.length
-      ? `列出 ${formatNumber(candidates.length)} 組候選。Exact 與 content 是內容證據；probable 一律需要人工裁決。`
-      : "目前篩選沒有待裁決候選；偵測器不會自動刪除或合併。";
+    if (candidates.length) {
+      ui.duplicateSummary.replaceChildren(
+        document.createTextNode("列出 "),
+        numSpan(formatNumber(candidates.length)),
+        document.createTextNode(" 組候選。Exact 與 content 是內容證據；probable 一律需要人工裁決。"),
+      );
+    } else {
+      ui.duplicateSummary.textContent = "目前篩選沒有待裁決候選；偵測器不會自動刪除或合併。";
+    }
     ui.duplicateCount.textContent = String(candidates.filter((candidate) => !candidate.reviewed).length);
     ui.duplicateCount.hidden = candidates.every((candidate) => candidate.reviewed);
     candidates.forEach((candidate, index) => ui.duplicateGroups.append(duplicateCandidateCard(candidate, index)));
@@ -6054,10 +5840,12 @@
     const header = el("header", "duplicate-group-header");
     const labels = { exact: "Exact duplicate", content: "Same content", probable: "Probable same work" };
     const status = el("div", "duplicate-level-copy");
+    const confidenceSpan = el("span", `duplicate-confidence level-${candidate.level}`);
+    confidenceSpan.append(numSpan(formatPercent(candidate.confidence)), document.createTextNode(` 信心${candidate.reviewed ? " · 已確認重複" : ""}`));
     status.append(
       el("p", "section-index", `PAIR ${String(index + 1).padStart(3, "0")} / ${candidate.level.toUpperCase()}`),
       el("h2", "", labels[candidate.level] || candidate.level),
-      el("span", `duplicate-confidence level-${candidate.level}`, `${formatPercent(candidate.confidence)} 信心${candidate.reviewed ? " · 已確認重複" : ""}`),
+      confidenceSpan,
     );
     const reasons = el("ul", "duplicate-reasons");
     candidate.reasons.forEach((reason) => reasons.append(el("li", "", reason)));
@@ -6072,10 +5860,7 @@
     confirm.type = "button";
     confirm.disabled = candidate.reviewed;
     confirm.addEventListener("click", () => decideDuplicateCandidate(candidate, "confirm"));
-    const basket = el("button", "text-button", "兩本加入 Work Basket");
-    basket.type = "button";
-    basket.addEventListener("click", () => addDuplicatePairToBasket(candidate));
-    footer.append(notDuplicate, confirm, basket);
+    footer.append(notDuplicate, confirm);
     card.append(header, comparison, footer);
     return card;
   }
@@ -6097,15 +5882,23 @@
       el("p", "duplicate-bookline", [collection.circle, collection.event].filter(Boolean).join(" · ") || "社團／場次未設定"),
     );
     const facts = el("dl", "duplicate-facts");
-    const factRows = [
-      ["位置", collection.path],
-      ["來源", `${collection.root?.label || "未登記來源"} · ${collection.root?.source === "downloads" ? "新收藏" : "典藏庫"}`],
-      ["內容", `${formatBytes(evidence.file_size)} · ${formatNumber(evidence.page_count)} pages · ${formatNumber(evidence.archive_entry_count)} entries`],
-      ["Metadata", `${formatNumber(evidence.metadata_completeness)} / 6 欄 · ${formatNumber(evidence.tag_count)} tags · ${formatNumber(evidence.manual_assertion_count)} manual`],
-      ["Identifier", evidence.identifiers?.join("、") || "沒有可靠 identifier"],
-      ["解析度", evidence.max_image_width ? `${evidence.max_image_width} × ${evidence.max_image_height}` : "本版未取樣；不以檔案大小推定品質"],
-    ];
-    factRows.forEach(([label, value]) => facts.append(el("dt", "", label), el("dd", "", value)));
+    const metadataDd = el("dd");
+    metadataDd.append(
+      numSpan(formatNumber(evidence.metadata_completeness)),
+      document.createTextNode(" / "),
+      numSpan(6),
+      document.createTextNode(" 欄 · "),
+      numSpan(formatNumber(evidence.tag_count)),
+      document.createTextNode(" tags · "),
+      numSpan(formatNumber(evidence.manual_assertion_count)),
+      document.createTextNode(" manual"),
+    );
+    facts.append(el("dt", "", "位置"), el("dd", "num", collection.path));
+    facts.append(el("dt", "", "來源"), el("dd", "", `${collection.root?.label || "未登記來源"} · ${collection.root?.source === "downloads" ? "新收藏" : "典藏庫"}`));
+    facts.append(el("dt", "", "內容"), el("dd", "num", `${formatBytes(evidence.file_size)} · ${formatNumber(evidence.page_count)} pages · ${formatNumber(evidence.archive_entry_count)} entries`));
+    facts.append(el("dt", "", "Metadata"), metadataDd);
+    facts.append(el("dt", "", "Identifier"), evidence.identifiers?.length ? el("dd", "num", evidence.identifiers.join("、")) : el("dd", "", "沒有可靠 identifier"));
+    facts.append(el("dt", "", "解析度"), evidence.max_image_width ? el("dd", "num", `${evidence.max_image_width} × ${evidence.max_image_height}`) : el("dd", "", "本版未取樣；不以檔案大小推定品質"));
     const actions = el("div", "duplicate-copy-actions");
     const detail = el("button", "text-button", "查看 Detail");
     detail.type = "button";
@@ -6113,13 +5906,10 @@
     const open = el("button", "text-button", "在系統中開啟");
     open.type = "button";
     open.addEventListener("click", () => openDuplicateCollection(collection));
-    const basket = el("button", "text-button", "加入 Work Basket");
-    basket.type = "button";
-    basket.addEventListener("click", () => addDuplicateCollectionsToBasket([collection.id], "已將這本加入 Work Basket"));
     const remove = el("button", "danger-text-button", "送入既有刪除流程");
     remove.type = "button";
     remove.addEventListener("click", () => handoffDuplicateDelete(collection));
-    actions.append(detail, open, basket, remove);
+    actions.append(detail, open, remove);
     copy.append(facts, actions);
     section.append(cover, copy);
     return section;
@@ -6141,26 +5931,6 @@
       state.duplicateLoaded = false;
       await loadDuplicateCandidates(true);
       toast(decision === "exclude" ? "已保存排除；內容不變時不會再次建議" : "已標記 reviewed；兩筆收藏與檔案都保持不變");
-    } catch (error) {
-      toast(error.message, true);
-    }
-  }
-
-  async function addDuplicatePairToBasket(candidate) {
-    return addDuplicateCollectionsToBasket(
-      [candidate.left.collection.id, candidate.right.collection.id],
-      "兩本候選已加入 Work Basket，可跨頁保留比較清單",
-    );
-  }
-
-  async function addDuplicateCollectionsToBasket(collectionIds, successMessage) {
-    try {
-      const basket = await api("/api/work-baskets/1/collections", {
-        method: "POST",
-        body: { collection_ids: collectionIds },
-      });
-      applyWorkBasket(basket);
-      toast(successMessage);
     } catch (error) {
       toast(error.message, true);
     }
@@ -6344,11 +6114,9 @@
     ui.workbenchSelectionSummary.textContent = collections.length
       ? state.selectionContext === "thumbnail_failures"
         ? `縮圖失敗工作清單包含 ${formatNumber(collections.length)} 筆收藏；可逐筆查看，或返回設定重試整批失敗項目。`
-        : state.selectionContext === "work_basket"
-          ? `操作清單由工作籃明確載入 ${formatNumber(collections.length)} 本固定收藏。後續操作仍使用既有確認、進度與後端安全驗證。`
-          : state.selectionContext === "duplicate_delete_handoff"
-            ? "這本收藏由重複作品頁明確送入刪除流程；請再次核對完整 path，再選擇資源回收桶或永久刪除。"
-        : `本次操作清單包含 ${formatNumber(collections.length)} 筆已選收藏；目前查詢已載入 ${formatNumber(state.items.length)} 筆，共符合 ${formatNumber(state.total)} 筆。`
+        : state.selectionContext === "duplicate_delete_handoff"
+          ? "這本收藏由重複作品頁明確送入刪除流程；請再次核對完整 path，再選擇資源回收桶或永久刪除。"
+          : `本次操作清單包含 ${formatNumber(collections.length)} 筆已選收藏；目前查詢已載入 ${formatNumber(state.items.length)} 筆，共符合 ${formatNumber(state.total)} 筆。`
       : "目前沒有批次操作清單。";
     collections.forEach((collection, index) => {
       const item = el("li", "selected-collection-item");
@@ -6882,7 +6650,7 @@
         option.textContent = `${root.label} — ${root.path}`;
         ui.archiveRootSelect.append(option);
       });
-      byId("move-summary").textContent = `${selectionImpactSummary("搬移", collections.length)}只有新收藏來源可以搬移；其他項目會逐筆回報失敗。`;
+      byId("move-summary").replaceChildren(...selectionImpactSummary("搬移", collections.length), document.createTextNode("只有新收藏來源可以搬移；其他項目會逐筆回報失敗。"));
       renderConfirmItems(byId("move-item-list"), collections);
       ui.moveDialog.showModal();
     } catch (error) {
@@ -7257,7 +7025,7 @@
   function syncDeleteMode() {
     const permanent = ui.deleteForm.elements.mode.value === "permanent";
     const phrase = `永久刪除 ${state.selectedIds.size} 筆`;
-    byId("delete-summary").textContent = selectionImpactSummary(permanent ? "永久刪除" : "移到資源回收桶");
+    byId("delete-summary").replaceChildren(...selectionImpactSummary(permanent ? "永久刪除" : "移到資源回收桶"));
     ui.permanentConfirmPhrase.textContent = phrase;
     ui.permanentConfirmGroup.hidden = !permanent;
     byId("permanent-confirm-note").hidden = !permanent;
@@ -7272,7 +7040,13 @@
     const impact = action === "移到資源回收桶"
       ? `將把已選的 ${formatNumber(selectedCount)} 筆移到資源回收桶`
       : `將${action}已選的 ${formatNumber(selectedCount)} 筆`;
-    return `${impact}。此查詢共 ${formatNumber(queryTotal)} 筆，其餘 ${formatNumber(unaffectedCount)} 筆不受影響。`;
+    return [
+      document.createTextNode(`${impact}。此查詢共 `),
+      numSpan(formatNumber(queryTotal)),
+      document.createTextNode(" 筆，其餘 "),
+      numSpan(formatNumber(unaffectedCount)),
+      document.createTextNode(" 筆不受影響。"),
+    ];
   }
 
   async function executeDelete(event) {
@@ -7334,7 +7108,6 @@
     invalidateDerivedData({ library: true });
     updateSelectionUI();
     recordBatchActivity(`${action}結果`, `成功 ${report.succeeded}、失敗 ${report.failed}、待復原 ${report.pending_recovery}`, report.failed + report.pending_recovery);
-    loadWorkBasket({ force: true });
     toast(report.failed || report.pending_recovery ? `${action}部分完成，請查看逐筆結果` : `${action}完成`, Boolean(report.failed || report.pending_recovery));
   }
 
@@ -7755,7 +7528,6 @@
       invalidateDerivedData({ library: true });
       state.workbenchLoaded = false;
       toast("收藏身分已完成合併");
-      await loadWorkBasket({ force: true });
       await loadTombstoneCandidates();
     } catch (error) {
       toast(error.message, true);
@@ -8182,8 +7954,12 @@
     ui.ehentaiWorkbench.hidden = false;
     ui.ehentaiResults.replaceChildren();
     state.ehentaiItems.forEach((gallery) => ui.ehentaiResults.append(renderEhentaiGalleryCard(gallery)));
-    ui.ehentaiResultSummary.textContent = `${ehentaiSourceLabel(state.ehentaiSource)} · 本頁 ${formatNumber(state.ehentaiItems.length)} 筆`;
-    ui.ehentaiPageLabel.textContent = `第 ${formatNumber(state.ehentaiPage + 1)} 頁`;
+    ui.ehentaiResultSummary.replaceChildren(
+      document.createTextNode(`${ehentaiSourceLabel(state.ehentaiSource)} · 本頁 `),
+      numSpan(formatNumber(state.ehentaiItems.length)),
+      document.createTextNode(" 筆"),
+    );
+    ui.ehentaiPageLabel.replaceChildren(document.createTextNode("第 "), numSpan(formatNumber(state.ehentaiPage + 1)), document.createTextNode(" 頁"));
     const previousPage = state.ehentaiPage - 1;
     const previousCursorAvailable = previousPage === 0 || Boolean(normalizeEhentaiCursor(state.ehentaiPageCursors.get(previousPage)));
     ui.ehentaiPrevious.disabled = state.ehentaiPage <= 0 || !previousCursorAvailable;
@@ -8218,15 +7994,22 @@
       cover.append(el("span", "ehentai-cover-placeholder", "無封面"));
     }
     const copy = el("span", "ehentai-gallery-copy");
+    const ledger = el("span", "ehentai-gallery-ledger");
+    if (gallery.pages) {
+      ledger.append(document.createTextNode(`${gallery.category || "未分類"} · `), numSpan(formatNumber(gallery.pages)), document.createTextNode(" 頁"));
+    } else {
+      ledger.textContent = `${gallery.category || "未分類"} · 頁數不明`;
+    }
     copy.append(
-      el("span", "ehentai-gallery-ledger", `${gallery.category || "未分類"} · ${gallery.pages ? `${formatNumber(gallery.pages)} 頁` : "頁數不明"}`),
+      ledger,
       el("strong", "", gallery.title || gallery.title_jpn || `Gallery #${gallery.gid}`),
     );
     if (gallery.title_jpn && gallery.title_jpn !== gallery.title) copy.append(el("span", "ehentai-gallery-title-jpn", gallery.title_jpn));
-    copy.append(
-      el("span", "ehentai-gallery-byline", `${gallery.uploader || "上傳者不明"} · ${formatEhentaiDate(gallery.posted_at)}`),
-      el("span", "ehentai-gallery-rating", `評分 ${formatEhentaiRating(gallery.rating)}`),
-    );
+    const byline = el("span", "ehentai-gallery-byline");
+    byline.append(document.createTextNode(`${gallery.uploader || "上傳者不明"} · `), numSpan(formatEhentaiDate(gallery.posted_at)));
+    const rating = el("span", "ehentai-gallery-rating");
+    rating.append(document.createTextNode("評分 "), numSpan(formatEhentaiRating(gallery.rating)));
+    copy.append(byline, rating);
     const tags = el("span", "ehentai-gallery-tags");
     ehentaiTagValues(gallery.tags).slice(0, 4).forEach((tag) => tags.append(el("span", "", tag)));
     if (tags.childElementCount) copy.append(tags);
@@ -8266,17 +8049,21 @@
     ui.ehentaiDetailThumb.hidden = !gallery.thumb;
     ui.ehentaiDetailCategory.textContent = gallery.category || "未分類";
     ui.ehentaiDetailSource.textContent = ehentaiSourceLabel(source || state.ehentaiSource);
-    ui.ehentaiDetailKicker.textContent = `GALLERY #${gallery.gid}`;
+    ui.ehentaiDetailKicker.replaceChildren(document.createTextNode("GALLERY #"), numSpan(gallery.gid));
     ui.ehentaiDetailTitle.textContent = gallery.title || gallery.title_jpn || `Gallery #${gallery.gid}`;
     ui.ehentaiDetailTitleJpn.textContent = gallery.title_jpn || "";
     ui.ehentaiDetailTitleJpn.hidden = !gallery.title_jpn || gallery.title_jpn === gallery.title;
     ui.ehentaiDetailFacts.replaceChildren();
-    [
-      ["上傳者", gallery.uploader || "不明"],
-      ["刊登時間", formatEhentaiDate(gallery.posted_at)],
-      ["評分", formatEhentaiRating(gallery.rating)],
-      ["頁數", gallery.pages ? `${formatNumber(gallery.pages)} 頁` : "不明"],
-    ].forEach(([label, value]) => ui.ehentaiDetailFacts.append(el("dt", "", label), el("dd", "", value)));
+    const pagesDd = el("dd");
+    if (gallery.pages) {
+      pagesDd.append(numSpan(formatNumber(gallery.pages)), document.createTextNode(" 頁"));
+    } else {
+      pagesDd.textContent = "不明";
+    }
+    ui.ehentaiDetailFacts.append(el("dt", "", "上傳者"), el("dd", "", gallery.uploader || "不明"));
+    ui.ehentaiDetailFacts.append(el("dt", "", "刊登時間"), el("dd", "num", formatEhentaiDate(gallery.posted_at)));
+    ui.ehentaiDetailFacts.append(el("dt", "", "評分"), el("dd", "num", formatEhentaiRating(gallery.rating)));
+    ui.ehentaiDetailFacts.append(el("dt", "", "頁數"), pagesDd);
     ui.ehentaiDetailTags.replaceChildren();
     const tags = ehentaiTagValues(gallery.tags);
     if (tags.length) tags.forEach((tag) => ui.ehentaiDetailTags.append(el("span", "ehentai-tag", tag)));
@@ -9743,6 +9530,10 @@
     return new Intl.NumberFormat("zh-TW").format(value || 0);
   }
 
+  function numSpan(value) {
+    return el("span", "num", value);
+  }
+
   function formatRecentTime(value) {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return "";
@@ -9828,7 +9619,6 @@
       reviewExternalSearchMode,
       selectReviewExternalJob,
       sortEhentaiTorrents,
-      workBasketHandoffEntries,
     };
   }
 })();

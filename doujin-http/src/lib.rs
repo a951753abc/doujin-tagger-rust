@@ -41,7 +41,6 @@ mod shelf_configuration;
 mod statistics;
 mod thumbnails;
 mod vocabulary;
-mod work_baskets;
 
 pub use ehentai::{EhentaiHttpServices, MagnetLauncher};
 pub use instance::ServiceInstanceConfig;
@@ -291,23 +290,6 @@ where
         .route(
             "/api/shelf-configuration/reset",
             post(shelf_configuration::reset_shelf_configuration::<R>),
-        )
-        .route(
-            "/api/work-baskets",
-            get(work_baskets::list_work_baskets::<R>),
-        )
-        .route(
-            "/api/work-baskets/{basket_id}",
-            get(work_baskets::get_work_basket::<R>),
-        )
-        .route(
-            "/api/work-baskets/{basket_id}/collections",
-            post(work_baskets::add_work_basket_collections::<R>)
-                .delete(work_baskets::clear_work_basket::<R>),
-        )
-        .route(
-            "/api/work-baskets/{basket_id}/collections/{collection_id}",
-            axum::routing::delete(work_baskets::remove_work_basket_collection::<R>),
         )
         .route("/api/collections", get(collections::list_collections::<R>))
         .route(

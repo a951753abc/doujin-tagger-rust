@@ -22,7 +22,6 @@ pub mod shelf_composition;
 pub mod statistics;
 pub mod thumbnails;
 pub mod vocabulary;
-pub mod work_baskets;
 
 use std::collections::HashSet;
 use std::error::Error;
@@ -243,7 +242,6 @@ pub enum StorageError {
     SavedViewNotFound(i64),
     SavedViewNameConflict(String),
     InvalidSavedView(String),
-    WorkBasketNotFound(i64),
     Ingest {
         path: PathBuf,
         source: Box<StorageError>,
@@ -369,9 +367,6 @@ impl fmt::Display for StorageError {
                 write!(formatter, "Saved View 名稱已存在：{name}")
             }
             Self::InvalidSavedView(reason) => write!(formatter, "Saved View 無效：{reason}"),
-            Self::WorkBasketNotFound(basket_id) => {
-                write!(formatter, "找不到工作籃 ID：{basket_id}")
-            }
             Self::Ingest { path, source } => {
                 write!(formatter, "收藏入庫失敗：{}：{source}", path.display())
             }
@@ -425,7 +420,6 @@ impl Error for StorageError {
             | Self::SavedViewNotFound(_)
             | Self::SavedViewNameConflict(_)
             | Self::InvalidSavedView(_) => None,
-            Self::WorkBasketNotFound(_) => None,
         }
     }
 }

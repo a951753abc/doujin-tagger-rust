@@ -234,11 +234,6 @@ impl ApiError {
             StorageError::InvalidSavedView(reason) => {
                 Self::bad_request("invalid_saved_view", &reason)
             }
-            StorageError::WorkBasketNotFound(_) => Self::new(
-                StatusCode::NOT_FOUND,
-                "work_basket_not_found",
-                "找不到指定的工作籃",
-            ),
             StorageError::InvalidCanonicalMapping(reason) => {
                 Self::bad_request("invalid_vocabulary_action", &reason)
             }
