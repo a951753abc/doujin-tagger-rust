@@ -23,14 +23,6 @@ pub(crate) fn parse_collection_id(value: &str) -> Result<i64, ApiError> {
         .ok_or_else(|| ApiError::bad_request("invalid_collection_id", "collection ID 必須是正整數"))
 }
 
-pub(crate) fn parse_work_basket_id(value: &str) -> Result<i64, ApiError> {
-    value
-        .parse::<i64>()
-        .ok()
-        .filter(|id| *id > 0)
-        .ok_or_else(|| ApiError::bad_request("invalid_work_basket_id", "工作籃 ID 必須是正整數"))
-}
-
 pub(crate) fn parse_saved_view_id(value: &str) -> Result<i64, ApiError> {
     value
         .parse::<i64>()

@@ -518,104 +518,6 @@ fn duplicate_candidates_prioritize_levels_require_conservative_probable_evidence
 }
 
 #[test]
-fn work_basket_persists_large_idempotent_batches_and_cascades_hard_deletes() {
-    let tree = TestTree::new("work-basket");
-    let database = tree.database();
-    let mut repository = CatalogRepository::open(&database).expect("open catalog");
-    let mut pending = Vec::new();
-    let mut collection_ids = Vec::new();
-    for index in 0..120 {
-        let item = tree.pending(&format!("[Circle {index:03}] basket item {index:03}.zip"));
-        repository
-            .ingest_collection(&item)
-            .expect("ingest basket collection");
-        collection_ids.push(
-            repository
-                .collection_id_for_current_path(&item.path)
-                .expect("collection lookup")
-                .expect("collection ID"),
-        );
-        pending.push(item);
-    }
-
-    let basket = repository
-        .add_to_work_basket(1, &collection_ids)
-        .expect("add large basket batch");
-    assert_eq!(120, basket.items.len());
-    let repeated = repository
-        .add_to_work_basket(1, &collection_ids)
-        .expect("repeat basket batch");
-    assert_eq!(120, repeated.items.len());
-    assert_eq!(
-        120,
-        repository.work_baskets().expect("basket list")[0].count
-    );
-
-    let unrelated_query = repository
-        .collections(&CollectionQuery {
-            search: Some("no collection matches this query".to_owned()),
-            ..CollectionQuery::default()
-        })
-        .expect("change collection query");
-    assert_eq!(0, unrelated_query.total);
-    assert_eq!(
-        120,
-        repository
-            .work_basket(1)
-            .expect("basket after query")
-            .items
-            .len()
-    );
-    drop(repository);
-
-    let mut repository = CatalogRepository::open(&database).expect("reopen catalog");
-    assert_eq!(
-        120,
-        repository
-            .work_basket(1)
-            .expect("persistent basket")
-            .items
-            .len()
-    );
-
-    let deleted_id = collection_ids[0];
-    let operation = repository
-        .begin_delete(deleted_id, DeleteMode::Permanent)
-        .expect("begin permanent delete");
-    fs::remove_file(&pending[0].path).expect("remove collection file");
-    repository
-        .complete_file_operation(operation.id)
-        .expect("complete permanent delete");
-    let basket = repository.work_basket(1).expect("basket after hard delete");
-    assert_eq!(119, basket.items.len());
-    assert!(
-        !basket
-            .items
-            .iter()
-            .any(|item| item.collection.id == deleted_id)
-    );
-
-    assert!(
-        repository
-            .remove_from_work_basket(1, collection_ids[1])
-            .expect("remove item")
-    );
-    assert!(
-        !repository
-            .remove_from_work_basket(1, collection_ids[1])
-            .expect("repeat remove")
-    );
-    assert_eq!(118, repository.clear_work_basket(1).expect("clear basket"));
-    assert!(
-        repository
-            .work_basket(1)
-            .expect("empty basket")
-            .items
-            .is_empty()
-    );
-}
-
-#[test]
 fn saved_views_persist_allowlisted_query_rules_and_support_explicit_crud() {
     let tree = TestTree::new("saved-views");
     let database = tree.database();
@@ -5311,9 +5213,6 @@ fn consolidation_requires_manual_conflict_resolution_and_is_idempotent() {
     repository
         .add_collection_tag(old_id, "old-tag")
         .expect("old tag");
-    repository
-        .add_to_work_basket(1, &[old_id])
-        .expect("basket old identity");
     fs::remove_file(&old_path).expect("remove old file");
     repository
         .mark_collection_missing(old_id)
@@ -5338,23 +5237,6 @@ fn consolidation_requires_manual_conflict_resolution_and_is_idempotent() {
     repository
         .add_collection_tag(candidate_id, "new-tag")
         .expect("candidate tag");
-    repository
-        .add_to_work_basket(1, &[candidate_id])
-        .expect("basket candidate identity");
-    assert_eq!(
-        vec![candidate_id],
-        repository
-            .work_basket(1)
-            .expect("active-only basket before consolidation")
-            .items
-            .iter()
-            .map(|item| item.collection.id)
-            .collect::<Vec<_>>()
-    );
-    assert_eq!(
-        1,
-        repository.work_baskets().expect("active-only count")[0].count
-    );
     repository
         .decide_tombstone_candidate(old_id, candidate_id, CandidateDecision::Confirmed)
         .expect("confirm identity");
@@ -5421,9 +5303,6 @@ fn consolidation_requires_manual_conflict_resolution_and_is_idempotent() {
     let survivor = repository.collection(old_id).expect("survivor detail");
     assert_eq!(Some("新手動標題".to_owned()), survivor.title);
     assert_eq!(vec!["new-tag", "old-tag"], survivor.tags);
-    let basket = repository.work_basket(1).expect("consolidated basket");
-    assert_eq!(1, basket.items.len());
-    assert_eq!(old_id, basket.items[0].collection.id);
     assert_eq!(2, repository.parser_run_count().expect("both parser runs"));
     assert!(
         repository
