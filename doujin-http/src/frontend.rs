@@ -44,7 +44,7 @@ pub(crate) fn frontend_response(
         headers.insert(
             "content-security-policy",
             HeaderValue::from_static(
-                "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+                "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: https://ehgt.org https://*.ehgt.org; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
             ),
         );
     }

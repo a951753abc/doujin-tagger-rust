@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>JP6 Doujin Archive</title>
-  <link rel="stylesheet" href="/assets/app.css?v=57">
-  <script src="/assets/app.js?v=57" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=59">
+  <script src="/assets/app.js?v=59" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -50,6 +50,7 @@
           <a href="#review" data-route="review">品質審核 <b class="nav-count" id="review-count" hidden>0</b></a>
           <a href="#duplicates" data-route="duplicates">重複作品 <b class="nav-count" id="duplicate-count" hidden>0</b></a>
           <a href="#workbench" data-route="workbench">工作台 <b class="nav-count" id="workbench-count" hidden>0</b></a>
+          <a href="#ehentai" data-route="ehentai">ExHentai</a>
           <a href="#stats" data-route="stats">統計</a>
           <a href="#settings" data-route="settings">設定</a>
         </nav>
@@ -721,6 +722,91 @@
         <div class="stat-columns" id="stat-columns"></div>
       </section>
 
+      <section class="view ehentai-view" id="ehentai-view" data-view="ehentai" aria-labelledby="ehentai-heading" hidden>
+        <header class="page-heading ehentai-page-heading">
+          <div>
+            <p class="eyebrow">EXTERNAL ARCHIVE / 外部書庫</p>
+            <h1 id="ehentai-heading">翻查 ExHentai</h1>
+          </div>
+          <div class="ehentai-heading-copy">
+            <p>搜尋外部 gallery、核對書目，並在同一張編目桌取得 torrent。</p>
+            <span class="ehentai-source-status" id="ehentai-source-status" role="status" aria-live="polite">尚未搜尋</span>
+          </div>
+        </header>
+
+        <form class="ehentai-search" id="ehentai-search-form" role="search">
+          <label for="ehentai-search-input">Gallery 關鍵字</label>
+          <div>
+            <input id="ehentai-search-input" name="q" type="search" autocomplete="off" placeholder="輸入標題、作者、社團或標籤…" required>
+            <button class="primary-button" type="submit">搜尋外部書庫</button>
+          </div>
+          <p>有可用 Cookie 時優先查詢 ExHentai；無法使用時可由服務端改查公開 E-Hentai。</p>
+        </form>
+
+        <div class="ehentai-loading" id="ehentai-loading" role="status" hidden>
+          <span class="loader" aria-hidden="true"></span> 正在翻查外部書庫…
+        </div>
+        <section class="ehentai-error" id="ehentai-error" role="alert" hidden>
+          <strong>外部書庫暫時無法回應</strong>
+          <p id="ehentai-error-message"></p>
+          <button class="secondary-button" id="ehentai-retry" type="button">再試一次</button>
+        </section>
+        <section class="ehentai-empty" id="ehentai-empty" aria-labelledby="ehentai-empty-heading">
+          <span aria-hidden="true">外</span>
+          <div>
+            <h2 id="ehentai-empty-heading">從一組關鍵字開始</h2>
+            <p id="ehentai-empty-message">搜尋結果不會寫入本機 catalog；先打開 gallery 核對內容，再決定是否下載。</p>
+          </div>
+        </section>
+
+        <div class="ehentai-workbench" id="ehentai-workbench" hidden>
+          <section class="ehentai-results-pane" aria-labelledby="ehentai-results-heading">
+            <header>
+              <div><p class="eyebrow">SEARCH RESULT / 搜尋結果</p><h2 id="ehentai-results-heading">外部 Gallery</h2></div>
+              <p id="ehentai-result-summary" aria-live="polite"></p>
+            </header>
+            <ol class="ehentai-results" id="ehentai-results"></ol>
+            <nav class="ehentai-pagination" aria-label="ExHentai 搜尋結果分頁">
+              <button class="secondary-button" id="ehentai-previous" type="button">上一頁</button>
+              <span id="ehentai-page-label">第 1 頁</span>
+              <button class="secondary-button" id="ehentai-next" type="button">下一頁</button>
+            </nav>
+          </section>
+
+          <aside class="ehentai-detail-pane" aria-label="外部 gallery 詳細資料">
+            <div class="detail-placeholder" id="ehentai-detail-placeholder">
+              <span aria-hidden="true">選</span>
+              <p>選擇一筆 gallery，核對完整書目與可用 torrent。</p>
+              <small>外部資料只供檢視，不會自動覆寫 catalog。</small>
+            </div>
+            <div class="ehentai-detail-loading" id="ehentai-detail-loading" role="status" hidden>
+              <span class="loader" aria-hidden="true"></span> 正在讀取 gallery…
+            </div>
+            <section class="ehentai-detail-error" id="ehentai-detail-error" role="alert" hidden>
+              <strong>無法讀取 gallery</strong>
+              <p id="ehentai-detail-error-message"></p>
+            </section>
+            <article class="ehentai-detail" id="ehentai-detail" hidden>
+              <figure class="ehentai-detail-cover">
+                <img id="ehentai-detail-thumb" alt="" width="300" height="400" referrerpolicy="no-referrer">
+                <figcaption><span id="ehentai-detail-category"></span><span id="ehentai-detail-source"></span></figcaption>
+              </figure>
+              <div class="ehentai-detail-copy">
+                <p class="ehentai-detail-kicker" id="ehentai-detail-kicker"></p>
+                <h2 id="ehentai-detail-title"></h2>
+                <p class="ehentai-title-jpn" id="ehentai-detail-title-jpn" hidden></p>
+                <dl class="ehentai-facts" id="ehentai-detail-facts"></dl>
+                <section class="ehentai-tags" aria-labelledby="ehentai-tags-heading">
+                  <h3 id="ehentai-tags-heading">Gallery 標籤</h3>
+                  <div id="ehentai-detail-tags"></div>
+                </section>
+                <button class="primary-button" id="ehentai-open-torrents" type="button" aria-haspopup="dialog">查看 Torrent</button>
+              </div>
+            </article>
+          </aside>
+        </div>
+      </section>
+
       <section class="view" id="settings-view" data-view="settings" aria-labelledby="settings-heading" hidden>
         <h1 class="visually-hidden" id="settings-heading">編目室設定</h1>
 
@@ -837,6 +923,28 @@
                 </div>
               </div>
             </section>
+
+            <section class="ehentai-session-settings" aria-labelledby="ehentai-session-heading">
+              <div>
+                <p class="eyebrow">EXTERNAL SESSION / 外部登入</p>
+                <h3 id="ehentai-session-heading">ExHentai Cookie</h3>
+                <p>先登入 E-Hentai 取得 Cookie，再貼到這裡。儲存後欄位會立即清空，重新載入也不會回填原文。</p>
+              </div>
+              <div class="ehentai-session-status" id="ehentai-session-status" role="status" aria-live="polite">
+                <span>設定狀態：讀取中</span><span>環境覆寫：讀取中</span><span>Session：讀取中</span>
+              </div>
+              <form id="ehentai-session-form">
+                <label for="ehentai-cookie">Cookie</label>
+                <input id="ehentai-cookie" name="cookie" type="password" autocomplete="new-password" spellcheck="false" aria-describedby="ehentai-cookie-note" placeholder="貼上完整 Cookie 後儲存">
+                <p class="field-note" id="ehentai-cookie-note">此欄位只用於送出本次新增或更新；狀態 API 不會回傳 Cookie 原文。</p>
+                <div class="ehentai-session-actions">
+                  <button class="primary-button" id="ehentai-session-save" type="submit">新增或更新</button>
+                  <button class="secondary-button" id="ehentai-session-test" type="button">測試連線</button>
+                  <button class="text-button danger-text" id="ehentai-session-clear" type="button">清除 Cookie</button>
+                </div>
+              </form>
+              <p class="ehentai-session-message" id="ehentai-session-message" role="status" aria-live="polite"></p>
+            </section>
           </section>
 
           <section class="settings-section roots-settings" aria-labelledby="roots-heading">
@@ -897,6 +1005,32 @@
     <footer><button class="text-button" id="refresh-activity" type="button">重新整理狀態</button></footer>
   </aside>
   <p class="visually-hidden" id="activity-announcer" role="status" aria-live="polite" aria-atomic="true"></p>
+
+  <dialog id="ehentai-torrent-dialog" aria-labelledby="ehentai-torrent-heading">
+    <div class="dialog-shell ehentai-torrent-shell">
+      <header>
+        <div><p class="eyebrow">TORRENT LEDGER / 下載清單</p><h2 id="ehentai-torrent-heading">Gallery Torrent</h2></div>
+        <button class="icon-button" data-close-dialog type="button" aria-label="關閉 Torrent 清單">×</button>
+      </header>
+      <p class="dialog-intro" id="ehentai-torrent-intro">最新 torrent 會排在最前；過時項目另列於下方。</p>
+      <div class="ehentai-torrent-loading" id="ehentai-torrent-loading" role="status" hidden><span class="loader" aria-hidden="true"></span> 正在讀取 torrent…</div>
+      <section class="ehentai-torrent-error" id="ehentai-torrent-error" role="alert" hidden>
+        <strong>無法讀取 torrent</strong><p id="ehentai-torrent-error-message"></p>
+        <button class="secondary-button" id="ehentai-torrent-retry" type="button">重新讀取</button>
+      </section>
+      <p class="ehentai-torrent-empty" id="ehentai-torrent-empty" hidden>這筆 gallery 目前沒有可用 torrent。</p>
+      <section class="ehentai-torrent-section" id="ehentai-current-torrents" aria-labelledby="ehentai-current-torrents-heading" hidden>
+        <h3 id="ehentai-current-torrents-heading">可用 Torrent</h3>
+        <ol id="ehentai-current-torrent-list"></ol>
+      </section>
+      <section class="ehentai-torrent-section is-outdated" id="ehentai-outdated-torrents" aria-labelledby="ehentai-outdated-torrents-heading" hidden>
+        <h3 id="ehentai-outdated-torrents-heading">過時 Torrent</h3>
+        <p>可能已被更新版本取代，下載前請再次核對。</p>
+        <ol id="ehentai-outdated-torrent-list"></ol>
+      </section>
+      <div class="dialog-footer"><button class="text-button" data-close-dialog type="button">關閉</button></div>
+    </div>
+  </dialog>
 
   <dialog id="cover-selection-dialog" aria-labelledby="cover-selection-heading">
     <div class="dialog-shell cover-selection-shell">

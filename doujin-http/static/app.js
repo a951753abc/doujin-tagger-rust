@@ -253,6 +253,23 @@
     coverCandidateRequestNumber: 0,
     archivePreflight: null,
     quickArchivePreflight: null,
+    ehentaiQuery: "",
+    ehentaiPage: 0,
+    ehentaiCursor: null,
+    ehentaiNextCursor: null,
+    ehentaiCursorQuery: "",
+    ehentaiPageCursors: new Map([[0, null]]),
+    ehentaiHasNext: false,
+    ehentaiItems: [],
+    ehentaiSource: null,
+    ehentaiSelected: null,
+    ehentaiSearchKey: null,
+    ehentaiRequestNumber: 0,
+    ehentaiGalleryRequestNumber: 0,
+    ehentaiTorrentRequestNumber: 0,
+    ehentaiTorrentGallery: null,
+    ehentaiTorrents: [],
+    ehentaiSession: null,
   };
 
   if (!Array.isArray(state.recent)) state.recent = [];
@@ -294,6 +311,7 @@
   let collectionWindowFrame = null;
   const collectionRowHeights = { grid: 0, list: 0 };
   let restoreFilterToggleFocus = false;
+  let ehentaiTorrentReturnFocus = null;
   const thumbnailObserver = typeof window.IntersectionObserver === "function"
     ? new IntersectionObserver((entries) => {
         entries.forEach((entry) => {
@@ -420,6 +438,53 @@
       metadataBooleanGroup: byId("metadata-boolean-group"),
       statLedger: byId("stat-ledger"),
       statColumns: byId("stat-columns"),
+      ehentaiSearchForm: byId("ehentai-search-form"),
+      ehentaiSearchInput: byId("ehentai-search-input"),
+      ehentaiSourceStatus: byId("ehentai-source-status"),
+      ehentaiLoading: byId("ehentai-loading"),
+      ehentaiError: byId("ehentai-error"),
+      ehentaiErrorMessage: byId("ehentai-error-message"),
+      ehentaiEmpty: byId("ehentai-empty"),
+      ehentaiEmptyHeading: byId("ehentai-empty-heading"),
+      ehentaiEmptyMessage: byId("ehentai-empty-message"),
+      ehentaiWorkbench: byId("ehentai-workbench"),
+      ehentaiResults: byId("ehentai-results"),
+      ehentaiResultSummary: byId("ehentai-result-summary"),
+      ehentaiPrevious: byId("ehentai-previous"),
+      ehentaiNext: byId("ehentai-next"),
+      ehentaiPageLabel: byId("ehentai-page-label"),
+      ehentaiDetailPlaceholder: byId("ehentai-detail-placeholder"),
+      ehentaiDetailLoading: byId("ehentai-detail-loading"),
+      ehentaiDetailError: byId("ehentai-detail-error"),
+      ehentaiDetailErrorMessage: byId("ehentai-detail-error-message"),
+      ehentaiDetail: byId("ehentai-detail"),
+      ehentaiDetailThumb: byId("ehentai-detail-thumb"),
+      ehentaiDetailCategory: byId("ehentai-detail-category"),
+      ehentaiDetailSource: byId("ehentai-detail-source"),
+      ehentaiDetailKicker: byId("ehentai-detail-kicker"),
+      ehentaiDetailTitle: byId("ehentai-detail-title"),
+      ehentaiDetailTitleJpn: byId("ehentai-detail-title-jpn"),
+      ehentaiDetailFacts: byId("ehentai-detail-facts"),
+      ehentaiDetailTags: byId("ehentai-detail-tags"),
+      ehentaiOpenTorrents: byId("ehentai-open-torrents"),
+      ehentaiTorrentDialog: byId("ehentai-torrent-dialog"),
+      ehentaiTorrentHeading: byId("ehentai-torrent-heading"),
+      ehentaiTorrentIntro: byId("ehentai-torrent-intro"),
+      ehentaiTorrentLoading: byId("ehentai-torrent-loading"),
+      ehentaiTorrentError: byId("ehentai-torrent-error"),
+      ehentaiTorrentErrorMessage: byId("ehentai-torrent-error-message"),
+      ehentaiTorrentEmpty: byId("ehentai-torrent-empty"),
+      ehentaiCurrentTorrents: byId("ehentai-current-torrents"),
+      ehentaiCurrentTorrentList: byId("ehentai-current-torrent-list"),
+      ehentaiOutdatedTorrents: byId("ehentai-outdated-torrents"),
+      ehentaiOutdatedTorrentList: byId("ehentai-outdated-torrent-list"),
+      ehentaiSessionForm: byId("ehentai-session-form"),
+      ehentaiCookie: byId("ehentai-cookie"),
+      ehentaiSessionStatus: byId("ehentai-session-status"),
+      ehentaiSessionMessage: byId("ehentai-session-message"),
+      ehentaiSessionSave: byId("ehentai-session-save"),
+      ehentaiSessionTest: byId("ehentai-session-test"),
+      ehentaiSessionClear: byId("ehentai-session-clear"),
       settingsForm: byId("settings-form"),
       firstRun: byId("first-run"),
       firstRunForm: byId("first-run-form"),
@@ -746,6 +811,24 @@
     ui.metadataForm.addEventListener("submit", saveMetadata);
     byId("clear-manual-button").addEventListener("click", clearManualMetadata);
     ui.settingsForm.addEventListener("submit", saveSettings);
+    ui.ehentaiSearchForm.addEventListener("submit", submitEhentaiSearch);
+    byId("ehentai-retry").addEventListener("click", retryEhentaiSearch);
+    ui.ehentaiPrevious.addEventListener("click", () => navigateEhentaiSearch(
+      state.ehentaiPage - 1,
+      state.ehentaiQuery,
+      state.ehentaiPageCursors.get(state.ehentaiPage - 1),
+    ));
+    ui.ehentaiNext.addEventListener("click", () => navigateEhentaiSearch(
+      state.ehentaiPage + 1,
+      state.ehentaiQuery,
+      state.ehentaiNextCursor,
+    ));
+    ui.ehentaiOpenTorrents.addEventListener("click", openEhentaiTorrents);
+    byId("ehentai-torrent-retry").addEventListener("click", loadEhentaiTorrents);
+    ui.ehentaiTorrentDialog.addEventListener("close", restoreEhentaiTorrentFocus);
+    ui.ehentaiSessionForm.addEventListener("submit", saveEhentaiSession);
+    ui.ehentaiSessionTest.addEventListener("click", testEhentaiSession);
+    ui.ehentaiSessionClear.addEventListener("click", clearEhentaiSession);
     ui.firstRunForm.addEventListener("submit", completeFirstRun);
     ui.firstRunForm.elements.reader_mode.forEach((radio) => radio.addEventListener("change", syncFirstRunReader));
     ui.thumbnailCacheForm.addEventListener("submit", startThumbnailCacheJob);
@@ -895,7 +978,7 @@
     const previousRoute = state.route;
     const parsedRoute = parseRouteHash();
     const route = parsedRoute.route;
-    const nextRoute = ["shelf", "library", "triage", "basket", "review", "duplicates", "workbench", "stats", "settings"].includes(route) ? route : "shelf";
+    const nextRoute = ["shelf", "library", "triage", "basket", "review", "duplicates", "workbench", "ehentai", "stats", "settings"].includes(route) ? route : "shelf";
     if (previousRoute === "library" && nextRoute !== "library") {
       if (!state.leavingLibraryContextCaptured) rememberLibraryContext();
       state.leavingLibraryContextCaptured = false;
@@ -974,6 +1057,7 @@
       loadReviewQueue({ preferredId });
     }
     if (state.route === "triage") enterTriage();
+    if (state.route === "ehentai") enterEhentaiRoute(parsedRoute.params);
     if (state.route === "stats") loadStats();
     if (state.route === "settings") loadSettingsPage();
     if (state.route !== "library") window.scrollTo({ top: 0, behavior: "auto" });
@@ -1132,7 +1216,7 @@
   }
 
   function routeTitle(route) {
-    return { shelf: "書架", library: "全部藏書", triage: "待歸檔", basket: "工作籃", review: "品質審核", duplicates: "重複作品", workbench: "工作台", stats: "統計", settings: "設定" }[route];
+    return { shelf: "書架", library: "全部藏書", triage: "待歸檔", basket: "工作籃", review: "品質審核", duplicates: "重複作品", workbench: "工作台", ehentai: "ExHentai", stats: "統計", settings: "設定" }[route];
   }
 
   function startActivityMonitoring() {
@@ -7786,8 +7870,723 @@
     return section;
   }
 
+  function normalizeEhentaiCursor(cursor) {
+    const value = cursor == null ? "" : String(cursor).trim();
+    return /^(?:prev:)?\d+$/.test(value) ? value : null;
+  }
+
+  function resolveEhentaiPageCursor(page, requestedCursor, pageCursors = new Map()) {
+    const normalizedPage = Math.max(0, Number(page) || 0);
+    if (normalizedPage === 0) return null;
+    if (requestedCursor !== undefined) return normalizeEhentaiCursor(requestedCursor);
+    return normalizeEhentaiCursor(pageCursors.get(normalizedPage));
+  }
+
+  function rememberEhentaiPageCursors(pageCursors, page, cursor, nextCursor, previousCursor = null) {
+    const normalizedPage = Math.max(0, Number(page) || 0);
+    const current = resolveEhentaiPageCursor(normalizedPage, cursor, pageCursors);
+    Array.from(pageCursors.keys()).forEach((knownPage) => {
+      if (knownPage > normalizedPage) pageCursors.delete(knownPage);
+    });
+    pageCursors.set(normalizedPage, current);
+    if (normalizedPage === 1) pageCursors.set(0, null);
+    else if (normalizedPage > 1) {
+      const previous = normalizeEhentaiCursor(previousCursor);
+      if (previous) pageCursors.set(normalizedPage - 1, previous);
+    }
+    const next = normalizeEhentaiCursor(nextCursor);
+    if (next) pageCursors.set(normalizedPage + 1, next);
+    return next;
+  }
+
+  function ehentaiSearchPath(query, page = 0, cursor = null) {
+    const params = new URLSearchParams({ q: String(query || "").trim(), page: String(Math.max(0, Number(page) || 0)) });
+    const normalizedCursor = normalizeEhentaiCursor(cursor);
+    if (normalizedCursor) params.set("cursor", normalizedCursor);
+    return `/api/ehentai/search?${params.toString()}`;
+  }
+
+  function ehentaiRouteHash(query, page = 0, cursor = null) {
+    const normalizedPage = Math.max(0, Number(page) || 0);
+    const params = new URLSearchParams({ q: String(query || "").trim() });
+    if (normalizedPage) params.set("page", String(normalizedPage));
+    const normalizedCursor = normalizeEhentaiCursor(cursor);
+    if (normalizedCursor) params.set("cursor", normalizedCursor);
+    return `#ehentai?${params.toString()}`;
+  }
+
+  function ehentaiGalleryPath(gid, token, suffix = "") {
+    return `/api/ehentai/galleries/${encodeURIComponent(String(gid))}/${encodeURIComponent(String(token))}${suffix}`;
+  }
+
+  function ehentaiSourceLabel(source) {
+    const normalized = String(source || "").toLowerCase().replace(/[_\s]+/g, "-");
+    if (normalized.includes("exhentai") || normalized.includes("ex-hentai")) return "ExHentai";
+    if (normalized.includes("ehentai") || normalized.includes("e-hentai") || normalized.includes("public") || normalized.includes("fallback")) {
+      return "公開 E-Hentai fallback";
+    }
+    return "外部來源";
+  }
+
+  function ehentaiErrorMessage(error) {
+    const messages = {
+      not_configured: "尚未設定 ExHentai Cookie。請到設定頁貼上 Cookie；公開 E-Hentai 可用時仍可作為 fallback。",
+      invalid_cookie: "Cookie 已失效或無法通過驗證，請重新登入 E-Hentai 後取得新的 Cookie。",
+      exhentai_unavailable: "ExHentai 目前無法使用；請稍後再試，或改用服務端提供的公開 E-Hentai fallback。",
+      rate_limited: "外部書庫暫時限制查詢頻率，請稍候一段時間再試。",
+      network_error: "連線外部書庫時發生網路錯誤，請檢查網路後重試。",
+      parse_error: "外部書庫回傳了無法辨識的內容；網站版面可能已變更，請稍後再試。",
+      torrent_not_found: "這筆 torrent 已不存在或下載網址已失效，請重新整理清單。",
+    };
+    if (messages[error?.code]) return messages[error.code];
+    if (error?.message === "無法連線至 Rust 本機服務，請確認程式仍在執行") return error.message;
+    return "ExHentai 要求失敗，請稍後再試。";
+  }
+
+  function sortEhentaiTorrents(items) {
+    return Array.from(items || []).sort((left, right) => {
+      const leftTime = ehentaiDateTimestamp(left?.posted_at) ?? 0;
+      const rightTime = ehentaiDateTimestamp(right?.posted_at) ?? 0;
+      return rightTime - leftTime;
+    });
+  }
+
+  function ehentaiDateTimestamp(value) {
+    if (value == null || String(value).trim() === "") return null;
+    const raw = String(value).trim();
+    let timestamp;
+    if (/^-?\d+(?:\.\d+)?$/.test(raw)) {
+      const numeric = Number(raw);
+      if (!Number.isFinite(numeric)) return null;
+      timestamp = Math.abs(numeric) < 100_000_000_000 ? numeric * 1000 : numeric;
+    } else {
+      const htmlTime = /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?$/.test(raw)
+        ? raw.replace(/\s+/, "T")
+        : raw;
+      timestamp = Date.parse(htmlTime);
+    }
+    return Number.isFinite(timestamp) ? timestamp : null;
+  }
+
+  function formatEhentaiDate(value) {
+    const timestamp = ehentaiDateTimestamp(value);
+    if (timestamp == null) return "時間不明";
+    return new Intl.DateTimeFormat("zh-TW", {
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(timestamp));
+  }
+
+  function normalizeEhentaiSessionFlags(data = {}) {
+    const rawSession = data.session ?? data.session_status ?? data.status ?? data.session_valid ?? data.session_active ?? data.valid ?? null;
+    const normalizedSession = String(rawSession ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+    const aliases = {
+      true: "exhentai",
+      valid: "exhentai",
+      active: "exhentai",
+      authenticated: "exhentai",
+      ready: "exhentai",
+      ehentai: "ehentai_only",
+      public: "ehentai_only",
+      false: "invalid_cookie",
+      invalid: "invalid_cookie",
+      expired: "invalid_cookie",
+      unavailable: "exhentai_unavailable",
+    };
+    const allowed = new Set([
+      "exhentai",
+      "ehentai_only",
+      "not_configured",
+      "invalid_cookie",
+      "exhentai_unavailable",
+      "sad_panda",
+      "rate_limited",
+      "network_error",
+      "parse_error",
+    ]);
+    const aliased = aliases[normalizedSession] || normalizedSession;
+    const session = allowed.has(aliased) ? aliased : "unknown";
+    return {
+      configured: Boolean(data.configured ?? data.cookie_configured),
+      override: Boolean(data.override ?? data.overridden ?? data.environment_override ?? data.environment_overridden),
+      session,
+    };
+  }
+
+  function ehentaiSessionStatusPresentation(session) {
+    return {
+      exhentai: { label: "ExH 可存取", className: "is-ready" },
+      ehentai_only: { label: "僅 E-H 可用", className: "is-override" },
+      not_configured: { label: "未設定", className: "" },
+      invalid_cookie: { label: "Cookie 無效", className: "is-error" },
+      exhentai_unavailable: { label: "Sad Panda／ExH 暫時不可用", className: "is-error" },
+      sad_panda: { label: "Sad Panda／ExH 無法存取", className: "is-error" },
+      rate_limited: { label: "外部流量限制", className: "is-error" },
+      network_error: { label: "外部網路錯誤", className: "is-error" },
+      parse_error: { label: "外部回應解析失敗", className: "is-error" },
+      unknown: { label: "尚未測試", className: "" },
+    }[session] || { label: "尚未測試", className: "" };
+  }
+
+  function ehentaiSessionTestMessage(session) {
+    return {
+      exhentai: "連線測試成功，ExHentai session 可用。",
+      ehentai_only: "連線測試完成：目前僅能存取公開 E-Hentai。",
+      not_configured: "連線測試完成：尚未設定 Cookie。",
+      invalid_cookie: "連線測試完成：Cookie 無效，請重新登入後更新。",
+      exhentai_unavailable: "連線測試完成：ExHentai 出現 Sad Panda 或暫時無法使用。",
+      sad_panda: "連線測試完成：ExHentai 回傳 Sad Panda，目前無法存取。",
+      rate_limited: "連線測試完成：外部書庫目前限制查詢頻率。",
+      network_error: "連線測試完成：連線外部書庫時發生網路錯誤。",
+      parse_error: "連線測試完成：無法解析外部書庫回應。",
+      unknown: "連線測試完成，但服務未回報可辨識的 session 狀態。",
+    }[session] || "連線測試完成，但服務未回報可辨識的 session 狀態。";
+  }
+
+  function enterEhentaiRoute(params) {
+    const query = String(params.get("q") || "").trim();
+    const parsedPage = Number.parseInt(params.get("page") || "0", 10);
+    const page = Number.isSafeInteger(parsedPage) && parsedPage >= 0 ? parsedPage : 0;
+    ui.ehentaiSearchInput.value = query;
+    if (!query) {
+      state.ehentaiQuery = "";
+      renderEhentaiInitial();
+      return;
+    }
+    prepareEhentaiCursorHistory(query);
+    const routeCursor = params.has("cursor") ? params.get("cursor") : undefined;
+    const cursor = resolveEhentaiPageCursor(page, routeCursor, state.ehentaiPageCursors);
+    if (page > 0 && !cursor) {
+      history.replaceState(null, "", ehentaiRouteHash(query, 0));
+      loadEhentaiSearch(query, 0, null);
+      return;
+    }
+    if (page > 0) state.ehentaiPageCursors.set(page, cursor);
+    loadEhentaiSearch(query, page, cursor);
+  }
+
+  function submitEhentaiSearch(event) {
+    event.preventDefault();
+    const query = ui.ehentaiSearchInput.value.trim();
+    if (!query) {
+      ui.ehentaiSearchInput.focus();
+      return;
+    }
+    navigateEhentaiSearch(0, query);
+  }
+
+  function prepareEhentaiCursorHistory(query) {
+    if (state.ehentaiCursorQuery === query) return;
+    state.ehentaiCursorQuery = query;
+    state.ehentaiPageCursors = new Map([[0, null]]);
+    state.ehentaiCursor = null;
+    state.ehentaiNextCursor = null;
+    state.ehentaiSearchKey = null;
+  }
+
+  function navigateEhentaiSearch(page, query = state.ehentaiQuery || ui.ehentaiSearchInput.value, requestedCursor = undefined) {
+    const normalizedQuery = String(query || "").trim();
+    if (!normalizedQuery) return;
+    prepareEhentaiCursorHistory(normalizedQuery);
+    const normalizedPage = Math.max(0, Number(page) || 0);
+    const cursor = resolveEhentaiPageCursor(normalizedPage, requestedCursor, state.ehentaiPageCursors);
+    if (normalizedPage > 0 && !cursor) return;
+    if (normalizedPage > 0) state.ehentaiPageCursors.set(normalizedPage, cursor);
+    const hash = ehentaiRouteHash(normalizedQuery, normalizedPage, cursor);
+    if (location.hash === hash) loadEhentaiSearch(normalizedQuery, normalizedPage, cursor, { force: true });
+    else location.hash = hash;
+  }
+
+  function retryEhentaiSearch() {
+    if (!state.ehentaiQuery) {
+      ui.ehentaiSearchInput.focus();
+      return;
+    }
+    loadEhentaiSearch(state.ehentaiQuery, state.ehentaiPage, state.ehentaiCursor, { force: true });
+  }
+
+  function renderEhentaiInitial() {
+    ui.ehentaiLoading.hidden = true;
+    ui.ehentaiError.hidden = true;
+    ui.ehentaiWorkbench.hidden = true;
+    ui.ehentaiEmpty.hidden = false;
+    ui.ehentaiEmptyHeading.textContent = "從一組關鍵字開始";
+    ui.ehentaiEmptyMessage.textContent = "搜尋結果不會寫入本機 catalog；先打開 gallery 核對內容，再決定是否下載。";
+    ui.ehentaiSourceStatus.textContent = "尚未搜尋";
+  }
+
+  async function loadEhentaiSearch(query, page, requestedCursor = null, { force = false } = {}) {
+    const normalizedQuery = String(query || "").trim();
+    const normalizedPage = Math.max(0, Number(page) || 0);
+    prepareEhentaiCursorHistory(normalizedQuery);
+    const cursor = resolveEhentaiPageCursor(normalizedPage, requestedCursor, state.ehentaiPageCursors);
+    if (normalizedPage > 0 && !cursor) return;
+    const searchKey = `${normalizedQuery}\n${normalizedPage}\n${cursor || ""}`;
+    ui.ehentaiSearchInput.value = normalizedQuery;
+    state.ehentaiQuery = normalizedQuery;
+    state.ehentaiPage = normalizedPage;
+    state.ehentaiCursor = cursor;
+    if (!force && state.ehentaiSearchKey === searchKey && state.ehentaiItems.length) {
+      renderEhentaiResults();
+      return;
+    }
+    const requestNumber = ++state.ehentaiRequestNumber;
+    ui.ehentaiLoading.hidden = false;
+    ui.ehentaiError.hidden = true;
+    ui.ehentaiEmpty.hidden = true;
+    ui.ehentaiWorkbench.hidden = true;
+    ui.ehentaiSourceStatus.textContent = "正在確認來源…";
+    try {
+      const data = await api(ehentaiSearchPath(normalizedQuery, normalizedPage, cursor));
+      if (requestNumber !== state.ehentaiRequestNumber || state.route !== "ehentai") return;
+      state.ehentaiSearchKey = searchKey;
+      state.ehentaiPage = Math.max(0, Number(data.page) || 0);
+      state.ehentaiHasNext = Boolean(data.has_next);
+      state.ehentaiNextCursor = rememberEhentaiPageCursors(
+        state.ehentaiPageCursors,
+        state.ehentaiPage,
+        cursor,
+        data.next_cursor,
+        data.previous_cursor,
+      );
+      state.ehentaiCursor = resolveEhentaiPageCursor(state.ehentaiPage, cursor, state.ehentaiPageCursors);
+      state.ehentaiItems = Array.isArray(data.items) ? data.items : [];
+      state.ehentaiSource = data.source || null;
+      state.ehentaiSelected = null;
+      ui.ehentaiSourceStatus.textContent = `目前來源：${ehentaiSourceLabel(state.ehentaiSource)}`;
+      if (state.ehentaiItems.length) renderEhentaiResults();
+      else renderEhentaiNoResults();
+    } catch (error) {
+      if (requestNumber !== state.ehentaiRequestNumber || state.route !== "ehentai") return;
+      ui.ehentaiErrorMessage.textContent = ehentaiErrorMessage(error);
+      ui.ehentaiError.hidden = false;
+      ui.ehentaiSourceStatus.textContent = "來源無法使用";
+    } finally {
+      if (requestNumber === state.ehentaiRequestNumber) ui.ehentaiLoading.hidden = true;
+    }
+  }
+
+  function renderEhentaiNoResults() {
+    ui.ehentaiWorkbench.hidden = true;
+    ui.ehentaiEmpty.hidden = false;
+    ui.ehentaiEmptyHeading.textContent = "沒有相符的 gallery";
+    ui.ehentaiEmptyMessage.textContent = `找不到「${state.ehentaiQuery}」。試著縮短標題、改用作者名稱，或移除一項標籤。`;
+  }
+
+  function renderEhentaiResults() {
+    ui.ehentaiError.hidden = true;
+    ui.ehentaiEmpty.hidden = true;
+    ui.ehentaiWorkbench.hidden = false;
+    ui.ehentaiResults.replaceChildren();
+    state.ehentaiItems.forEach((gallery) => ui.ehentaiResults.append(renderEhentaiGalleryCard(gallery)));
+    ui.ehentaiResultSummary.textContent = `${ehentaiSourceLabel(state.ehentaiSource)} · 本頁 ${formatNumber(state.ehentaiItems.length)} 筆`;
+    ui.ehentaiPageLabel.textContent = `第 ${formatNumber(state.ehentaiPage + 1)} 頁`;
+    const previousPage = state.ehentaiPage - 1;
+    const previousCursorAvailable = previousPage === 0 || Boolean(normalizeEhentaiCursor(state.ehentaiPageCursors.get(previousPage)));
+    ui.ehentaiPrevious.disabled = state.ehentaiPage <= 0 || !previousCursorAvailable;
+    ui.ehentaiNext.disabled = !state.ehentaiHasNext || !state.ehentaiNextCursor;
+    ui.ehentaiDetailPlaceholder.hidden = false;
+    ui.ehentaiDetailLoading.hidden = true;
+    ui.ehentaiDetailError.hidden = true;
+    ui.ehentaiDetail.hidden = true;
+  }
+
+  function renderEhentaiGalleryCard(gallery) {
+    const item = el("li", "ehentai-gallery-card");
+    const button = el("button", "ehentai-gallery-button");
+    button.type = "button";
+    button.setAttribute("aria-label", `查看 gallery：${gallery.title || gallery.title_jpn || `#${gallery.gid}`}`);
+    button.addEventListener("click", () => {
+      ui.ehentaiResults.querySelectorAll('[aria-current="true"]').forEach((node) => node.removeAttribute("aria-current"));
+      button.setAttribute("aria-current", "true");
+      loadEhentaiGallery(gallery, button);
+    });
+    const cover = el("span", "ehentai-gallery-cover");
+    if (gallery.thumb) {
+      const image = document.createElement("img");
+      image.src = gallery.thumb;
+      image.alt = "";
+      image.width = 160;
+      image.height = 220;
+      image.loading = "lazy";
+      image.referrerPolicy = "no-referrer";
+      cover.append(image);
+    } else {
+      cover.append(el("span", "ehentai-cover-placeholder", "無封面"));
+    }
+    const copy = el("span", "ehentai-gallery-copy");
+    copy.append(
+      el("span", "ehentai-gallery-ledger", `${gallery.category || "未分類"} · ${gallery.pages ? `${formatNumber(gallery.pages)} 頁` : "頁數不明"}`),
+      el("strong", "", gallery.title || gallery.title_jpn || `Gallery #${gallery.gid}`),
+    );
+    if (gallery.title_jpn && gallery.title_jpn !== gallery.title) copy.append(el("span", "ehentai-gallery-title-jpn", gallery.title_jpn));
+    copy.append(
+      el("span", "ehentai-gallery-byline", `${gallery.uploader || "上傳者不明"} · ${formatEhentaiDate(gallery.posted_at)}`),
+      el("span", "ehentai-gallery-rating", `評分 ${formatEhentaiRating(gallery.rating)}`),
+    );
+    const tags = el("span", "ehentai-gallery-tags");
+    ehentaiTagValues(gallery.tags).slice(0, 4).forEach((tag) => tags.append(el("span", "", tag)));
+    if (tags.childElementCount) copy.append(tags);
+    button.append(cover, copy);
+    item.append(button);
+    return item;
+  }
+
+  async function loadEhentaiGallery(gallery, trigger) {
+    const requestNumber = ++state.ehentaiGalleryRequestNumber;
+    ui.ehentaiDetailPlaceholder.hidden = true;
+    ui.ehentaiDetailError.hidden = true;
+    ui.ehentaiDetail.hidden = true;
+    ui.ehentaiDetailLoading.hidden = false;
+    try {
+      const data = await api(ehentaiGalleryPath(gallery.gid, gallery.token));
+      if (requestNumber !== state.ehentaiGalleryRequestNumber || state.route !== "ehentai") return;
+      state.ehentaiSource = data.source || state.ehentaiSource;
+      state.ehentaiSelected = data.gallery;
+      ui.ehentaiSourceStatus.textContent = `目前來源：${ehentaiSourceLabel(state.ehentaiSource)}`;
+      renderEhentaiGalleryDetail(data.gallery, data.source);
+      if (window.matchMedia("(max-width: 899px)").matches) ui.ehentaiDetail.scrollIntoView({ block: "start", behavior: "smooth" });
+    } catch (error) {
+      if (requestNumber !== state.ehentaiGalleryRequestNumber || state.route !== "ehentai") return;
+      ui.ehentaiDetailErrorMessage.textContent = ehentaiErrorMessage(error);
+      ui.ehentaiDetailError.hidden = false;
+      trigger?.focus({ preventScroll: true });
+    } finally {
+      if (requestNumber === state.ehentaiGalleryRequestNumber) ui.ehentaiDetailLoading.hidden = true;
+    }
+  }
+
+  function renderEhentaiGalleryDetail(gallery, source) {
+    ui.ehentaiDetail.hidden = false;
+    ui.ehentaiDetailThumb.src = gallery.thumb || "";
+    ui.ehentaiDetailThumb.alt = gallery.thumb ? `${gallery.title || gallery.title_jpn || "Gallery"} 封面` : "";
+    ui.ehentaiDetailThumb.hidden = !gallery.thumb;
+    ui.ehentaiDetailCategory.textContent = gallery.category || "未分類";
+    ui.ehentaiDetailSource.textContent = ehentaiSourceLabel(source || state.ehentaiSource);
+    ui.ehentaiDetailKicker.textContent = `GALLERY #${gallery.gid}`;
+    ui.ehentaiDetailTitle.textContent = gallery.title || gallery.title_jpn || `Gallery #${gallery.gid}`;
+    ui.ehentaiDetailTitleJpn.textContent = gallery.title_jpn || "";
+    ui.ehentaiDetailTitleJpn.hidden = !gallery.title_jpn || gallery.title_jpn === gallery.title;
+    ui.ehentaiDetailFacts.replaceChildren();
+    [
+      ["上傳者", gallery.uploader || "不明"],
+      ["刊登時間", formatEhentaiDate(gallery.posted_at)],
+      ["評分", formatEhentaiRating(gallery.rating)],
+      ["頁數", gallery.pages ? `${formatNumber(gallery.pages)} 頁` : "不明"],
+    ].forEach(([label, value]) => ui.ehentaiDetailFacts.append(el("dt", "", label), el("dd", "", value)));
+    ui.ehentaiDetailTags.replaceChildren();
+    const tags = ehentaiTagValues(gallery.tags);
+    if (tags.length) tags.forEach((tag) => ui.ehentaiDetailTags.append(el("span", "ehentai-tag", tag)));
+    else ui.ehentaiDetailTags.append(el("span", "ehentai-tags-empty", "沒有標籤資料"));
+  }
+
+  function ehentaiTagValues(tags) {
+    return Array.from(tags || []).map((tag) => {
+      if (typeof tag === "string") return tag;
+      const value = tag?.name ?? tag?.value ?? "";
+      return tag?.namespace && value ? `${tag.namespace}:${value}` : String(value);
+    }).filter(Boolean);
+  }
+
+  function formatEhentaiRating(value) {
+    const rating = Number(value);
+    return Number.isFinite(rating) ? rating.toFixed(2).replace(/0+$/, "").replace(/\.$/, "") : "—";
+  }
+
+  function openEhentaiTorrents() {
+    if (!state.ehentaiSelected) return;
+    ehentaiTorrentReturnFocus = document.activeElement;
+    const title = state.ehentaiSelected.title || state.ehentaiSelected.title_jpn || `Gallery #${state.ehentaiSelected.gid}`;
+    ui.ehentaiTorrentHeading.textContent = "Gallery Torrent";
+    ui.ehentaiTorrentIntro.textContent = `${title}。最新 torrent 排在最前；過時項目另列於下方。`;
+    ui.ehentaiTorrentDialog.showModal();
+    ui.ehentaiTorrentDialog.querySelector("[data-close-dialog]")?.focus();
+    loadEhentaiTorrents();
+  }
+
+  function restoreEhentaiTorrentFocus() {
+    state.ehentaiTorrentRequestNumber += 1;
+    if (ehentaiTorrentReturnFocus?.isConnected) ehentaiTorrentReturnFocus.focus({ preventScroll: true });
+    ehentaiTorrentReturnFocus = null;
+  }
+
+  async function loadEhentaiTorrents() {
+    const gallery = state.ehentaiSelected;
+    if (!gallery) return;
+    const requestNumber = ++state.ehentaiTorrentRequestNumber;
+    state.ehentaiTorrentGallery = gallery;
+    ui.ehentaiTorrentLoading.hidden = false;
+    ui.ehentaiTorrentError.hidden = true;
+    ui.ehentaiTorrentEmpty.hidden = true;
+    ui.ehentaiCurrentTorrents.hidden = true;
+    ui.ehentaiOutdatedTorrents.hidden = true;
+    try {
+      const data = await api(ehentaiGalleryPath(gallery.gid, gallery.token, "/torrents"));
+      if (requestNumber !== state.ehentaiTorrentRequestNumber || !ui.ehentaiTorrentDialog.open) return;
+      state.ehentaiTorrents = sortEhentaiTorrents(data.items);
+      renderEhentaiTorrents();
+    } catch (error) {
+      if (requestNumber !== state.ehentaiTorrentRequestNumber || !ui.ehentaiTorrentDialog.open) return;
+      ui.ehentaiTorrentErrorMessage.textContent = ehentaiErrorMessage(error);
+      ui.ehentaiTorrentError.hidden = false;
+    } finally {
+      if (requestNumber === state.ehentaiTorrentRequestNumber) ui.ehentaiTorrentLoading.hidden = true;
+    }
+  }
+
+  function renderEhentaiTorrents() {
+    const current = state.ehentaiTorrents.filter((torrent) => !torrent.outdated);
+    const outdated = state.ehentaiTorrents.filter((torrent) => torrent.outdated);
+    ui.ehentaiCurrentTorrentList.replaceChildren();
+    ui.ehentaiOutdatedTorrentList.replaceChildren();
+    current.forEach((torrent) => ui.ehentaiCurrentTorrentList.append(renderEhentaiTorrentItem(torrent)));
+    outdated.forEach((torrent) => ui.ehentaiOutdatedTorrentList.append(renderEhentaiTorrentItem(torrent)));
+    ui.ehentaiCurrentTorrents.hidden = !current.length;
+    ui.ehentaiOutdatedTorrents.hidden = !outdated.length;
+    ui.ehentaiTorrentEmpty.hidden = Boolean(current.length || outdated.length);
+    const firstAction = ui.ehentaiCurrentTorrentList.querySelector("button") || ui.ehentaiOutdatedTorrentList.querySelector("button");
+    firstAction?.focus({ preventScroll: true });
+  }
+
+  function renderEhentaiTorrentItem(torrent) {
+    const item = el("li", "ehentai-torrent-item");
+    const heading = el("div", "ehentai-torrent-copy");
+    heading.append(
+      el("strong", "", torrent.name || "未命名 torrent"),
+      el("time", "", formatEhentaiDate(torrent.posted_at)),
+    );
+    const facts = el("dl", "ehentai-torrent-facts");
+    [
+      ["大小", torrent.size || "不明"],
+      ["Seeds", formatNumber(Number(torrent.seeds) || 0)],
+      ["Peers", formatNumber(Number(torrent.peers) || 0)],
+      ["下載", formatNumber(Number(torrent.downloads) || 0)],
+    ].forEach(([label, value]) => {
+      const fact = el("div");
+      fact.append(el("dt", "", label), el("dd", "", value));
+      facts.append(fact);
+    });
+    const actions = el("div", "ehentai-torrent-actions");
+    const download = el("button", "primary-button", "下載 .torrent");
+    download.type = "button";
+    download.disabled = !torrent.torrent_url;
+    download.addEventListener("click", () => downloadEhentaiTorrent(torrent, download));
+    actions.append(download);
+    if (torrent.magnet_url) {
+      const copy = el("button", "secondary-button", "複製 magnet");
+      copy.type = "button";
+      copy.addEventListener("click", () => copyEhentaiMagnet(torrent.magnet_url));
+      const open = el("button", "secondary-button", "用預設 BT client 開啟");
+      open.type = "button";
+      open.addEventListener("click", () => openEhentaiMagnet(torrent.magnet_url, open));
+      actions.append(copy, open);
+    }
+    item.append(heading, facts, actions);
+    return item;
+  }
+
+  async function downloadEhentaiTorrent(torrent, button) {
+    const originalLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = "下載中…";
+    try {
+      let response;
+      try {
+        response = await fetch("/api/ehentai/torrents/download", {
+          method: "POST",
+          headers: { Accept: "application/x-bittorrent", "Content-Type": "application/json" },
+          body: JSON.stringify({ url: torrent.torrent_url, name: torrent.name }),
+        });
+      } catch (_) {
+        const error = new Error("network_error");
+        error.code = "network_error";
+        throw error;
+      }
+      if (!response.ok) throw await ehentaiDownloadError(response);
+      const payload = await response.blob();
+      const blob = new Blob([payload], { type: payload.type || "application/x-bittorrent" });
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = ehentaiTorrentFilename(torrent.name);
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      toast("Torrent 下載已開始");
+    } catch (error) {
+      toast(ehentaiErrorMessage(error), true);
+    } finally {
+      button.disabled = !torrent.torrent_url;
+      button.textContent = originalLabel;
+    }
+  }
+
+  async function ehentaiDownloadError(response) {
+    let code = null;
+    if ((response.headers.get("content-type") || "").includes("application/json")) {
+      try {
+        const data = await response.json();
+        code = data?.error?.code || null;
+      } catch (_) {
+        // A typed, secret-free fallback is returned below.
+      }
+    }
+    const error = new Error("torrent_download_failed");
+    error.code = code || (response.status === 404 ? "torrent_not_found" : "network_error");
+    return error;
+  }
+
+  function ehentaiTorrentFilename(name) {
+    const safe = String(name || "gallery").replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim() || "gallery";
+    return safe.toLowerCase().endsWith(".torrent") ? safe : `${safe}.torrent`;
+  }
+
+  async function copyEhentaiMagnet(magnetUri) {
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(magnetUri);
+      else {
+        const input = document.createElement("textarea");
+        input.value = magnetUri;
+        input.setAttribute("readonly", "");
+        input.className = "visually-hidden";
+        document.body.append(input);
+        input.select();
+        if (!document.execCommand("copy")) throw new Error("clipboard_unavailable");
+        input.remove();
+      }
+      toast("已複製 magnet link");
+    } catch (_) {
+      toast("無法寫入剪貼簿，請確認瀏覽器權限後再試", true);
+    }
+  }
+
+  async function openEhentaiMagnet(magnetUri, button) {
+    button.disabled = true;
+    try {
+      await api("/api/ehentai/magnets/open", { method: "POST", body: { magnet_uri: magnetUri } });
+      toast("已交給 Windows 預設 BT client 開啟");
+    } catch (error) {
+      toast(ehentaiErrorMessage(error), true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function loadEhentaiSession() {
+    ui.ehentaiCookie.value = "";
+    renderEhentaiSessionMessage("");
+    try {
+      const flags = normalizeEhentaiSessionFlags(await api("/api/ehentai/session"));
+      state.ehentaiSession = flags;
+      renderEhentaiSessionStatus(flags);
+    } catch (error) {
+      state.ehentaiSession = null;
+      ui.ehentaiSessionStatus.replaceChildren(
+        el("span", "is-error", "設定狀態：讀取失敗"),
+        el("span", "", "環境覆寫：無法確認"),
+        el("span", "", "Session：無法確認"),
+      );
+      renderEhentaiSessionMessage(ehentaiErrorMessage(error), true);
+    } finally {
+      ui.ehentaiCookie.value = "";
+    }
+  }
+
+  function renderEhentaiSessionStatus(flags) {
+    const presentation = ehentaiSessionStatusPresentation(flags.session);
+    ui.ehentaiSessionStatus.replaceChildren(
+      el("span", flags.configured ? "is-ready" : "", `設定狀態：${flags.configured ? "已設定" : "未設定"}`),
+      el("span", flags.override ? "is-override" : "", `環境覆寫：${flags.override ? "使用中" : "未使用"}`),
+      el("span", presentation.className, `Session：${presentation.label}`),
+    );
+  }
+
+  function renderEhentaiSessionMessage(message, isError = false, isWarning = false) {
+    ui.ehentaiSessionMessage.textContent = message;
+    ui.ehentaiSessionMessage.classList.toggle("is-error", isError);
+    ui.ehentaiSessionMessage.classList.toggle("is-warning", isWarning);
+    ui.ehentaiSessionMessage.hidden = !message;
+  }
+
+  function setEhentaiSessionBusy(busy) {
+    ui.ehentaiSessionSave.disabled = busy;
+    ui.ehentaiSessionTest.disabled = busy;
+    ui.ehentaiSessionClear.disabled = busy;
+  }
+
+  async function saveEhentaiSession(event) {
+    event.preventDefault();
+    const cookie = ui.ehentaiCookie.value.trim();
+    ui.ehentaiCookie.value = "";
+    if (!cookie) {
+      renderEhentaiSessionMessage("請先貼上要儲存的 Cookie。", true);
+      ui.ehentaiCookie.focus();
+      return;
+    }
+    setEhentaiSessionBusy(true);
+    renderEhentaiSessionMessage("正在儲存…");
+    try {
+      const flags = normalizeEhentaiSessionFlags(await api("/api/ehentai/session", { method: "PUT", body: { cookie } }));
+      state.ehentaiSession = flags;
+      renderEhentaiSessionStatus(flags);
+      renderEhentaiSessionMessage(flags.override
+        ? "Catalog 備用 Cookie 已安全儲存；目前仍由環境變數 override 提供有效 session。"
+        : "Cookie 已安全儲存；欄位已清空。可接著測試連線。");
+    } catch (error) {
+      renderEhentaiSessionMessage(ehentaiErrorMessage(error), true);
+    } finally {
+      ui.ehentaiCookie.value = "";
+      setEhentaiSessionBusy(false);
+    }
+  }
+
+  async function clearEhentaiSession() {
+    ui.ehentaiCookie.value = "";
+    setEhentaiSessionBusy(true);
+    renderEhentaiSessionMessage("正在清除…");
+    try {
+      const flags = normalizeEhentaiSessionFlags(await api("/api/ehentai/session", { method: "DELETE" }));
+      state.ehentaiSession = flags;
+      renderEhentaiSessionStatus(flags);
+      renderEhentaiSessionMessage(flags.override
+        ? "Catalog 備用 Cookie 已清除；環境變數 override 仍在使用。"
+        : "Cookie 已清除。需要使用 ExHentai 時請重新貼上。");
+    } catch (error) {
+      renderEhentaiSessionMessage(ehentaiErrorMessage(error), true);
+    } finally {
+      ui.ehentaiCookie.value = "";
+      setEhentaiSessionBusy(false);
+    }
+  }
+
+  async function testEhentaiSession() {
+    ui.ehentaiCookie.value = "";
+    setEhentaiSessionBusy(true);
+    renderEhentaiSessionMessage("正在測試連線…");
+    try {
+      const flags = normalizeEhentaiSessionFlags(await api("/api/ehentai/session/test", { method: "POST" }));
+      state.ehentaiSession = flags;
+      renderEhentaiSessionStatus(flags);
+      renderEhentaiSessionMessage(
+        ehentaiSessionTestMessage(flags.session),
+        !["exhentai", "ehentai_only"].includes(flags.session),
+        flags.session === "ehentai_only",
+      );
+    } catch (error) {
+      renderEhentaiSessionMessage(ehentaiErrorMessage(error), true);
+    } finally {
+      ui.ehentaiCookie.value = "";
+      setEhentaiSessionBusy(false);
+    }
+  }
+
   async function loadSettingsPage() {
     stopThumbnailCachePolling();
+    await loadEhentaiSession();
     try {
       const settings = await retryApplicationBusy(() => api("/api/settings"));
       const roots = await retryApplicationBusy(() => api("/api/library-roots"));
@@ -8541,6 +9340,10 @@
     }
     if (event.key === "/" && !isTyping && !isDialogOpen()) {
       event.preventDefault();
+      if (state.route === "ehentai") {
+        ui.ehentaiSearchInput.focus();
+        return;
+      }
       if (state.route !== "library") location.hash = state.libraryRouteHash;
       ui.searchInput.focus();
       return;
@@ -8995,15 +9798,28 @@
       createCoalescedReviewQueueRefresh,
       exportRequest,
       externalBatchNeedsAttention,
+      ehentaiErrorMessage,
+      formatEhentaiDate,
+      ehentaiGalleryPath,
+      ehentaiRouteHash,
+      ehentaiSearchPath,
+      ehentaiSourceLabel,
+      ehentaiSessionStatusPresentation,
+      ehentaiSessionTestMessage,
+      ehentaiTorrentFilename,
       metadataAuthorsForSave,
       metadataSuggestionPath,
       metadataSuggestionRequestIsCurrent,
       metadataVocabularyField,
       mergeExternalActivityProjection,
       normalizeLibraryBatchSize,
+      normalizeEhentaiSessionFlags,
+      normalizeEhentaiCursor,
       normalizeShelfConfiguration,
       replaceOperationSelection,
+      rememberEhentaiPageCursors,
       reorderShelfItem,
+      resolveEhentaiPageCursor,
       reconcileReviewExternalActivity,
       retryApplicationBusy,
       savedViewFilters,
@@ -9011,6 +9827,7 @@
       reviewExternalDisplaySignature,
       reviewExternalSearchMode,
       selectReviewExternalJob,
+      sortEhentaiTorrents,
       workBasketHandoffEntries,
     };
   }
