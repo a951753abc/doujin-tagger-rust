@@ -135,11 +135,6 @@
     leavingLibraryContextCaptured: false,
     selectedIds: new Set(),
     selectedRecords: new Map(),
-    workBasket: null,
-    workBasketLoaded: false,
-    workBasketLoading: false,
-    workBasketMembership: new Set(),
-    workBasketSelectedIds: new Set(),
     sort: "created",
     direction: "desc",
     libraryBatchSize: DEFAULT_LIBRARY_BATCH_SIZE,
@@ -296,7 +291,6 @@
   const thumbnailTrackers = new Map();
   const thumbnailRequestQueue = [];
   let libraryLoadPromise = null;
-  let workBasketPromise = null;
   let archiveTargetResolver = null;
   let archiveTargetConfirmed = false;
   let thumbnailRequestsInFlight = 0;
@@ -542,20 +536,7 @@
       selectionRail: byId("selection-rail"),
       selectionCount: byId("selection-count"),
       selectionWorkbenchLink: byId("selection-workbench-link"),
-      selectionBasketAdd: byId("selection-basket-add"),
       selectionQuickArchive: byId("selection-quick-archive"),
-      workBasketCount: byId("work-basket-count"),
-      detailBasketToggle: byId("detail-basket-toggle"),
-      workBasketSummary: byId("work-basket-summary"),
-      workBasketSelectionSummary: byId("work-basket-selection-summary"),
-      workBasketList: byId("work-basket-list"),
-      workBasketEmpty: byId("work-basket-empty"),
-      workBasketLoading: byId("work-basket-loading"),
-      workBasketError: byId("work-basket-error"),
-      workBasketSelectAll: byId("work-basket-select-all"),
-      workBasketClearSelection: byId("work-basket-clear-selection"),
-      workBasketClear: byId("work-basket-clear"),
-      workBasketSend: byId("work-basket-send"),
       workbenchCount: byId("workbench-count"),
       reviewCount: byId("review-count"),
       duplicateCount: byId("duplicate-count"),
@@ -711,7 +692,6 @@
       state.libraryBatchSizeReady = true;
       routeFromHash();
     });
-    loadWorkBasket();
     loadSavedViews();
     startActivityMonitoring();
   }
@@ -785,7 +765,6 @@
     byId("select-cover-button").addEventListener("click", openCoverSelection);
     byId("rebuild-thumbnail-button").addEventListener("click", rebuildThumbnail);
     ui.clearCoverSelection.addEventListener("click", clearCoverSelection);
-    ui.detailBasketToggle.addEventListener("click", toggleSelectedWorkBasketMembership);
     ui.tagForm.addEventListener("submit", addTag);
     ui.metadataEvidence.addEventListener("toggle", toggleMetadataEvidence);
     byId("refresh-metadata-evidence").addEventListener("click", () => loadMetadataEvidence(true));
@@ -847,11 +826,6 @@
     byId("select-loaded").addEventListener("click", selectLoadedCollections);
     byId("invert-loaded").addEventListener("click", invertLoadedSelection);
     byId("clear-selection").addEventListener("click", clearSelection);
-    ui.selectionBasketAdd.addEventListener("click", addSelectionToWorkBasket);
-    ui.workBasketSelectAll.addEventListener("click", selectAllWorkBasketItems);
-    ui.workBasketClearSelection.addEventListener("click", clearWorkBasketSelection);
-    ui.workBasketClear.addEventListener("click", clearWorkBasket);
-    ui.workBasketSend.addEventListener("click", sendWorkBasketToWorkbench);
     ui.startDuplicateScan.addEventListener("click", startDuplicateScan);
     ui.retryDuplicateFailures.addEventListener("click", retryDuplicateFailures);
     byId("refresh-duplicates").addEventListener("click", () => loadDuplicateCandidates(true));
@@ -859,7 +833,6 @@
       state.duplicateLevel = ui.duplicateLevel.value;
       loadDuplicateCandidates(true);
     });
-    byId("retry-work-basket").addEventListener("click", () => loadWorkBasket({ force: true }));
     ui.batchTagForm.addEventListener("submit", batchAddTag);
     ui.batchMetadataForm.elements.field.addEventListener("change", syncBatchMetadataField);
     ui.batchMetadataForm.addEventListener("submit", batchSetMetadata);
@@ -978,7 +951,7 @@
     const previousRoute = state.route;
     const parsedRoute = parseRouteHash();
     const route = parsedRoute.route;
-    const nextRoute = ["shelf", "library", "triage", "basket", "review", "duplicates", "workbench", "ehentai", "stats", "settings"].includes(route) ? route : "shelf";
+    const nextRoute = ["shelf", "library", "triage", "review", "duplicates", "workbench", "ehentai", "stats", "settings"].includes(route) ? route : "shelf";
     if (previousRoute === "library" && nextRoute !== "library") {
       if (!state.leavingLibraryContextCaptured) rememberLibraryContext();
       state.leavingLibraryContextCaptured = false;
@@ -1050,7 +1023,6 @@
     }
     if (state.route === "workbench") loadWorkbench();
     if (state.route === "duplicates") loadDuplicateCandidates();
-    if (state.route === "basket") loadWorkBasket();
     if (state.route === "review") {
       const preferredId = state.reviewReturnId || currentReviewItem()?.collection.id;
       state.reviewReturnId = null;
@@ -1216,7 +1188,7 @@
   }
 
   function routeTitle(route) {
-    return { shelf: "書架", library: "全部藏書", triage: "待歸檔", basket: "工作籃", review: "品質審核", duplicates: "重複作品", workbench: "工作台", ehentai: "ExHentai", stats: "統計", settings: "設定" }[route];
+    return { shelf: "書架", library: "全部藏書", triage: "待歸檔", review: "品質審核", duplicates: "重複作品", workbench: "工作台", ehentai: "ExHentai", stats: "統計", settings: "設定" }[route];
   }
 
   function startActivityMonitoring() {
@@ -3592,7 +3564,6 @@
     ui.detailTitle.textContent = displayTitle(collection);
     ui.detailFilename.textContent = collection.filename;
     ui.detailPath.textContent = collection.path;
-    updateDetailBasketToggle();
 
     ui.metadataList.replaceChildren();
     const rows = [
@@ -3737,7 +3708,6 @@
     unbindThumbnail(ui.detailCover);
     ui.collectionDetail.hidden = true;
     ui.detailPlaceholder.hidden = false;
-    updateDetailBasketToggle();
   }
 
   function metadataValues(value, filter = null, filterValue = null) {
@@ -4717,8 +4687,6 @@
     const count = state.selectedIds.size;
     ui.selectionRail.hidden = count === 0;
     ui.selectionCount.textContent = String(count);
-    ui.selectionBasketAdd.textContent = `將已選 ${formatNumber(count)} 本加入工作籃`;
-    ui.selectionBasketAdd.disabled = count === 0 || state.workBasketLoading;
     ui.selectionQuickArchive.textContent = `快速歸檔 ${formatNumber(count)} 本`;
     ui.selectionQuickArchive.disabled = count === 0;
     ui.selectionWorkbenchLink.textContent = `前往工作台處理 ${formatNumber(count)} 筆`;
@@ -4729,230 +4697,6 @@
 
   function selectedCollections() {
     return Array.from(state.selectedIds, (id) => state.selectedRecords.get(id)).filter(Boolean);
-  }
-
-  async function loadWorkBasket({ force = false } = {}) {
-    if (state.workBasketLoaded && !force) {
-      updateWorkBasketChrome();
-      if (state.route === "basket") renderWorkBasket();
-      return state.workBasket;
-    }
-    if (workBasketPromise && !force) return workBasketPromise;
-    state.workBasketLoading = true;
-    ui.workBasketLoading.hidden = false;
-    ui.workBasketError.hidden = true;
-    updateDetailBasketToggle();
-    updateSelectionUI();
-    workBasketPromise = api("/api/work-baskets/1")
-      .then((basket) => {
-        applyWorkBasket(basket);
-        state.workBasketLoaded = true;
-        return basket;
-      })
-      .catch((error) => {
-        ui.workBasketError.hidden = false;
-        ui.workBasketError.querySelector("strong").textContent = `無法讀取工作籃：${error.message}`;
-        if (state.route === "basket") toast(error.message, true);
-        return null;
-      })
-      .finally(() => {
-        state.workBasketLoading = false;
-        workBasketPromise = null;
-        ui.workBasketLoading.hidden = true;
-        updateDetailBasketToggle();
-        updateSelectionUI();
-      });
-    return workBasketPromise;
-  }
-
-  function applyWorkBasket(basket) {
-    state.workBasket = basket;
-    state.workBasketMembership = new Set(basket.items.map((item) => item.collection.id));
-    state.workBasketSelectedIds = new Set(
-      Array.from(state.workBasketSelectedIds).filter((id) => state.workBasketMembership.has(id)),
-    );
-    updateWorkBasketChrome();
-    if (state.route === "basket") renderWorkBasket();
-  }
-
-  function updateWorkBasketChrome() {
-    const count = state.workBasket?.count || 0;
-    ui.workBasketCount.textContent = String(count);
-    ui.workBasketCount.hidden = count === 0;
-    ui.workBasketCount.title = `${formatNumber(count)} 本固定收藏`;
-    updateDetailBasketToggle();
-  }
-
-  function updateDetailBasketToggle() {
-    if (!ui.detailBasketToggle) return;
-    if (!state.selected) {
-      ui.detailBasketToggle.disabled = true;
-      ui.detailBasketToggle.textContent = "加入工作籃";
-      return;
-    }
-    const included = state.workBasketMembership.has(state.selected.id);
-    ui.detailBasketToggle.disabled = state.workBasketLoading || !state.workBasketLoaded;
-    ui.detailBasketToggle.classList.toggle("is-included", included);
-    ui.detailBasketToggle.textContent = state.workBasketLoading || !state.workBasketLoaded
-      ? "工作籃狀態載入中"
-      : included
-        ? "從工作籃移除"
-        : "加入工作籃";
-    ui.detailBasketToggle.setAttribute("aria-pressed", String(included));
-  }
-
-  async function toggleSelectedWorkBasketMembership() {
-    if (!state.selected || state.workBasketLoading) return;
-    const collection = state.selected;
-    const included = state.workBasketMembership.has(collection.id);
-    ui.detailBasketToggle.disabled = true;
-    try {
-      const basket = included
-        ? await api(`/api/work-baskets/1/collections/${collection.id}`, { method: "DELETE" })
-        : await api("/api/work-baskets/1/collections", {
-            method: "POST",
-            body: { collection_ids: [collection.id] },
-          });
-      applyWorkBasket(basket);
-      toast(included ? "已從工作籃移除" : "已加入工作籃；切換搜尋後仍會保留");
-    } catch (error) {
-      toast(error.message, true);
-    } finally {
-      updateDetailBasketToggle();
-    }
-  }
-
-  async function addSelectionToWorkBasket() {
-    const collectionIds = Array.from(state.selectedIds);
-    if (!collectionIds.length || state.workBasketLoading) return;
-    ui.selectionBasketAdd.disabled = true;
-    try {
-      const basket = await api("/api/work-baskets/1/collections", {
-        method: "POST",
-        body: { collection_ids: collectionIds },
-      });
-      applyWorkBasket(basket);
-      toast(`已將 ${formatNumber(collectionIds.length)} 本加入工作籃；批次選取維持不變`);
-    } catch (error) {
-      toast(error.message, true);
-    } finally {
-      updateSelectionUI();
-    }
-  }
-
-  function renderWorkBasket() {
-    if (!ui.workBasketList || !state.workBasket) return;
-    const basket = state.workBasket;
-    const selectedCount = state.workBasketSelectedIds.size;
-    unbindThumbnailsWithin(ui.workBasketList);
-    ui.workBasketList.replaceChildren();
-    ui.workBasketEmpty.hidden = basket.count !== 0;
-    ui.workBasketSummary.replaceChildren(document.createTextNode("固定保存 "), numSpan(formatNumber(basket.count)), document.createTextNode(" 本 active 收藏"));
-    if (selectedCount) {
-      ui.workBasketSelectionSummary.replaceChildren(document.createTextNode("已勾選 "), numSpan(formatNumber(selectedCount)), document.createTextNode(" 本，將只送這些收藏到工作台"));
-    } else {
-      ui.workBasketSelectionSummary.textContent = "未勾選時會將整個工作籃送到工作台";
-    }
-    ui.workBasketSelectAll.disabled = basket.count === 0 || selectedCount === basket.count;
-    ui.workBasketClearSelection.disabled = selectedCount === 0;
-    ui.workBasketClear.disabled = basket.count === 0;
-    ui.workBasketSend.disabled = basket.count === 0;
-    if (selectedCount) {
-      ui.workBasketSend.replaceChildren(document.createTextNode("送已勾選 "), numSpan(formatNumber(selectedCount)), document.createTextNode(" 本到工作台"));
-    } else {
-      ui.workBasketSend.replaceChildren(document.createTextNode("送全部 "), numSpan(formatNumber(basket.count)), document.createTextNode(" 本到工作台"));
-    }
-
-    basket.items.forEach((entry, index) => {
-      const collection = entry.collection;
-      const item = el("li", "basket-item");
-      const select = document.createElement("input");
-      select.type = "checkbox";
-      select.checked = state.workBasketSelectedIds.has(collection.id);
-      select.setAttribute("aria-label", `選擇 ${displayTitle(collection)} 送到工作台`);
-      select.addEventListener("change", () => {
-        if (select.checked) state.workBasketSelectedIds.add(collection.id);
-        else state.workBasketSelectedIds.delete(collection.id);
-        renderWorkBasket();
-      });
-      const cover = document.createElement("img");
-      cover.className = "basket-cover";
-      cover.alt = "";
-      cover.width = 54;
-      cover.height = 72;
-      cover.loading = "lazy";
-      bindThumbnail(cover, collection.id);
-      const copy = el("div", "basket-item-copy");
-      copy.append(
-        el("span", "basket-sequence", String(index + 1).padStart(3, "0")),
-        el("strong", "", displayTitle(collection)),
-        el("small", "", `${collection.circle || "社團未設定"} · ${collection.filename}`),
-      );
-      const actions = el("div", "basket-item-actions");
-      const view = el("button", "text-button", "查看 Detail");
-      view.type = "button";
-      view.addEventListener("click", () => navigateToCollection(collection));
-      const remove = el("button", "danger-text-button", "移出工作籃");
-      remove.type = "button";
-      remove.addEventListener("click", () => removeWorkBasketItem(collection));
-      actions.append(view, remove);
-      item.append(select, cover, copy, actions);
-      ui.workBasketList.append(item);
-    });
-  }
-
-  function selectAllWorkBasketItems() {
-    state.workBasketSelectedIds = new Set(
-      (state.workBasket?.items || []).map((item) => item.collection.id),
-    );
-    renderWorkBasket();
-  }
-
-  function clearWorkBasketSelection() {
-    state.workBasketSelectedIds.clear();
-    renderWorkBasket();
-  }
-
-  async function removeWorkBasketItem(collection) {
-    try {
-      const basket = await api(`/api/work-baskets/1/collections/${collection.id}`, {
-        method: "DELETE",
-      });
-      applyWorkBasket(basket);
-      toast(`已將「${displayTitle(collection)}」移出工作籃`);
-    } catch (error) {
-      toast(error.message, true);
-    }
-  }
-
-  async function clearWorkBasket() {
-    const count = state.workBasket?.count || 0;
-    if (!count || !window.confirm(`清空工作籃中的 ${formatNumber(count)} 本固定收藏？藏書本身不會刪除。`)) return;
-    try {
-      const basket = await api("/api/work-baskets/1/collections", { method: "DELETE" });
-      applyWorkBasket(basket);
-      toast("已清空工作籃；藏書資料未受影響");
-    } catch (error) {
-      toast(error.message, true);
-    }
-  }
-
-  function sendWorkBasketToWorkbench() {
-    const entries = state.workBasket?.items || [];
-    const chosen = workBasketHandoffEntries(entries, state.workBasketSelectedIds);
-    if (!chosen.length) return;
-    replaceOperationSelection(state.selectedIds, state.selectedRecords, chosen);
-    state.selectionContext = "work_basket";
-    syncResultCheckboxes();
-    updateSelectionUI();
-    location.hash = "workbench";
-    toast(`已將工作籃中的 ${formatNumber(chosen.length)} 本載入工作台操作清單`);
-  }
-
-  function workBasketHandoffEntries(entries, selectedIds) {
-    return selectedIds.size
-      ? entries.filter((item) => selectedIds.has(item.collection.id))
-      : entries.slice();
   }
 
   function replaceOperationSelection(selectedIds, selectedRecords, entries) {
@@ -6120,10 +5864,7 @@
     confirm.type = "button";
     confirm.disabled = candidate.reviewed;
     confirm.addEventListener("click", () => decideDuplicateCandidate(candidate, "confirm"));
-    const basket = el("button", "text-button", "兩本加入 Work Basket");
-    basket.type = "button";
-    basket.addEventListener("click", () => addDuplicatePairToBasket(candidate));
-    footer.append(notDuplicate, confirm, basket);
+    footer.append(notDuplicate, confirm);
     card.append(header, comparison, footer);
     return card;
   }
@@ -6169,13 +5910,10 @@
     const open = el("button", "text-button", "在系統中開啟");
     open.type = "button";
     open.addEventListener("click", () => openDuplicateCollection(collection));
-    const basket = el("button", "text-button", "加入 Work Basket");
-    basket.type = "button";
-    basket.addEventListener("click", () => addDuplicateCollectionsToBasket([collection.id], "已將這本加入 Work Basket"));
     const remove = el("button", "danger-text-button", "送入既有刪除流程");
     remove.type = "button";
     remove.addEventListener("click", () => handoffDuplicateDelete(collection));
-    actions.append(detail, open, basket, remove);
+    actions.append(detail, open, remove);
     copy.append(facts, actions);
     section.append(cover, copy);
     return section;
@@ -6197,26 +5935,6 @@
       state.duplicateLoaded = false;
       await loadDuplicateCandidates(true);
       toast(decision === "exclude" ? "已保存排除；內容不變時不會再次建議" : "已標記 reviewed；兩筆收藏與檔案都保持不變");
-    } catch (error) {
-      toast(error.message, true);
-    }
-  }
-
-  async function addDuplicatePairToBasket(candidate) {
-    return addDuplicateCollectionsToBasket(
-      [candidate.left.collection.id, candidate.right.collection.id],
-      "兩本候選已加入 Work Basket，可跨頁保留比較清單",
-    );
-  }
-
-  async function addDuplicateCollectionsToBasket(collectionIds, successMessage) {
-    try {
-      const basket = await api("/api/work-baskets/1/collections", {
-        method: "POST",
-        body: { collection_ids: collectionIds },
-      });
-      applyWorkBasket(basket);
-      toast(successMessage);
     } catch (error) {
       toast(error.message, true);
     }
@@ -6400,11 +6118,9 @@
     ui.workbenchSelectionSummary.textContent = collections.length
       ? state.selectionContext === "thumbnail_failures"
         ? `縮圖失敗工作清單包含 ${formatNumber(collections.length)} 筆收藏；可逐筆查看，或返回設定重試整批失敗項目。`
-        : state.selectionContext === "work_basket"
-          ? `操作清單由工作籃明確載入 ${formatNumber(collections.length)} 本固定收藏。後續操作仍使用既有確認、進度與後端安全驗證。`
-          : state.selectionContext === "duplicate_delete_handoff"
-            ? "這本收藏由重複作品頁明確送入刪除流程；請再次核對完整 path，再選擇資源回收桶或永久刪除。"
-        : `本次操作清單包含 ${formatNumber(collections.length)} 筆已選收藏；目前查詢已載入 ${formatNumber(state.items.length)} 筆，共符合 ${formatNumber(state.total)} 筆。`
+        : state.selectionContext === "duplicate_delete_handoff"
+          ? "這本收藏由重複作品頁明確送入刪除流程；請再次核對完整 path，再選擇資源回收桶或永久刪除。"
+          : `本次操作清單包含 ${formatNumber(collections.length)} 筆已選收藏；目前查詢已載入 ${formatNumber(state.items.length)} 筆，共符合 ${formatNumber(state.total)} 筆。`
       : "目前沒有批次操作清單。";
     collections.forEach((collection, index) => {
       const item = el("li", "selected-collection-item");
@@ -7396,7 +7112,6 @@
     invalidateDerivedData({ library: true });
     updateSelectionUI();
     recordBatchActivity(`${action}結果`, `成功 ${report.succeeded}、失敗 ${report.failed}、待復原 ${report.pending_recovery}`, report.failed + report.pending_recovery);
-    loadWorkBasket({ force: true });
     toast(report.failed || report.pending_recovery ? `${action}部分完成，請查看逐筆結果` : `${action}完成`, Boolean(report.failed || report.pending_recovery));
   }
 
@@ -7817,7 +7532,6 @@
       invalidateDerivedData({ library: true });
       state.workbenchLoaded = false;
       toast("收藏身分已完成合併");
-      await loadWorkBasket({ force: true });
       await loadTombstoneCandidates();
     } catch (error) {
       toast(error.message, true);
@@ -9909,7 +9623,6 @@
       reviewExternalSearchMode,
       selectReviewExternalJob,
       sortEhentaiTorrents,
-      workBasketHandoffEntries,
     };
   }
 })();

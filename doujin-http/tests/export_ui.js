@@ -17,8 +17,6 @@ const {
   exportRequest,
   externalBatchNeedsAttention,
   mergeExternalActivityProjection,
-  replaceOperationSelection,
-  workBasketHandoffEntries,
 } = require("../static/app.js");
 
 function functionSource(name) {
@@ -61,18 +59,6 @@ assert.deepEqual(request, {
 assert.deepEqual([...selection], [3, 1], "export request must not mutate selection");
 assert.equal(request.path, undefined);
 assert.equal(request.destination_path, undefined);
-
-const entries = [1, 2, 3].map((id) => ({ collection: { id } }));
-const basketSelection = new Set([2]);
-const selectedIds = new Set([99]);
-const selectedRecords = new Map([[99, { id: 99 }]]);
-replaceOperationSelection(
-  selectedIds,
-  selectedRecords,
-  workBasketHandoffEntries(entries, basketSelection),
-);
-assert.deepEqual(exportRequest(selectedIds, 4, "basket.zip").collection_ids, [2]);
-assert.deepEqual([...basketSelection], [2], "Basket handoff must stay copy-only");
 
 assert.ok(script.includes("state.exportJob"), "Activity must track export job state");
 assert.ok(script.includes("processed_bytes"), "Activity must render export byte progress");

@@ -1006,21 +1006,15 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("id=\"detail-tag-options\""));
     assert!(document.contains("id=\"batch-tag-options\""));
     assert!(document.contains("id=\"selection-workbench-link\""));
-    assert!(document.contains("id=\"work-basket-count\""));
-    assert!(document.contains("id=\"detail-basket-toggle\""));
     assert!(document.contains("id=\"archive-button\""));
     assert!(document.contains("id=\"archive-target-dialog\""));
     assert!(document.contains("id=\"archive-target-select\""));
     assert!(document.contains("id=\"archive-confirm-dialog\""));
     assert!(document.contains("id=\"default-archive-root\""));
-    assert!(document.contains("id=\"selection-basket-add\""));
     assert!(document.contains("id=\"selection-quick-archive\""));
     assert!(document.contains("id=\"quick-archive-dialog\""));
     assert!(document.contains("id=\"quick-archive-items\""));
     assert!(document.contains("id=\"quick-archive-submit\""));
-    assert!(document.contains("id=\"basket-view\""));
-    assert!(document.contains("id=\"work-basket-list\""));
-    assert!(document.contains("勾選只決定這次送往工作台的範圍"));
     assert!(document.contains("移動目前查看收藏"));
     assert!(document.contains("切換目前查看收藏的批次選取"));
     assert!(!document.contains(">加標籤</a>"));
@@ -1090,8 +1084,6 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(stylesheet.contains(".review-desk"));
     assert!(stylesheet.contains(".vocabulary-group"));
     assert!(stylesheet.contains(".vocabulary-preflight-facts"));
-    assert!(stylesheet.contains(".basket-list"));
-    assert!(stylesheet.contains(".basket-toggle"));
     assert!(stylesheet.contains(".cover-candidate-gallery"));
     assert!(stylesheet.contains(".rename-workflow"));
     assert!(stylesheet.contains(".rename-change-item"));
@@ -1300,13 +1292,6 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(!script.contains("location.hash = \"library\""));
     assert!(script.contains("function confirmSelectionClear"));
     assert!(script.contains("這會清除目前"));
-    assert!(script.contains("/api/work-baskets/1"));
-    assert!(script.contains("function addSelectionToWorkBasket"));
-    assert!(script.contains("function toggleSelectedWorkBasketMembership"));
-    assert!(script.contains("function renderWorkBasket"));
-    assert!(script.contains("state.workBasketSelectedIds"));
-    assert!(script.contains("state.selectionContext = \"work_basket\""));
-    assert!(script.contains("後續操作仍使用既有確認、進度與後端安全驗證"));
     assert!(script.contains("event.key === \"Escape\" && !ui.filterPanel.hidden"));
     assert!(script.contains("永久刪除 ${state.selectedIds.size} 筆"));
     assert!(script.contains("/api/file-actions/move/preflight"));
@@ -1356,7 +1341,7 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
 
     assert!(script.contains("doujin-library.triage-auto-advance.v1"));
     assert!(script.contains("const TRIAGE_PER_PAGE = 100"));
-    assert!(script.contains("\"shelf\", \"library\", \"triage\", \"basket\""));
+    assert!(script.contains("\"shelf\", \"library\", \"triage\", \"review\""));
     assert!(script.contains("triage: \"待歸檔\""));
     assert!(script.contains("if (state.route === \"triage\") enterTriage()"));
     assert!(script.contains("async function loadTriageQueue"));

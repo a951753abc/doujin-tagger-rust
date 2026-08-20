@@ -46,7 +46,6 @@
           <a href="#shelf" data-route="shelf" aria-current="page">書架</a>
           <a href="#library" data-route="library">全部藏書</a>
           <a href="#triage" data-route="triage">待歸檔 <b class="nav-count" id="triage-count" hidden>0</b></a>
-          <a href="#basket" data-route="basket">工作籃 <b class="nav-count" id="work-basket-count" hidden>0</b></a>
           <a href="#review" data-route="review">品質審核 <b class="nav-count" id="review-count" hidden>0</b></a>
           <a href="#duplicates" data-route="duplicates">重複作品 <b class="nav-count" id="duplicate-count" hidden>0</b></a>
           <a href="#workbench" data-route="workbench">工作台 <b class="nav-count" id="workbench-count" hidden>0</b></a>
@@ -273,7 +272,6 @@
                   <button class="primary-button" id="read-button" type="button">用閱讀器開啟</button>
                   <button class="secondary-button" id="open-button" type="button">在系統中開啟</button>
                   <button class="secondary-button" id="archive-button" type="button" hidden>歸檔到收藏區</button>
-                  <button class="basket-toggle" id="detail-basket-toggle" type="button" disabled>工作籃狀態載入中</button>
                 </div>
 
                 <dl class="metadata-list" id="metadata-list"></dl>
@@ -334,46 +332,11 @@
           <p><strong id="selection-count">0</strong> 筆批次選取</p>
           <span>批次操作只影響已選收藏；新載入結果不會自動加入</span>
           <div>
-            <button class="text-button" id="selection-basket-add" type="button">將已選 0 本加入工作籃</button>
             <button class="text-button" id="clear-selection" type="button">清除選取</button>
             <button class="secondary-button" id="selection-quick-archive" type="button">快速歸檔 0 本</button>
             <a class="primary-button button-link" id="selection-workbench-link" href="#workbench">前往工作台處理 0 筆</a>
           </div>
         </aside>
-      </section>
-
-      <section class="view basket-view" id="basket-view" data-view="basket" aria-labelledby="basket-heading" hidden>
-        <header class="page-heading basket-heading">
-          <div>
-            <p class="eyebrow">PERSISTENT LIST / 固定收藏</p>
-            <h1 id="basket-heading">工作籃</h1>
-          </div>
-          <p>跨搜尋累積的固定收藏清單。勾選只決定這次送往工作台的範圍，不會改變藏書頁的批次選取。</p>
-        </header>
-
-        <div class="basket-toolbar" aria-label="工作籃動作">
-          <div>
-            <strong id="work-basket-summary">正在讀取工作籃…</strong>
-            <span id="work-basket-selection-summary">尚未選擇送往工作台的收藏</span>
-          </div>
-          <div>
-            <button class="text-button" id="work-basket-select-all" type="button">全選</button>
-            <button class="text-button" id="work-basket-clear-selection" type="button">取消全選</button>
-            <button class="danger-text-button" id="work-basket-clear" type="button">清空工作籃</button>
-            <button class="primary-button" id="work-basket-send" type="button" disabled>送全部到工作台</button>
-          </div>
-        </div>
-
-        <div class="basket-loading" id="work-basket-loading" role="status"><span class="loader" aria-hidden="true"></span> 正在讀取固定清單…</div>
-        <div class="basket-error" id="work-basket-error" role="alert" hidden>
-          <strong>無法讀取工作籃</strong>
-          <button class="secondary-button" id="retry-work-basket" type="button">再試一次</button>
-        </div>
-        <ol class="basket-list" id="work-basket-list"></ol>
-        <div class="workbench-empty basket-empty" id="work-basket-empty" hidden>
-          <span aria-hidden="true">籃</span>
-          <div><h3>工作籃目前是空的</h3><p>從藏書 Detail 加入單本，或先用核取方塊選取多本後一次加入。</p><a class="text-link" data-library-context-link href="#library">回到全部藏書 <span aria-hidden="true">→</span></a></div>
-        </div>
       </section>
 
       <section class="view" id="workbench-view" data-view="workbench" aria-labelledby="workbench-heading" hidden>
