@@ -15,7 +15,11 @@
   <div class="app-shell">
     <header class="masthead">
       <div class="utility-row">
-        <span class="service-state" id="service-state"><i aria-hidden="true"></i> 連線中</span>
+        <button class="activity-trigger is-checking" id="activity-trigger" type="button" aria-expanded="false" aria-controls="activity-panel">
+          <i aria-hidden="true"></i>
+          <span id="activity-summary">狀態檢查中</span>
+          <b id="activity-count" hidden>0</b>
+        </button>
         <div>
           <button class="utility-button" id="recent-button" type="button" aria-haspopup="dialog">最近開啟 <span id="recent-count">0</span> 冊</button>
           <button class="utility-button" id="shortcuts-button" type="button" aria-haspopup="dialog">J / K 移動 · / 搜尋</button>
@@ -35,12 +39,6 @@
           </select>
           <button id="header-search-submit" type="submit" form="search-form" aria-label="搜尋"><span aria-hidden="true">⌕</span></button>
         </div>
-
-        <button class="activity-trigger is-checking" id="activity-trigger" type="button" aria-expanded="false" aria-controls="activity-panel">
-          <i aria-hidden="true"></i>
-          <span id="activity-summary">狀態檢查中</span>
-          <b id="activity-count" hidden>0</b>
-        </button>
 
         <nav class="primary-nav" aria-label="主要功能">
           <a href="#shelf" data-route="shelf" aria-current="page">書架</a>
@@ -332,7 +330,7 @@
           <p><strong id="selection-count">0</strong> 筆批次選取</p>
           <span>批次操作只影響已選收藏；新載入結果不會自動加入</span>
           <div>
-            <button class="text-button" id="clear-selection" type="button">清除選取</button>
+            <button class="secondary-button" id="clear-selection" type="button">清除選取</button>
             <button class="secondary-button" id="selection-quick-archive" type="button">快速歸檔 0 本</button>
             <a class="primary-button button-link" id="selection-workbench-link" href="#workbench">前往工作台處理 0 筆</a>
           </div>

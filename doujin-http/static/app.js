@@ -320,7 +320,6 @@
 
   function init() {
     Object.assign(ui, {
-      serviceState: byId("service-state"),
       activityTrigger: byId("activity-trigger"),
       activitySummary: byId("activity-summary"),
       activityCount: byId("activity-count"),
@@ -1202,10 +1201,8 @@
     try {
       await api("/api/health");
       state.serviceOnline = true;
-      setServiceState("online", "本機服務正常");
     } catch (_) {
       state.serviceOnline = false;
-      setServiceState("offline", "本機服務無回應");
     }
 
     if (state.serviceOnline) {
@@ -1271,11 +1268,6 @@
     });
     state.activityExternalRefreshPromise = trackedPromise;
     return trackedPromise;
-  }
-
-  function setServiceState(status, label) {
-    ui.serviceState.className = `service-state ${status}`;
-    ui.serviceState.lastChild.textContent = ` ${label}`;
   }
 
   function setActivityPanelOpen(open) {
@@ -3031,7 +3023,8 @@
       await restoreLibraryLoadedWindow(targetPage);
       if (deferFocus) resolveLibraryFocus();
       if (state.route === "library" && state.restoreLibraryContext) restoreLibraryWorkContext();
-      setServiceState("online", "本機服務正常");
+      state.serviceOnline = true;
+      renderActivityCenter();
       return true;
     } catch (error) {
       if (requestNumber !== state.requestNumber) return false;
@@ -3040,7 +3033,8 @@
       ui.results.replaceChildren();
       ui.resultSummary.textContent = "無法讀取收藏";
       renderLibraryLoadState();
-      setServiceState("offline", "要求失敗");
+      state.serviceOnline = false;
+      renderActivityCenter();
       toast(error.message, true);
       return false;
     } finally {
@@ -3182,12 +3176,14 @@
           ? `已載入 ${formatNumber(additions.length)} 筆，尚有 ${formatNumber(remaining)} 筆`
           : `已載入 ${formatNumber(additions.length)} 筆，已顯示全部 ${formatNumber(state.total)} 筆`;
       }
-      setServiceState("online", "本機服務正常");
+      state.serviceOnline = true;
+      renderActivityCenter();
       return true;
     } catch (error) {
       if (requestNumber !== state.requestNumber) return false;
       state.libraryLoadError = true;
-      setServiceState("offline", "要求失敗");
+      state.serviceOnline = false;
+      renderActivityCenter();
       ui.libraryLoadAnnouncer.textContent = "更多收藏載入失敗，可使用重試載入";
       toast(`無法載入更多收藏：${error.message}`, true);
       return false;
