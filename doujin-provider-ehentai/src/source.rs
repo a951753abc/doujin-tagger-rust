@@ -626,6 +626,9 @@ fn classify_session_response(response: &TransportResponse) -> SessionStatus {
     if response.status != 200 {
         return SessionStatus::ParseError;
     }
+    if is_blank_body(&response.body) {
+        return SessionStatus::InvalidCookie;
+    }
     if is_sad_panda(&response.body) {
         return SessionStatus::ExhentaiUnavailable;
     }
@@ -682,6 +685,12 @@ fn page_body(response: &TransportResponse, exhentai: bool) -> Result<&str, Sourc
         ));
     }
     classify_http_status(response.status, exhentai)?;
+    if exhentai && is_blank_body(&response.body) {
+        return Err(SourceError::new(
+            SourceErrorKind::InvalidCookie,
+            "ExHentai Cookie 已失效或被拒絕",
+        ));
+    }
     if exhentai && is_sad_panda(&response.body) {
         return Err(SourceError::new(
             SourceErrorKind::ExhentaiUnavailable,
@@ -737,9 +746,11 @@ fn should_public_fallback(kind: SourceErrorKind) -> bool {
 
 fn is_sad_panda(body: &[u8]) -> bool {
     let body = String::from_utf8_lossy(body).to_ascii_lowercase();
-    body.contains("sad panda")
-        || body.contains("sadpanda.jpg")
-        || (body.contains("panda") && body.contains("exhentai"))
+    body.contains("sad panda") || body.contains("sadpanda.jpg")
+}
+
+fn is_blank_body(body: &[u8]) -> bool {
+    String::from_utf8_lossy(body).trim().is_empty()
 }
 
 fn looks_rate_limited(body: &[u8]) -> bool {
@@ -1360,6 +1371,14 @@ mod tests {
                 SessionStatus::ExhentaiUnavailable,
             ),
             (response(200, "not html"), SessionStatus::ParseError),
+            (
+                response(
+                    200,
+                    r#"<!doctype html><html><body><a href="https://exhentai.org/uploader/0xpanda">0xpanda</a></body></html>"#,
+                ),
+                SessionStatus::Exhentai,
+            ),
+            (response(200, ""), SessionStatus::InvalidCookie),
         ];
         for (fixture, expected) in cases {
             let source = ReqwestEhentaiSource::with_transport(
@@ -1589,6 +1608,30 @@ mod tests {
         let torrent_source = ReqwestEhentaiSource::with_transport(
             configured_store(),
             FakeTransport::new(vec![sad_panda, response(200, TORRENTS)]),
+        );
+        let torrents = torrent_source
+            .torrents(123, "0123456789")
+            .expect("public torrent fallback");
+        assert_eq!(SourceSite::Ehentai, torrents.source);
+        assert_eq!(2, torrents.torrents.len());
+    }
+
+    #[test]
+    fn empty_exhentai_body_falls_back_and_marks_public_source() {
+        let empty_body = response(200, "");
+        let gallery_page = response(200, "<!doctype html><html>gallery</html>");
+        let detail_source = ReqwestEhentaiSource::with_transport(
+            configured_store(),
+            FakeTransport::new(vec![empty_body.clone(), gallery_page, response(200, GDATA)]),
+        );
+        let detail = detail_source
+            .gallery(123, "0123456789")
+            .expect("public detail fallback");
+        assert_eq!(SourceSite::Ehentai, detail.source);
+
+        let torrent_source = ReqwestEhentaiSource::with_transport(
+            configured_store(),
+            FakeTransport::new(vec![empty_body, response(200, TORRENTS)]),
         );
         let torrents = torrent_source
             .torrents(123, "0123456789")
