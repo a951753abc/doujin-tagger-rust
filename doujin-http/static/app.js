@@ -3664,19 +3664,25 @@
     const externalStatus = state.externalJob?.status;
     const thumbnailFailed = ui.detailCover?.dataset.thumbnailStatus === "failed";
     const parts = [];
-    if (missing.length) parts.push(`缺少 ${missing.length} 欄（${missingLabels.join("、")}）`);
-    if (pending) parts.push(`${pending} 筆 assertion 待裁決`);
-    if (["pending", "running"].includes(externalStatus)) parts.push("外部搜尋進行中");
-    if (externalStatus === "partial") parts.push("外部搜尋部分完成");
-    if (externalStatus === "failed") parts.push("外部搜尋失敗");
-    if (thumbnailFailed) parts.push("縮圖失敗");
+    if (missing.length) parts.push([document.createTextNode("缺少 "), numSpan(missing.length), document.createTextNode(` 欄（${missingLabels.join("、")}）`)]);
+    if (pending) parts.push([numSpan(pending), document.createTextNode(" 筆 assertion 待裁決")]);
+    if (["pending", "running"].includes(externalStatus)) parts.push([document.createTextNode("外部搜尋進行中")]);
+    if (externalStatus === "partial") parts.push([document.createTextNode("外部搜尋部分完成")]);
+    if (externalStatus === "failed") parts.push([document.createTextNode("外部搜尋失敗")]);
+    if (thumbnailFailed) parts.push([document.createTextNode("縮圖失敗")]);
 
     const attentionCount = missing.length + pending + Number(["partial", "failed"].includes(externalStatus)) + Number(thumbnailFailed);
     const checking = !state.metadataHistory && state.metadataHistoryCollectionId === state.selected?.id;
     ui.metadataEvidence.classList.toggle("has-data-quality-issues", attentionCount > 0);
     ui.metadataEvidence.classList.toggle("has-data-quality-work", ["pending", "running"].includes(externalStatus));
     if (parts.length) {
-      ui.dataQualitySummary.textContent = `${parts.join(" · ")}。展開可查看來源與處理工具。`;
+      const summaryNodes = [];
+      parts.forEach((part, index) => {
+        if (index > 0) summaryNodes.push(document.createTextNode(" · "));
+        summaryNodes.push(...part);
+      });
+      summaryNodes.push(document.createTextNode("。展開可查看來源與處理工具。"));
+      ui.dataQualitySummary.replaceChildren(...summaryNodes);
       ui.evidenceSummaryCount.textContent = attentionCount > 0 ? `待處理 ${attentionCount}` : "處理中";
     } else if (checking) {
       ui.dataQualitySummary.textContent = "正在檢查編目資料與來源紀錄…";
@@ -4193,9 +4199,16 @@
     const value = el("strong", "assertion-value", formatEvidenceValue(assertion.value));
     const references = el("p", "assertion-reference");
     const referenceParts = [];
-    if (assertion.source_reference) referenceParts.push(assertion.source_reference);
-    if (assertion.parser_run_id) referenceParts.push(`parser run #${assertion.parser_run_id}`);
-    references.textContent = referenceParts.length ? referenceParts.join(" · ") : "沒有額外來源參照";
+    if (assertion.source_reference) referenceParts.push([document.createTextNode(assertion.source_reference)]);
+    if (assertion.parser_run_id) referenceParts.push([document.createTextNode("parser run #"), numSpan(assertion.parser_run_id)]);
+    if (referenceParts.length) {
+      referenceParts.forEach((part, index) => {
+        if (index > 0) references.append(document.createTextNode(" · "));
+        references.append(...part);
+      });
+    } else {
+      references.textContent = "沒有額外來源參照";
+    }
     row.append(header, value, references);
     if (assertion.reason) row.append(el("p", "assertion-reason", assertion.reason));
     if (assertion.confidence_total != null) row.append(confidenceEvidence(assertion.confidence_total, assertion.confidence));
@@ -4225,7 +4238,9 @@
     meter.max = 1;
     meter.value = total;
     meter.setAttribute("aria-label", `信心分數 ${formatPercent(total)}`);
-    summary.append(el("span", "", `信心分數 ${formatPercent(total)}`), meter);
+    const scoreLabel = el("span");
+    scoreLabel.append(document.createTextNode("信心分數 "), numSpan(formatPercent(total)));
+    summary.append(scoreLabel, meter);
     wrap.append(summary);
     if (confidence && typeof confidence === "object") {
       const list = el("dl", "confidence-breakdown");
@@ -4257,7 +4272,9 @@
         el("span", `evidence-badge disposition-${result.disposition}`, SEARCH_DISPOSITION_LABELS[result.disposition] || result.disposition),
         el("strong", "", formatEvidenceValue(result.value)),
       );
-      item.append(heading, el("p", "", `${result.source_reference} · 信心 ${formatPercent(result.confidence_total)}`));
+      const evidenceLine = el("p");
+      evidenceLine.append(document.createTextNode(`${result.source_reference} · 信心 `), numSpan(formatPercent(result.confidence_total)));
+      item.append(heading, evidenceLine);
       item.append(el("small", "", result.assertion_id ? `已建立 assertion #${result.assertion_id}` : "僅保留搜尋證據，不能直接套用"));
       list.append(item);
     });
@@ -4830,17 +4847,21 @@
     unbindThumbnailsWithin(ui.workBasketList);
     ui.workBasketList.replaceChildren();
     ui.workBasketEmpty.hidden = basket.count !== 0;
-    ui.workBasketSummary.textContent = `固定保存 ${formatNumber(basket.count)} 本 active 收藏`;
-    ui.workBasketSelectionSummary.textContent = selectedCount
-      ? `已勾選 ${formatNumber(selectedCount)} 本，將只送這些收藏到工作台`
-      : "未勾選時會將整個工作籃送到工作台";
+    ui.workBasketSummary.replaceChildren(document.createTextNode("固定保存 "), numSpan(formatNumber(basket.count)), document.createTextNode(" 本 active 收藏"));
+    if (selectedCount) {
+      ui.workBasketSelectionSummary.replaceChildren(document.createTextNode("已勾選 "), numSpan(formatNumber(selectedCount)), document.createTextNode(" 本，將只送這些收藏到工作台"));
+    } else {
+      ui.workBasketSelectionSummary.textContent = "未勾選時會將整個工作籃送到工作台";
+    }
     ui.workBasketSelectAll.disabled = basket.count === 0 || selectedCount === basket.count;
     ui.workBasketClearSelection.disabled = selectedCount === 0;
     ui.workBasketClear.disabled = basket.count === 0;
     ui.workBasketSend.disabled = basket.count === 0;
-    ui.workBasketSend.textContent = selectedCount
-      ? `送已勾選 ${formatNumber(selectedCount)} 本到工作台`
-      : `送全部 ${formatNumber(basket.count)} 本到工作台`;
+    if (selectedCount) {
+      ui.workBasketSend.replaceChildren(document.createTextNode("送已勾選 "), numSpan(formatNumber(selectedCount)), document.createTextNode(" 本到工作台"));
+    } else {
+      ui.workBasketSend.replaceChildren(document.createTextNode("送全部 "), numSpan(formatNumber(basket.count)), document.createTextNode(" 本到工作台"));
+    }
 
     basket.items.forEach((entry, index) => {
       const collection = entry.collection;
@@ -5323,8 +5344,9 @@
     const available = availableReviewIndices();
     const skippedCount = state.reviewSkipped.size;
     ui.reviewKind.value = state.reviewKind;
-    ui.reviewTotal.textContent = `${formatNumber(state.reviewTotal)} 本收藏需要人工處理`;
-    ui.reviewPosition.textContent = skippedCount ? `本次已略過 ${formatNumber(skippedCount)} 本` : "完成裁決或補值後，Queue 會依最新狀態更新";
+    ui.reviewTotal.replaceChildren(numSpan(formatNumber(state.reviewTotal)), document.createTextNode(" 本收藏需要人工處理"));
+    if (skippedCount) ui.reviewPosition.replaceChildren(document.createTextNode("本次已略過 "), numSpan(formatNumber(skippedCount)), document.createTextNode(" 本"));
+    else ui.reviewPosition.textContent = "完成裁決或補值後，Queue 會依最新狀態更新";
     ui.reviewEmpty.hidden = available.length > 0;
     ui.reviewDesk.hidden = available.length === 0;
     ui.resetReviewSkips.hidden = skippedCount === 0;
@@ -5390,7 +5412,15 @@
     const badges = el("div", "assertion-badges");
     badges.append(el("span", `evidence-badge source-${assertion.source}`, METADATA_SOURCE_LABELS[assertion.source] || assertion.source), el("span", `evidence-badge status-${assertion.status}`, ASSERTION_STATUS_LABELS[assertion.status] || assertion.status));
     column.append(badges, el("strong", "review-evidence-value", formatEvidenceValue(assertion.value)));
-    column.append(el("p", "assertion-reference", assertion.source_reference || (assertion.parser_run_id ? `parser run #${assertion.parser_run_id}` : "沒有額外來源參照")));
+    const reviewReference = el("p", "assertion-reference");
+    if (assertion.source_reference) {
+      reviewReference.textContent = assertion.source_reference;
+    } else if (assertion.parser_run_id) {
+      reviewReference.append(document.createTextNode("parser run #"), numSpan(assertion.parser_run_id));
+    } else {
+      reviewReference.textContent = "沒有額外來源參照";
+    }
+    column.append(reviewReference);
     if (selection) column.append(el("small", "review-selection-kind", `selection：${SELECTION_KIND_LABELS[selection.selected_by] || selection.selected_by}`));
     if (assertion.reason) column.append(el("p", "assertion-reason", assertion.reason));
     if (assertion.confidence_total != null) column.append(confidenceEvidence(assertion.confidence_total, assertion.confidence));
@@ -5407,7 +5437,12 @@
       const item = el("li", "review-issue-row");
       item.append(el("strong", "", issue.type === "candidate" ? `${METADATA_LABELS[issue.field]}候選` : `缺${METADATA_LABELS[issue.field]}`));
       if (issue.type === "candidate") {
-        item.append(el("span", "", formatEvidenceValue(issue.assertion.value)), el("small", "", `${METADATA_SOURCE_LABELS[issue.assertion.source] || issue.assertion.source}${issue.assertion.confidence_total == null ? "" : ` · 信心 ${formatPercent(issue.assertion.confidence_total)}`}`));
+        const sourceSmall = el("small");
+        sourceSmall.textContent = METADATA_SOURCE_LABELS[issue.assertion.source] || issue.assertion.source;
+        if (issue.assertion.confidence_total != null) {
+          sourceSmall.append(document.createTextNode(" · 信心 "), numSpan(formatPercent(issue.assertion.confidence_total)));
+        }
+        item.append(el("span", "", formatEvidenceValue(issue.assertion.value)), sourceSmall);
         if (issue.assertion.reason) item.append(el("p", "", issue.assertion.reason));
       } else item.append(el("span", "metadata-missing", "目前未設定"));
       list.append(item);
@@ -5566,10 +5601,9 @@
     clearTriageArchivedResult();
     const available = availableTriageIndices();
     const skippedCount = state.triageSkipped.size;
-    ui.triageTotal.textContent = `${formatNumber(state.triageTotal)} 本收藏還在下載區等待歸檔`;
-    ui.triagePosition.textContent = skippedCount
-      ? `本次已略過 ${formatNumber(skippedCount)} 本`
-      : "歸檔後這本會從清單移除，並依最新狀態更新計數";
+    ui.triageTotal.replaceChildren(numSpan(formatNumber(state.triageTotal)), document.createTextNode(" 本收藏還在下載區等待歸檔"));
+    if (skippedCount) ui.triagePosition.replaceChildren(document.createTextNode("本次已略過 "), numSpan(formatNumber(skippedCount)), document.createTextNode(" 本"));
+    else ui.triagePosition.textContent = "歸檔後這本會從清單移除，並依最新狀態更新計數";
     ui.resetTriageSkips.hidden = skippedCount === 0;
     ui.triageEmpty.hidden = available.length > 0;
     ui.triageDesk.hidden = available.length === 0;
@@ -5613,9 +5647,15 @@
 
   function renderTriageQuality(collection) {
     const missing = missingMetadataFields(collection);
-    ui.triageQualitySummary.textContent = missing.length
-      ? `缺少 ${formatNumber(missing.length)} 欄（${missing.map(({ label }) => label).join("、")}）；歸檔目的地會依現有欄位決定。`
-      : "主要欄位都已填寫，歸檔後可直接進入對應分類。";
+    if (missing.length) {
+      ui.triageQualitySummary.replaceChildren(
+        document.createTextNode("缺少 "),
+        numSpan(formatNumber(missing.length)),
+        document.createTextNode(` 欄（${missing.map(({ label }) => label).join("、")}）；歸檔目的地會依現有欄位決定。`),
+      );
+    } else {
+      ui.triageQualitySummary.textContent = "主要欄位都已填寫，歸檔後可直接進入對應分類。";
+    }
     ui.triageQualityActions.replaceChildren();
     missing.slice(0, 4).forEach(({ field, label }) => {
       const button = el("button", "text-button", `補上${label}`);
@@ -5796,7 +5836,7 @@
     const result = state.triageArchivedResult;
     if (!result) return;
     setTriageItemActionsEnabled(false);
-    ui.triageTotal.textContent = `${formatNumber(state.triageTotal)} 本收藏還在下載區等待歸檔`;
+    ui.triageTotal.replaceChildren(numSpan(formatNumber(state.triageTotal)), document.createTextNode(" 本收藏還在下載區等待歸檔"));
     ui.triagePosition.textContent = "已歸檔這本，按 J 或「下一本」再處理下一筆。";
     ui.triageStatus.classList.remove("is-warning", "is-blocked");
     ui.triageStatus.classList.add("is-ready");
@@ -6041,9 +6081,15 @@
     const candidates = state.duplicateCandidates;
     ui.duplicateGroups.replaceChildren();
     ui.duplicateEmpty.hidden = candidates.length !== 0;
-    ui.duplicateSummary.textContent = candidates.length
-      ? `列出 ${formatNumber(candidates.length)} 組候選。Exact 與 content 是內容證據；probable 一律需要人工裁決。`
-      : "目前篩選沒有待裁決候選；偵測器不會自動刪除或合併。";
+    if (candidates.length) {
+      ui.duplicateSummary.replaceChildren(
+        document.createTextNode("列出 "),
+        numSpan(formatNumber(candidates.length)),
+        document.createTextNode(" 組候選。Exact 與 content 是內容證據；probable 一律需要人工裁決。"),
+      );
+    } else {
+      ui.duplicateSummary.textContent = "目前篩選沒有待裁決候選；偵測器不會自動刪除或合併。";
+    }
     ui.duplicateCount.textContent = String(candidates.filter((candidate) => !candidate.reviewed).length);
     ui.duplicateCount.hidden = candidates.every((candidate) => candidate.reviewed);
     candidates.forEach((candidate, index) => ui.duplicateGroups.append(duplicateCandidateCard(candidate, index)));
@@ -6054,10 +6100,12 @@
     const header = el("header", "duplicate-group-header");
     const labels = { exact: "Exact duplicate", content: "Same content", probable: "Probable same work" };
     const status = el("div", "duplicate-level-copy");
+    const confidenceSpan = el("span", `duplicate-confidence level-${candidate.level}`);
+    confidenceSpan.append(numSpan(formatPercent(candidate.confidence)), document.createTextNode(` 信心${candidate.reviewed ? " · 已確認重複" : ""}`));
     status.append(
       el("p", "section-index", `PAIR ${String(index + 1).padStart(3, "0")} / ${candidate.level.toUpperCase()}`),
       el("h2", "", labels[candidate.level] || candidate.level),
-      el("span", `duplicate-confidence level-${candidate.level}`, `${formatPercent(candidate.confidence)} 信心${candidate.reviewed ? " · 已確認重複" : ""}`),
+      confidenceSpan,
     );
     const reasons = el("ul", "duplicate-reasons");
     candidate.reasons.forEach((reason) => reasons.append(el("li", "", reason)));
@@ -6097,15 +6145,23 @@
       el("p", "duplicate-bookline", [collection.circle, collection.event].filter(Boolean).join(" · ") || "社團／場次未設定"),
     );
     const facts = el("dl", "duplicate-facts");
-    const factRows = [
-      ["位置", collection.path],
-      ["來源", `${collection.root?.label || "未登記來源"} · ${collection.root?.source === "downloads" ? "新收藏" : "典藏庫"}`],
-      ["內容", `${formatBytes(evidence.file_size)} · ${formatNumber(evidence.page_count)} pages · ${formatNumber(evidence.archive_entry_count)} entries`],
-      ["Metadata", `${formatNumber(evidence.metadata_completeness)} / 6 欄 · ${formatNumber(evidence.tag_count)} tags · ${formatNumber(evidence.manual_assertion_count)} manual`],
-      ["Identifier", evidence.identifiers?.join("、") || "沒有可靠 identifier"],
-      ["解析度", evidence.max_image_width ? `${evidence.max_image_width} × ${evidence.max_image_height}` : "本版未取樣；不以檔案大小推定品質"],
-    ];
-    factRows.forEach(([label, value]) => facts.append(el("dt", "", label), el("dd", "", value)));
+    const metadataDd = el("dd");
+    metadataDd.append(
+      numSpan(formatNumber(evidence.metadata_completeness)),
+      document.createTextNode(" / "),
+      numSpan(6),
+      document.createTextNode(" 欄 · "),
+      numSpan(formatNumber(evidence.tag_count)),
+      document.createTextNode(" tags · "),
+      numSpan(formatNumber(evidence.manual_assertion_count)),
+      document.createTextNode(" manual"),
+    );
+    facts.append(el("dt", "", "位置"), el("dd", "num", collection.path));
+    facts.append(el("dt", "", "來源"), el("dd", "", `${collection.root?.label || "未登記來源"} · ${collection.root?.source === "downloads" ? "新收藏" : "典藏庫"}`));
+    facts.append(el("dt", "", "內容"), el("dd", "num", `${formatBytes(evidence.file_size)} · ${formatNumber(evidence.page_count)} pages · ${formatNumber(evidence.archive_entry_count)} entries`));
+    facts.append(el("dt", "", "Metadata"), metadataDd);
+    facts.append(el("dt", "", "Identifier"), evidence.identifiers?.length ? el("dd", "num", evidence.identifiers.join("、")) : el("dd", "", "沒有可靠 identifier"));
+    facts.append(el("dt", "", "解析度"), evidence.max_image_width ? el("dd", "num", `${evidence.max_image_width} × ${evidence.max_image_height}`) : el("dd", "", "本版未取樣；不以檔案大小推定品質"));
     const actions = el("div", "duplicate-copy-actions");
     const detail = el("button", "text-button", "查看 Detail");
     detail.type = "button";
@@ -6882,7 +6938,7 @@
         option.textContent = `${root.label} — ${root.path}`;
         ui.archiveRootSelect.append(option);
       });
-      byId("move-summary").textContent = `${selectionImpactSummary("搬移", collections.length)}只有新收藏來源可以搬移；其他項目會逐筆回報失敗。`;
+      byId("move-summary").replaceChildren(...selectionImpactSummary("搬移", collections.length), document.createTextNode("只有新收藏來源可以搬移；其他項目會逐筆回報失敗。"));
       renderConfirmItems(byId("move-item-list"), collections);
       ui.moveDialog.showModal();
     } catch (error) {
@@ -7257,7 +7313,7 @@
   function syncDeleteMode() {
     const permanent = ui.deleteForm.elements.mode.value === "permanent";
     const phrase = `永久刪除 ${state.selectedIds.size} 筆`;
-    byId("delete-summary").textContent = selectionImpactSummary(permanent ? "永久刪除" : "移到資源回收桶");
+    byId("delete-summary").replaceChildren(...selectionImpactSummary(permanent ? "永久刪除" : "移到資源回收桶"));
     ui.permanentConfirmPhrase.textContent = phrase;
     ui.permanentConfirmGroup.hidden = !permanent;
     byId("permanent-confirm-note").hidden = !permanent;
@@ -7272,7 +7328,13 @@
     const impact = action === "移到資源回收桶"
       ? `將把已選的 ${formatNumber(selectedCount)} 筆移到資源回收桶`
       : `將${action}已選的 ${formatNumber(selectedCount)} 筆`;
-    return `${impact}。此查詢共 ${formatNumber(queryTotal)} 筆，其餘 ${formatNumber(unaffectedCount)} 筆不受影響。`;
+    return [
+      document.createTextNode(`${impact}。此查詢共 `),
+      numSpan(formatNumber(queryTotal)),
+      document.createTextNode(" 筆，其餘 "),
+      numSpan(formatNumber(unaffectedCount)),
+      document.createTextNode(" 筆不受影響。"),
+    ];
   }
 
   async function executeDelete(event) {
@@ -8182,8 +8244,12 @@
     ui.ehentaiWorkbench.hidden = false;
     ui.ehentaiResults.replaceChildren();
     state.ehentaiItems.forEach((gallery) => ui.ehentaiResults.append(renderEhentaiGalleryCard(gallery)));
-    ui.ehentaiResultSummary.textContent = `${ehentaiSourceLabel(state.ehentaiSource)} · 本頁 ${formatNumber(state.ehentaiItems.length)} 筆`;
-    ui.ehentaiPageLabel.textContent = `第 ${formatNumber(state.ehentaiPage + 1)} 頁`;
+    ui.ehentaiResultSummary.replaceChildren(
+      document.createTextNode(`${ehentaiSourceLabel(state.ehentaiSource)} · 本頁 `),
+      numSpan(formatNumber(state.ehentaiItems.length)),
+      document.createTextNode(" 筆"),
+    );
+    ui.ehentaiPageLabel.replaceChildren(document.createTextNode("第 "), numSpan(formatNumber(state.ehentaiPage + 1)), document.createTextNode(" 頁"));
     const previousPage = state.ehentaiPage - 1;
     const previousCursorAvailable = previousPage === 0 || Boolean(normalizeEhentaiCursor(state.ehentaiPageCursors.get(previousPage)));
     ui.ehentaiPrevious.disabled = state.ehentaiPage <= 0 || !previousCursorAvailable;
@@ -8218,15 +8284,22 @@
       cover.append(el("span", "ehentai-cover-placeholder", "無封面"));
     }
     const copy = el("span", "ehentai-gallery-copy");
+    const ledger = el("span", "ehentai-gallery-ledger");
+    if (gallery.pages) {
+      ledger.append(document.createTextNode(`${gallery.category || "未分類"} · `), numSpan(formatNumber(gallery.pages)), document.createTextNode(" 頁"));
+    } else {
+      ledger.textContent = `${gallery.category || "未分類"} · 頁數不明`;
+    }
     copy.append(
-      el("span", "ehentai-gallery-ledger", `${gallery.category || "未分類"} · ${gallery.pages ? `${formatNumber(gallery.pages)} 頁` : "頁數不明"}`),
+      ledger,
       el("strong", "", gallery.title || gallery.title_jpn || `Gallery #${gallery.gid}`),
     );
     if (gallery.title_jpn && gallery.title_jpn !== gallery.title) copy.append(el("span", "ehentai-gallery-title-jpn", gallery.title_jpn));
-    copy.append(
-      el("span", "ehentai-gallery-byline", `${gallery.uploader || "上傳者不明"} · ${formatEhentaiDate(gallery.posted_at)}`),
-      el("span", "ehentai-gallery-rating", `評分 ${formatEhentaiRating(gallery.rating)}`),
-    );
+    const byline = el("span", "ehentai-gallery-byline");
+    byline.append(document.createTextNode(`${gallery.uploader || "上傳者不明"} · `), numSpan(formatEhentaiDate(gallery.posted_at)));
+    const rating = el("span", "ehentai-gallery-rating");
+    rating.append(document.createTextNode("評分 "), numSpan(formatEhentaiRating(gallery.rating)));
+    copy.append(byline, rating);
     const tags = el("span", "ehentai-gallery-tags");
     ehentaiTagValues(gallery.tags).slice(0, 4).forEach((tag) => tags.append(el("span", "", tag)));
     if (tags.childElementCount) copy.append(tags);
@@ -8266,17 +8339,21 @@
     ui.ehentaiDetailThumb.hidden = !gallery.thumb;
     ui.ehentaiDetailCategory.textContent = gallery.category || "未分類";
     ui.ehentaiDetailSource.textContent = ehentaiSourceLabel(source || state.ehentaiSource);
-    ui.ehentaiDetailKicker.textContent = `GALLERY #${gallery.gid}`;
+    ui.ehentaiDetailKicker.replaceChildren(document.createTextNode("GALLERY #"), numSpan(gallery.gid));
     ui.ehentaiDetailTitle.textContent = gallery.title || gallery.title_jpn || `Gallery #${gallery.gid}`;
     ui.ehentaiDetailTitleJpn.textContent = gallery.title_jpn || "";
     ui.ehentaiDetailTitleJpn.hidden = !gallery.title_jpn || gallery.title_jpn === gallery.title;
     ui.ehentaiDetailFacts.replaceChildren();
-    [
-      ["上傳者", gallery.uploader || "不明"],
-      ["刊登時間", formatEhentaiDate(gallery.posted_at)],
-      ["評分", formatEhentaiRating(gallery.rating)],
-      ["頁數", gallery.pages ? `${formatNumber(gallery.pages)} 頁` : "不明"],
-    ].forEach(([label, value]) => ui.ehentaiDetailFacts.append(el("dt", "", label), el("dd", "", value)));
+    const pagesDd = el("dd");
+    if (gallery.pages) {
+      pagesDd.append(numSpan(formatNumber(gallery.pages)), document.createTextNode(" 頁"));
+    } else {
+      pagesDd.textContent = "不明";
+    }
+    ui.ehentaiDetailFacts.append(el("dt", "", "上傳者"), el("dd", "", gallery.uploader || "不明"));
+    ui.ehentaiDetailFacts.append(el("dt", "", "刊登時間"), el("dd", "num", formatEhentaiDate(gallery.posted_at)));
+    ui.ehentaiDetailFacts.append(el("dt", "", "評分"), el("dd", "num", formatEhentaiRating(gallery.rating)));
+    ui.ehentaiDetailFacts.append(el("dt", "", "頁數"), pagesDd);
     ui.ehentaiDetailTags.replaceChildren();
     const tags = ehentaiTagValues(gallery.tags);
     if (tags.length) tags.forEach((tag) => ui.ehentaiDetailTags.append(el("span", "ehentai-tag", tag)));
@@ -9741,6 +9818,10 @@
 
   function formatNumber(value) {
     return new Intl.NumberFormat("zh-TW").format(value || 0);
+  }
+
+  function numSpan(value) {
+    return el("span", "num", value);
   }
 
   function formatRecentTime(value) {

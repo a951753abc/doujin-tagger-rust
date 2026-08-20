@@ -915,8 +915,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("href=\"/assets/app.css?v=59\""));
-    assert!(document.contains("src=\"/assets/app.js?v=59\" defer"));
+    assert!(document.contains("href=\"/assets/app.css?v=60\""));
+    assert!(document.contains("src=\"/assets/app.js?v=60\" defer"));
     assert!(document.contains("id=\"duplicates-view\""));
     assert!(document.contains("id=\"start-duplicate-scan\""));
     assert!(document.contains("id=\"rename-preflight-form\""));
@@ -1103,6 +1103,13 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(stylesheet.contains("/* 10. Responsive, input modality, and reduced motion */"));
     assert!(!stylesheet.contains("UI redesign v19"));
     assert!(!stylesheet.contains(".brand-mark"));
+    assert!(stylesheet.contains("--fs-display:"));
+    assert!(stylesheet.contains("--fs-caption:"));
+    assert!(stylesheet.contains(".num {"));
+    assert!(!stylesheet.contains("font-weight: 800"));
+    assert!(!stylesheet.contains("font-size: clamp("));
+    assert!(!stylesheet.contains("max-width: 1536px"));
+    assert!(!stylesheet.contains("letter-spacing: 0.14em"));
 
     let javascript = server.request("GET", "/assets/app.js", &[]).await;
     assert_eq!(200, javascript.status);
@@ -1218,7 +1225,10 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("openMetadataDialog(field)"));
     assert!(script.contains("前往工作台處理 ${formatNumber(count)} 筆"));
     assert!(script.contains("function selectionImpactSummary"));
-    assert!(script.contains("其餘 ${formatNumber(unaffectedCount)} 筆不受影響"));
+    assert!(script.contains(
+        "numSpan(formatNumber(unaffectedCount)),
+      document.createTextNode(\" 筆不受影響。\"),"
+    ));
     assert!(script.contains("const isCollectionButton"));
     assert!(script.contains("openMobileDetail(button, scrollPosition)"));
     assert!(script.contains("finishMobileDetailClose"));

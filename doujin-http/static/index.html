@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>JP6 Doujin Archive</title>
-  <link rel="stylesheet" href="/assets/app.css?v=59">
-  <script src="/assets/app.js?v=59" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=60">
+  <script src="/assets/app.js?v=60" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -377,7 +377,13 @@
       </section>
 
       <section class="view" id="workbench-view" data-view="workbench" aria-labelledby="workbench-heading" hidden>
-        <h1 class="visually-hidden" id="workbench-heading">整理與人工裁決</h1>
+        <header class="page-heading">
+          <div>
+            <p class="eyebrow">WORKBENCH / 批次與裁決</p>
+            <h1 id="workbench-heading">工作台</h1>
+          </div>
+          <p>對已選收藏做批次操作、裁決同名候選、治理 metadata 正式名稱；檔案動作都由後端重新驗證後才執行。</p>
+        </header>
 
         <div class="operations-dashboard">
           <section class="operations-section batch-desk" aria-labelledby="batch-desk-heading">
@@ -530,11 +536,11 @@
 
       <section class="view duplicate-view" id="duplicates-view" data-view="duplicates" aria-labelledby="duplicates-heading" hidden>
         <header class="page-heading duplicate-page-heading">
-          <div><p class="eyebrow">DUPLICATE WORKS / 重複作品</p><h1 id="duplicates-heading">把相似變成可裁決的證據</h1></div>
+          <div><p class="eyebrow">DUPLICATE WORKS / 重複偵測</p><h1 id="duplicates-heading">重複作品</h1></div>
           <p>偵測器只列出候選並保存人工判斷；確認重複不會合併身分，也不會刪除任何檔案。</p>
         </header>
         <section class="duplicate-scan-bar" aria-labelledby="duplicate-scan-heading">
-          <div><p class="section-index">FINGERPRINT INDEX / 內容索引</p><h2 id="duplicate-scan-heading">背景建立作品指紋</h2><p id="duplicate-job-detail">來源未變時沿用快取；工作固定同時處理 2 本，可離開此頁繼續。</p></div>
+          <div><p class="section-index">FINGERPRINT INDEX / 內容索引</p><h2 id="duplicate-scan-heading">背景建立作品指紋</h2><p id="duplicate-job-detail">來源未變時沿用快取；工作固定同時處理 <span class="num">2</span> 本，可離開此頁繼續。</p></div>
           <div class="duplicate-scan-actions">
             <button class="secondary-button" id="start-duplicate-scan" type="button">掃描重複作品</button>
             <button class="text-button" id="retry-duplicate-failures" type="button" hidden>重試失敗項目</button>
@@ -567,8 +573,8 @@
       <section class="view triage-view" id="triage-view" data-view="triage" aria-labelledby="triage-heading" hidden>
         <header class="page-heading triage-page-heading">
           <div>
-            <p class="eyebrow">INBOX TRIAGE / 待歸檔</p>
-            <h1 id="triage-heading">逐本確認去向，一鍵歸檔</h1>
+            <p class="eyebrow">INBOX TRIAGE / 下載區收藏</p>
+            <h1 id="triage-heading">待歸檔</h1>
           </div>
           <p>只列出下載區尚未歸檔的收藏；每本都先做一次歸檔預檢，確認目的地後才動檔案。</p>
         </header>
@@ -641,8 +647,8 @@
       <section class="view review-view" id="review-view" data-view="review" aria-labelledby="review-heading" hidden>
         <header class="page-heading review-page-heading">
           <div>
-            <p class="eyebrow">DATA QUALITY / 品質審核</p>
-            <h1 id="review-heading">逐筆裁決，不離開編目桌</h1>
+            <p class="eyebrow">DATA QUALITY / 資料品質</p>
+            <h1 id="review-heading">品質審核</h1>
           </div>
           <p>Queue 只列出缺少主要 metadata 或仍有候選待裁決的收藏；每次決定都沿用既有來源、信心與優先序。</p>
         </header>
@@ -716,8 +722,13 @@
       </section>
 
       <section class="view" id="stats-view" data-view="stats" aria-labelledby="stats-heading" hidden>
-        <h1 class="visually-hidden" id="stats-heading">收藏概況</h1>
-        <p class="stats-intro">只計入目前有效的收藏，不包含已移除或被合併的紀錄。名稱皆可點擊，直接帶入藏書篩選。</p>
+        <header class="page-heading">
+          <div>
+            <p class="eyebrow">STATISTICS / 收藏概況</p>
+            <h1 id="stats-heading">統計</h1>
+          </div>
+          <p>只計入目前有效的收藏，不包含已移除或被合併的紀錄。名稱皆可點擊，直接帶入藏書篩選。</p>
+        </header>
         <div class="stat-ledger" id="stat-ledger" aria-live="polite"></div>
         <div class="stat-columns" id="stat-columns"></div>
       </section>
@@ -768,7 +779,7 @@
             <ol class="ehentai-results" id="ehentai-results"></ol>
             <nav class="ehentai-pagination" aria-label="ExHentai 搜尋結果分頁">
               <button class="secondary-button" id="ehentai-previous" type="button">上一頁</button>
-              <span id="ehentai-page-label">第 1 頁</span>
+              <span id="ehentai-page-label">第 <span class="num">1</span> 頁</span>
               <button class="secondary-button" id="ehentai-next" type="button">下一頁</button>
             </nav>
           </section>
@@ -808,7 +819,13 @@
       </section>
 
       <section class="view" id="settings-view" data-view="settings" aria-labelledby="settings-heading" hidden>
-        <h1 class="visually-hidden" id="settings-heading">編目室設定</h1>
+        <header class="page-heading">
+          <div>
+            <p class="eyebrow">SETTINGS / 編目室設定</p>
+            <h1 id="settings-heading">設定</h1>
+          </div>
+          <p>調整閱讀器、縮圖快取、ExHentai 連線與資料夾來源。</p>
+        </header>
 
         <section class="first-run" id="first-run" aria-labelledby="first-run-heading" hidden>
           <div class="first-run-copy">
