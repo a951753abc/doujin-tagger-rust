@@ -19,6 +19,13 @@
   const THUMBNAIL_POLL_DELAYS = [1000, 2000, 3000, 5000];
   const THUMBNAIL_NETWORK_DELAYS = [1000, 2000, 5000, 10000, 30000];
   const APPLICATION_BUSY_RETRY_DELAYS = [100, 250, 500, 1000];
+  const OPERATIONS_TAB_LABELS = Object.freeze({
+    triage: "待歸檔",
+    review: "品質審核",
+    duplicates: "重複作品",
+    workbench: "批次操作",
+    vocabulary: "名稱治理",
+  });
   const FILTER_NAMES = ["source", "classification", "missing", "event", "circle", "author", "parody", "subcategory", "tag", "untagged"];
   const FILTER_LABELS = {
     q: "搜尋",
@@ -127,6 +134,7 @@
     filterTags: [],
     libraryDataKey: null,
     libraryRouteHash: "#library",
+    operationsRouteHash: "#triage",
     libraryScrollY: 0,
     libraryRestorePage: 1,
     libraryFocusId: null,
@@ -536,7 +544,16 @@
       selectionCount: byId("selection-count"),
       selectionWorkbenchLink: byId("selection-workbench-link"),
       selectionQuickArchive: byId("selection-quick-archive"),
+      operationsView: byId("operations-view"),
+      operationsTabs: document.querySelector(".operations-tabs"),
+      operationsCount: byId("operations-count"),
+      operationsTotal: byId("operations-total"),
+      workbenchView: byId("workbench-view"),
+      batchDesk: document.querySelector(".batch-desk"),
+      identityDesk: document.querySelector(".identity-desk"),
+      vocabularyDesk: document.querySelector(".vocabulary-desk"),
       workbenchCount: byId("workbench-count"),
+      vocabularyCount: byId("vocabulary-count"),
       reviewCount: byId("review-count"),
       duplicateCount: byId("duplicate-count"),
       duplicateLevel: byId("duplicate-level"),
@@ -950,7 +967,7 @@
     const previousRoute = state.route;
     const parsedRoute = parseRouteHash();
     const route = parsedRoute.route;
-    const nextRoute = ["shelf", "library", "triage", "review", "duplicates", "workbench", "ehentai", "stats", "settings"].includes(route) ? route : "shelf";
+    const nextRoute = ["shelf", "library", "triage", "review", "duplicates", "workbench", "vocabulary", "ehentai", "stats", "settings"].includes(route) ? route : "shelf";
     if (previousRoute === "library" && nextRoute !== "library") {
       if (!state.leavingLibraryContextCaptured) rememberLibraryContext();
       state.leavingLibraryContextCaptured = false;
@@ -996,14 +1013,26 @@
     ui.headerSearchScope.disabled = state.route !== "library";
     if (ui.headerSearchScope.disabled) ui.headerSearchScope.value = "all";
     document.documentElement.dataset.route = state.route;
+    const operationsRoute = state.route in OPERATIONS_TAB_LABELS;
+    const activeView = state.route === "vocabulary" ? "workbench" : state.route;
     document.querySelectorAll("[data-view]").forEach((view) => {
-      const active = view.dataset.view === state.route;
+      const active = view.dataset.view === activeView;
       view.hidden = !active;
       if (active) resumeThumbnailsWithin(view);
       else pauseThumbnailsWithin(view);
     });
+    ui.operationsView.hidden = !operationsRoute;
+    if (operationsRoute) {
+      ui.batchDesk.hidden = state.route === "vocabulary";
+      ui.identityDesk.hidden = state.route === "vocabulary";
+      ui.vocabularyDesk.hidden = state.route !== "vocabulary";
+      ui.workbenchView.setAttribute("aria-label", OPERATIONS_TAB_LABELS[state.route === "vocabulary" ? "vocabulary" : "workbench"]);
+      state.operationsRouteHash = `#${state.route}`;
+      updateOperationsNavHref();
+    }
     document.querySelectorAll("[data-route]").forEach((link) => {
-      if (link.dataset.route === state.route) link.setAttribute("aria-current", "page");
+      const current = link.dataset.route === state.route || (link.dataset.route === "operations" && operationsRoute);
+      if (current) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");
     });
     if (state.route === "shelf") loadShelf();
@@ -1020,7 +1049,7 @@
       else if (focused && libraryFocusChanged) revealFocusedCollection();
       scheduleLibraryLoadCheck();
     }
-    if (state.route === "workbench") loadWorkbench();
+    if (state.route === "workbench" || state.route === "vocabulary") loadWorkbench();
     if (state.route === "duplicates") loadDuplicateCandidates();
     if (state.route === "review") {
       const preferredId = state.reviewReturnId || currentReviewItem()?.collection.id;
@@ -1139,7 +1168,7 @@
   }
 
   function confirmSelectionClear() {
-    return window.confirm(`這會清除目前 ${formatNumber(state.selectedIds.size)} 筆批次選取。要繼續嗎？`);
+    return window.confirm(`這會清除目前 ${formatNumber(state.selectedIds.size)} 本批次選取。要繼續嗎？`);
   }
 
   function rememberLibraryContext() {
@@ -1151,6 +1180,10 @@
   function updateLibraryNavHref() {
     document.querySelector('[data-route="library"]')?.setAttribute("href", state.libraryRouteHash);
     document.querySelectorAll("[data-library-context-link]").forEach((link) => link.setAttribute("href", state.libraryRouteHash));
+  }
+
+  function updateOperationsNavHref() {
+    document.querySelector('[data-route="operations"]')?.setAttribute("href", state.operationsRouteHash);
   }
 
   function returnToLibraryContext() {
@@ -1187,7 +1220,8 @@
   }
 
   function routeTitle(route) {
-    return { shelf: "書架", library: "全部藏書", triage: "待歸檔", review: "品質審核", duplicates: "重複作品", workbench: "工作台", ehentai: "ExHentai", stats: "統計", settings: "設定" }[route];
+    if (route in OPERATIONS_TAB_LABELS) return `整理台 · ${OPERATIONS_TAB_LABELS[route]}`;
+    return { shelf: "書架", library: "全部藏書", ehentai: "外部書庫", stats: "統計", settings: "設定" }[route];
   }
 
   function startActivityMonitoring() {
@@ -1390,14 +1424,14 @@
         `批次外部資料補齊 #${batch.id}`,
         `已完成 ${formatNumber(finished)} / ${formatNumber(batch.summary.total)} · 沿用 ${formatNumber(batch.summary.reused)} 筆既有工作`,
         batchStatusLabel(batch.summary, enrichmentNeedsAttention),
-        "查看工作台",
+        "查看整理台",
         () => { setActivityPanelOpen(false); location.hash = "workbench"; },
         enrichmentNeedsAttention ? "前往品質審核" : null,
         enrichmentNeedsAttention ? () => { setActivityPanelOpen(false); location.hash = "review"; } : null,
       ));
     }
     if (state.activityThumbnailFailures.size) {
-      ui.activityList.append(activityItem("thumbnail failed", "縮圖生成失敗", `${formatNumber(state.activityThumbnailFailures.size)} 冊需要從收藏詳細資料重建縮圖。`, "需要處理", "查看藏書", () => {
+      ui.activityList.append(activityItem("thumbnail failed", "縮圖生成失敗", `${formatNumber(state.activityThumbnailFailures.size)} 本需要從收藏詳細資料重建縮圖。`, "需要處理", "查看藏書", () => {
         setActivityPanelOpen(false);
         location.hash = state.libraryRouteHash;
       }));
@@ -1435,7 +1469,7 @@
         `ZIP 套件 #${job.id}`,
         detail,
         failed ? "失敗" : running ? "進行中" : "完成",
-        failed ? "返回工作台" : running ? "查看進度" : "在系統中開啟",
+        failed ? "返回整理台" : running ? "查看進度" : "在系統中開啟",
         failed || running
           ? () => { setActivityPanelOpen(false); location.hash = "workbench"; }
           : () => openExportLocation(job.id),
@@ -1445,14 +1479,14 @@
     }
     if (state.batchRunning) {
       const batch = state.batchRunning;
-      ui.activityList.append(activityItem("batch running", batch.title, `已完成 ${formatNumber(batch.completed)} / ${formatNumber(batch.total)}；已完成項目不會回滾。`, "進行中", "查看工作台", () => {
+      ui.activityList.append(activityItem("batch running", batch.title, `已完成 ${formatNumber(batch.completed)} / ${formatNumber(batch.total)}；已完成項目不會回滾。`, "進行中", "查看整理台", () => {
         setActivityPanelOpen(false);
         location.hash = "workbench";
       }));
     }
     if (state.lastBatchActivity) {
       const batch = state.lastBatchActivity;
-      ui.activityList.append(activityItem(`batch ${batch.failed ? "failed" : "succeeded"}`, batch.title, `${batch.summary} · ${formatMetadataTime(batch.updatedAt)}`, batch.failed ? "部分完成" : "完成", "查看工作台", () => {
+      ui.activityList.append(activityItem(`batch ${batch.failed ? "failed" : "succeeded"}`, batch.title, `${batch.summary} · ${formatMetadataTime(batch.updatedAt)}`, batch.failed ? "部分完成" : "完成", "查看整理台", () => {
         setActivityPanelOpen(false);
         location.hash = "workbench";
       }));
@@ -1590,7 +1624,7 @@
       setActivityPanelOpen(false);
       await navigateToCollection(collection);
     } catch (error) {
-      toast(`無法開啟這筆收藏：${error.message}`, true);
+      toast(`無法開啟這本收藏：${error.message}`, true);
     }
   }
 
@@ -1618,8 +1652,8 @@
 
       const pending = state.candidates.filter((candidate) => candidate.decision === "pending");
       const pendingGroups = new Set(pending.map((candidate) => candidate.tombstone_collection_id)).size;
-      byId("shelf-tidy-summary").textContent = `${formatNumber(stats.missing_metadata)} 冊缺 metadata · ${formatNumber(pendingGroups)} 組同名待裁決 · ${formatNumber(downloads.pagination.total)} 冊新收藏`;
-      byId("shelf-footer-status").textContent = `${formatNumber(stats.total)} 冊已編目 · 本機服務正常`;
+      byId("shelf-tidy-summary").textContent = `${formatNumber(stats.missing_metadata)} 本缺 metadata · ${formatNumber(pendingGroups)} 組同名待裁決 · ${formatNumber(downloads.pagination.total)} 本新收藏`;
+      byId("shelf-footer-status").textContent = `${formatNumber(stats.total)} 本已編目 · 本機服務正常`;
 
       if (eventName) {
         const eventQuickFilter = byId("shelf-quick-event");
@@ -1664,7 +1698,7 @@
         return state.savedViews;
       })
       .catch((error) => {
-        toast(`無法讀取 Saved Views：${error.message}`, true);
+        toast(`無法讀取智慧書架：${error.message}`, true);
         return state.savedViews;
       })
       .finally(() => {
@@ -1775,7 +1809,7 @@
       const page = descriptor.query === savedView?.query
         ? await shelfCollectionPage(savedViewShelfParams(savedView.query, item.preview_limit))
         : await shelfCollectionPage(descriptor.query, item.preview_limit);
-      count.textContent = `${formatNumber(page.pagination?.total)} 冊`;
+      count.textContent = `${formatNumber(page.pagination?.total)} 本`;
       renderShelfBooks(books, page, { featured: descriptor.featured, previewLimit: item.preview_limit, onViewAll: descriptor.viewAll, onCollection: (collection) => openShelfBookForQuery(collection, item, savedView) }, thumbnailRequestEpoch);
     } catch (error) {
       books.append(el("li", "shelf-empty", `無法讀取這座書架：${error.message}`));
@@ -1878,7 +1912,7 @@
       status.append(enabled, document.createTextNode(" 顯示"));
       const preview = document.createElement("select");
       preview.dataset.shelfPreview = "";
-      preview.setAttribute("aria-label", `${title}預覽冊數`);
+      preview.setAttribute("aria-label", `${title}預覽本數`);
       SHELF_PREVIEW_LIMITS.forEach((limit) => {
         const option = new Option(`${limit} 本`, String(limit), false, item.preview_limit === limit);
         preview.add(option);
@@ -1906,7 +1940,7 @@
       ui.shelfCompositionList.append(row);
     });
     const selected = new Set(state.shelfCompositionDraft.filter((item) => item.shelf_type === "saved_view").map((item) => item.saved_view_id));
-    ui.shelfCompositionSavedView.replaceChildren(new Option("選擇既有 Saved View", ""));
+    ui.shelfCompositionSavedView.replaceChildren(new Option("選擇既有智慧書架", ""));
     state.savedViews.filter((view) => !selected.has(view.id)).forEach((view) => ui.shelfCompositionSavedView.add(new Option(`${view.name}（${formatNumber(view.result_count)} 本）`, String(view.id))));
     ui.addSavedViewShelf.disabled = ui.shelfCompositionSavedView.options.length === 1;
   }
@@ -2037,7 +2071,7 @@
     ui.savedViewActiveName.textContent = view.name;
     ui.savedViewDirty.hidden = !modified;
     ui.updateSavedView.disabled = !modified;
-    ui.updateSavedView.title = modified ? "以目前條件明確覆寫這個 Saved View" : "目前條件與保存規則相同";
+    ui.updateSavedView.title = modified ? "以目前條件明確覆寫這個智慧書架" : "目前條件與保存規則相同";
   }
 
   function savedViewSummary(query) {
@@ -2090,7 +2124,7 @@
     const isRename = mode === "rename";
     const query = isRename ? view.query : currentSavedViewQuery();
     ui.savedViewDialogHeading.textContent = isRename
-      ? "重新命名 Saved View"
+      ? "重新命名智慧書架"
       : mode === "save-as" ? "另存新檢視" : "儲存目前檢視";
     ui.savedViewDialogIntro.textContent = isRename
       ? "只變更名稱與書架釘選狀態；即使目前 Library 條件已修改，也不會覆寫保存規則。"
@@ -2130,7 +2164,7 @@
       }
       ui.savedViewDialog.close();
       renderSavedViewContext();
-      toast(isRename ? "Saved View 已重新命名" : "目前檢視已保存到 catalog");
+      toast(isRename ? "智慧書架已重新命名" : "目前檢視已保存到 catalog");
     } catch (error) {
       toast(error.message, true);
     } finally {
@@ -2158,7 +2192,7 @@
 
   async function deleteActiveSavedView() {
     const view = activeSavedView();
-    if (!view || !window.confirm(`刪除 Saved View「${view.name}」？收藏本身不會被刪除。`)) return;
+    if (!view || !window.confirm(`刪除智慧書架「${view.name}」？收藏本身不會被刪除。`)) return;
     try {
       await api(`/api/saved-views/${view.id}`, { method: "DELETE" });
       state.savedViews = state.savedViews.filter((entry) => entry.id !== view.id);
@@ -2168,7 +2202,7 @@
       navigateLibrary({ replace: true });
       renderSavedViewContext();
       if (state.shelfLoaded) renderShelfComposition(state.shelfConfiguration, state.statsData, state.savedViews);
-      toast(previousLength !== state.shelfConfiguration.items.length ? "Saved View 已刪除，首頁上的對應智慧書架也已移除；收藏資料未變更" : "Saved View 已刪除；收藏資料未變更");
+      toast(previousLength !== state.shelfConfiguration.items.length ? "智慧書架已刪除，首頁上的對應智慧書架也已移除；收藏資料未變更" : "智慧書架已刪除；收藏資料未變更");
     } catch (error) {
       toast(error.message, true);
     }
@@ -2234,7 +2268,7 @@
     const remaining = Math.max(0, Number(page.pagination?.total || 0) - books.length);
     if (remaining > 0) {
       const more = el("li", "shelf-more");
-      const button = el("button", featured ? "shelf-more-button featured" : "shelf-more-button", `+ ${formatNumber(remaining)} 冊 →`);
+      const button = el("button", featured ? "shelf-more-button featured" : "shelf-more-button", `+ ${formatNumber(remaining)} 本 →`);
       button.type = "button";
       button.addEventListener("click", onViewAll);
       more.append(button);
@@ -3077,7 +3111,7 @@
       if (requestNumber !== state.requestNumber || state.route !== "library" || state.libraryFocusId !== focusId) return null;
       state.libraryFocusId = null;
       navigateLibrary({ replace: true });
-      toast(`無法定位這筆收藏：${error.message}`, true);
+      toast(`無法定位這本收藏：${error.message}`, true);
       return null;
     }
   }
@@ -3086,7 +3120,7 @@
     state.outOfQueryCollection = collection;
     state.libraryFocusId = null;
     navigateLibrary({ replace: true });
-    ui.focusFilterMessage.textContent = `「${displayTitle(collection)}」不符合目前的搜尋或篩選。你可以保留目前結果，或清除條件後定位這筆收藏。`;
+    ui.focusFilterMessage.textContent = `「${displayTitle(collection)}」不符合目前的搜尋或篩選。你可以保留目前結果，或清除條件後定位這本收藏。`;
     if (!ui.focusFilterDialog.open) ui.focusFilterDialog.showModal();
   }
 
@@ -3173,8 +3207,8 @@
       if (additions.length) {
         const remaining = Math.max(0, state.total - state.items.length);
         ui.libraryLoadAnnouncer.textContent = remaining > 0
-          ? `已載入 ${formatNumber(additions.length)} 筆，尚有 ${formatNumber(remaining)} 筆`
-          : `已載入 ${formatNumber(additions.length)} 筆，已顯示全部 ${formatNumber(state.total)} 筆`;
+          ? `已載入 ${formatNumber(additions.length)} 本，尚有 ${formatNumber(remaining)} 本`
+          : `已載入 ${formatNumber(additions.length)} 本，已顯示全部 ${formatNumber(state.total)} 本`;
       }
       state.serviceOnline = true;
       renderActivityCenter();
@@ -3475,7 +3509,7 @@
     if (state.libraryLoading) {
       ui.loadMoreSpinner.hidden = false;
       ui.retryLibraryLoad.hidden = true;
-      ui.loadMoreLabel.textContent = `正在載入更多收藏…已載入 ${formatNumber(state.items.length)} 筆`;
+      ui.loadMoreLabel.textContent = `正在載入更多收藏…已載入 ${formatNumber(state.items.length)} 本`;
       return;
     }
     ui.loadMoreSpinner.hidden = true;
@@ -3489,8 +3523,8 @@
     ui.retryLibraryLoad.hidden = allLoaded;
     ui.retryLibraryLoad.textContent = "載入更多";
     ui.loadMoreLabel.textContent = allLoaded
-      ? `已顯示全部 ${formatNumber(state.total)} 筆收藏`
-      : `已載入 ${formatNumber(state.items.length)} / ${formatNumber(state.total)} 筆收藏`;
+      ? `已顯示全部 ${formatNumber(state.total)} 本收藏`
+      : `已載入 ${formatNumber(state.items.length)} / ${formatNumber(state.total)} 本收藏`;
   }
 
   function setLayout(layout) {
@@ -3725,7 +3759,7 @@
 
   function updateLibrarySummary() {
     if (!ui.resultSummary) return;
-    ui.resultSummary.textContent = `批次選取 ${formatNumber(state.selectedIds.size)} / 已載入 ${formatNumber(state.items.length)} / 符合 ${formatNumber(state.total)}`;
+    ui.resultSummary.textContent = `已選 ${formatNumber(state.selectedIds.size)} 本 · 已載入 ${formatNumber(state.items.length)} 本 · 符合 ${formatNumber(state.total)} 本`;
   }
 
   function renderTags(collection) {
@@ -3961,7 +3995,7 @@
         invalidateDerivedData({ library: true });
         await loadReviewQueue({ preferredId: target.id });
         const remains = state.reviewItems.some((item) => item.collection.id === target.id);
-        toast(`已儲存${METADATA_LABELS[field]}的手動值${remains ? "；這本收藏仍有其他待審問題" : "；已前進下一筆"}`);
+        toast(`已儲存${METADATA_LABELS[field]}的手動值${remains ? "；這本收藏仍有其他待審問題" : "；已前進下一本"}`);
       } else if (state.route === "triage") {
         invalidateDerivedData({ library: true });
         replaceTriageItem(collection);
@@ -4685,7 +4719,7 @@
     ui.selectionCount.textContent = String(count);
     ui.selectionQuickArchive.textContent = `快速歸檔 ${formatNumber(count)} 本`;
     ui.selectionQuickArchive.disabled = count === 0;
-    ui.selectionWorkbenchLink.textContent = `前往工作台處理 ${formatNumber(count)} 筆`;
+    ui.selectionWorkbenchLink.textContent = `前往整理台處理 ${formatNumber(count)} 本`;
     updateLibrarySummary();
     updateWorkbenchBadge();
     if (state.route === "workbench") renderWorkbenchSelection();
@@ -4706,11 +4740,34 @@
 
   function updateWorkbenchBadge() {
     const pending = state.candidates.filter((candidate) => candidate.decision === "pending").length;
-    const vocabulary = state.vocabularyGroups.length;
-    const count = state.selectedIds.size + pending + vocabulary;
+    const count = state.selectedIds.size + pending;
     ui.workbenchCount.textContent = String(count);
     ui.workbenchCount.hidden = count === 0;
-    ui.workbenchCount.title = `${state.selectedIds.size} 筆批次選取，${pending} 筆身分候選，${vocabulary} 組名稱候選`;
+    ui.workbenchCount.title = `已選 ${state.selectedIds.size} 本，身分候選 ${pending} 本`;
+    const vocabulary = state.vocabularyGroups.length;
+    ui.vocabularyCount.textContent = String(vocabulary);
+    ui.vocabularyCount.hidden = vocabulary === 0;
+    ui.vocabularyCount.title = `名稱候選 ${vocabulary} 組`;
+    updateOperationsCounts();
+  }
+
+  function updateOperationsCounts() {
+    const badges = {
+      triage: ui.triageCount,
+      review: ui.reviewCount,
+      duplicates: ui.duplicateCount,
+      workbench: ui.workbenchCount,
+      vocabulary: ui.vocabularyCount,
+    };
+    let total = 0;
+    Object.entries(badges).forEach(([route, badge]) => {
+      const value = badge.hidden ? 0 : Number(badge.textContent) || 0;
+      total += value;
+      ui.operationsTabs.querySelector(`[data-route="${route}"]`)?.classList.toggle("is-empty", value === 0);
+    });
+    ui.operationsCount.textContent = String(total);
+    ui.operationsCount.hidden = total === 0;
+    ui.operationsTotal.textContent = formatNumber(total);
   }
 
   async function loadReviewQueue({ preferredId = null, preserveLiveContext = false } = {}) {
@@ -4762,6 +4819,7 @@
   function updateReviewBadge() {
     ui.reviewCount.textContent = String(state.reviewTotal);
     ui.reviewCount.hidden = state.reviewTotal === 0;
+    updateOperationsCounts();
   }
 
   function availableReviewIndices() {
@@ -5202,7 +5260,7 @@
       invalidateDerivedData({ library: true });
       await loadReviewQueue({ preferredId: item.collection.id });
       const remains = state.reviewItems.some((candidate) => candidate.collection.id === item.collection.id);
-      toast(`${decision === "select" ? "已採用" : "已拒絕"} assertion #${issue.assertion.id}${remains ? "；這本收藏仍有其他待審問題" : "；已前進下一筆"}`);
+      toast(`${decision === "select" ? "已採用" : "已拒絕"} assertion #${issue.assertion.id}${remains ? "；這本收藏仍有其他待審問題" : "；已前進下一本"}`);
     } catch (error) {
       toast(`${decision === "select" ? "無法採用" : "無法拒絕"} assertion #${issue.assertion.id}：${error.message}`, true);
       renderReviewQueue();
@@ -5323,6 +5381,7 @@
   function updateTriageBadge() {
     ui.triageCount.textContent = String(state.triageTotal);
     ui.triageCount.hidden = state.triageTotal === 0;
+    updateOperationsCounts();
   }
 
   function availableTriageIndices() {
@@ -5577,7 +5636,7 @@
     if (!result) return;
     setTriageItemActionsEnabled(false);
     ui.triageTotal.replaceChildren(numSpan(formatNumber(state.triageTotal)), document.createTextNode(" 本收藏還在下載區等待歸檔"));
-    ui.triagePosition.textContent = "已歸檔這本，按 J 或「下一本」再處理下一筆。";
+    ui.triagePosition.textContent = "已歸檔這本，按 J 或「下一本」再處理下一本。";
     ui.triageStatus.classList.remove("is-warning", "is-blocked");
     ui.triageStatus.classList.add("is-ready");
     ui.triageStatus.textContent = "已歸檔";
@@ -5832,6 +5891,7 @@
     }
     ui.duplicateCount.textContent = String(candidates.filter((candidate) => !candidate.reviewed).length);
     ui.duplicateCount.hidden = candidates.every((candidate) => candidate.reviewed);
+    updateOperationsCounts();
     candidates.forEach((candidate, index) => ui.duplicateGroups.append(duplicateCandidateCard(candidate, index)));
   }
 
@@ -5930,7 +5990,7 @@
       });
       state.duplicateLoaded = false;
       await loadDuplicateCandidates(true);
-      toast(decision === "exclude" ? "已保存排除；內容不變時不會再次建議" : "已標記 reviewed；兩筆收藏與檔案都保持不變");
+      toast(decision === "exclude" ? "已保存排除；內容不變時不會再次建議" : "已標記 reviewed；兩本收藏與檔案都保持不變");
     } catch (error) {
       toast(error.message, true);
     }
@@ -5976,7 +6036,7 @@
   async function prepareExport() {
     const collections = selectedCollections();
     if (!collections.length) {
-      toast("請先將明確選取的收藏送到工作台", true);
+      toast("請先將明確選取的收藏送到整理台", true);
       return;
     }
     try {
@@ -6113,10 +6173,10 @@
     ui.batchTools.hidden = collections.length === 0;
     ui.workbenchSelectionSummary.textContent = collections.length
       ? state.selectionContext === "thumbnail_failures"
-        ? `縮圖失敗工作清單包含 ${formatNumber(collections.length)} 筆收藏；可逐筆查看，或返回設定重試整批失敗項目。`
+        ? `縮圖失敗工作清單包含 ${formatNumber(collections.length)} 本收藏；可逐筆查看，或返回設定重試整批失敗項目。`
         : state.selectionContext === "duplicate_delete_handoff"
           ? "這本收藏由重複作品頁明確送入刪除流程；請再次核對完整 path，再選擇資源回收桶或永久刪除。"
-          : `本次操作清單包含 ${formatNumber(collections.length)} 筆已選收藏；目前查詢已載入 ${formatNumber(state.items.length)} 筆，共符合 ${formatNumber(state.total)} 筆。`
+          : `本次操作清單包含 ${formatNumber(collections.length)} 本已選收藏；目前查詢已載入 ${formatNumber(state.items.length)} 本，共符合 ${formatNumber(state.total)} 本。`
       : "目前沒有批次操作清單。";
     collections.forEach((collection, index) => {
       const item = el("li", "selected-collection-item");
@@ -6206,7 +6266,7 @@
       el("p", "", fieldNeeds || "沒有欄位需要搜尋。"),
     );
     if (preflight.insufficient_identifiers) {
-      ui.externalBatchPreflight.append(el("p", "enrichment-warning", `${formatNumber(preflight.insufficient_identifiers)} 筆缺少 provider 可用的識別碼或辨識書名，將略過。`));
+      ui.externalBatchPreflight.append(el("p", "enrichment-warning", `${formatNumber(preflight.insufficient_identifiers)} 本缺少 provider 可用的識別碼或辨識書名，將略過。`));
     }
     ui.externalBatchActions.hidden = preflight.will_enqueue + preflight.reused === 0;
   }
@@ -6274,7 +6334,7 @@
     links.append(activity);
     if (needsAttention) links.append(review);
     if (batch.summary.partial) {
-      const retry = el("button", "secondary-button", `重試 ${formatNumber(batch.summary.partial)} 筆部分完成`);
+      const retry = el("button", "secondary-button", `重試 ${formatNumber(batch.summary.partial)} 本部分完成`);
       retry.type = "button";
       retry.addEventListener("click", () => retryExternalBatch(batch.id, retry));
       links.prepend(retry);
@@ -6282,7 +6342,7 @@
     ui.externalBatchResult.append(heading, summary, links);
     const failures = batch.items.filter((item) => ["partial", "failed"].includes(item.status));
     if (batch.summary.failed) {
-      ui.externalBatchResult.append(el("p", "enrichment-warning", `${formatNumber(batch.summary.failed)} 筆為 typed terminal failure，保留在清單供定位；批次不會強制繞過 retry policy。暫時性錯誤會維持等待狀態並依 backoff 自動重試。`));
+      ui.externalBatchResult.append(el("p", "enrichment-warning", `${formatNumber(batch.summary.failed)} 本為 typed terminal failure，保留在清單供定位；批次不會強制繞過 retry policy。暫時性錯誤會維持等待狀態並依 backoff 自動重試。`));
     }
     if (failures.length) {
       const list = el("ol", "enrichment-failure-list");
@@ -6486,7 +6546,7 @@
   }
 
   function renderClientBatchResult(title, outcomes) {
-    const summary = `更新 ${outcomes.succeeded.length} 筆，未變更 ${outcomes.unchanged.length} 筆，失敗 ${outcomes.failed.length} 筆`;
+    const summary = `更新 ${outcomes.succeeded.length} 本，未變更 ${outcomes.unchanged.length} 本，失敗 ${outcomes.failed.length} 本`;
     ui.batchResult.hidden = false;
     ui.retryBatchFailures.hidden = outcomes.failed.length === 0;
     ui.batchResultSummary.replaceChildren();
@@ -6814,7 +6874,7 @@
       ui.archiveConfirmDialog.close();
       if (entry?.status === "succeeded") {
         await removeArchivedFromLibrary([pending.collectionId]);
-        toast("已歸檔到收藏區");
+        toast("已歸檔到典藏庫");
       } else {
         toast(entry?.error || (entry?.status === "pending_recovery" ? "狀態待人工復原" : "歸檔未完成"), true);
       }
@@ -7024,13 +7084,13 @@
 
   function syncDeleteMode() {
     const permanent = ui.deleteForm.elements.mode.value === "permanent";
-    const phrase = `永久刪除 ${state.selectedIds.size} 筆`;
+    const phrase = `永久刪除 ${state.selectedIds.size} 本`;
     byId("delete-summary").replaceChildren(...selectionImpactSummary(permanent ? "永久刪除" : "移到資源回收桶"));
     ui.permanentConfirmPhrase.textContent = phrase;
     ui.permanentConfirmGroup.hidden = !permanent;
     byId("permanent-confirm-note").hidden = !permanent;
     const submit = byId("confirm-delete");
-    submit.textContent = permanent ? `永久刪除 ${state.selectedIds.size} 筆` : "移到資源回收桶";
+    submit.textContent = permanent ? `永久刪除 ${state.selectedIds.size} 本` : "移到資源回收桶";
     submit.disabled = permanent && ui.deleteForm.elements.confirmation.value !== phrase;
   }
 
@@ -7038,14 +7098,14 @@
     const queryTotal = Math.max(Number(state.total) || 0, selectedCount);
     const unaffectedCount = Math.max(0, queryTotal - selectedCount);
     const impact = action === "移到資源回收桶"
-      ? `將把已選的 ${formatNumber(selectedCount)} 筆移到資源回收桶`
-      : `將${action}已選的 ${formatNumber(selectedCount)} 筆`;
+      ? `將把已選的 ${formatNumber(selectedCount)} 本移到資源回收桶`
+      : `將${action}已選的 ${formatNumber(selectedCount)} 本`;
     return [
       document.createTextNode(`${impact}。此查詢共 `),
       numSpan(formatNumber(queryTotal)),
-      document.createTextNode(" 筆，其餘 "),
+      document.createTextNode(" 本，其餘 "),
       numSpan(formatNumber(unaffectedCount)),
-      document.createTextNode(" 筆不受影響。"),
+      document.createTextNode(" 本不受影響。"),
     ];
   }
 
@@ -7054,7 +7114,7 @@
     const collections = selectedCollections();
     if (!collections.length) return;
     const mode = ui.deleteForm.elements.mode.value;
-    const phrase = `永久刪除 ${collections.length} 筆`;
+    const phrase = `永久刪除 ${collections.length} 本`;
     if (mode === "permanent" && ui.deleteForm.elements.confirmation.value !== phrase) {
       toast(`請輸入「${phrase}」確認永久刪除`, true);
       return;
@@ -7242,7 +7302,7 @@
         el("li", "", `來源：${data.source_counts.length ? data.source_counts.map((source) => `${metadataSourceLabel(source.source)} ${formatNumber(source.count)}`).join("、") : "沒有 active selection"}`),
         el("li", data.manual_assertions ? "risk" : "", `人工 assertions：${formatNumber(data.manual_assertions)}`),
         el("li", data.manual_selected_conflicts ? "risk" : "", `人工 selected values 將顯示 canonical：${formatNumber(data.manual_selected_conflicts)}`),
-        el("li", "", `Saved Views 安全更新：${formatNumber(data.saved_views.length)}`),
+        el("li", "", `智慧書架安全更新：${formatNumber(data.saved_views.length)}`),
       );
       panel.append(facts);
       if (data.saved_views.length) {
@@ -7274,7 +7334,7 @@
       ui.vocabularyResult.hidden = false;
       ui.vocabularyResult.replaceChildren(
         el("strong", "", `名稱治理完成 · ${result.canonical}`),
-        el("span", "", `已更新 ${formatNumber(result.affected_collections)} 本收藏與 ${formatNumber(result.saved_views_updated)} 個 Saved Views；raw assertions 與人工優先序保持不變。`),
+        el("span", "", `已更新 ${formatNumber(result.affected_collections)} 本收藏與 ${formatNumber(result.saved_views_updated)} 個智慧書架；raw assertions 與人工優先序保持不變。`),
       );
       state.vocabularyLoaded = false;
       state.savedViewsLoaded = false;
@@ -7355,7 +7415,7 @@
         el("code", "", candidates[0].tombstone_path),
       );
       const pending = candidates.filter((candidate) => candidate.decision === "pending").length;
-      header.append(heading, el("span", `decision-badge ${pending ? "pending" : "decided"}`, pending ? `待裁決 ${pending} 筆` : "全部已裁決"));
+      header.append(heading, el("span", `decision-badge ${pending ? "pending" : "decided"}`, pending ? `待裁決 ${pending} 本` : "全部已裁決"));
       const list = el("ol", "candidate-list");
       candidates
         .slice()
@@ -8688,7 +8748,7 @@
       setActivityPanelOpen(false);
       location.hash = "workbench";
       if (failures.missing_collection_ids.length) {
-        toast(`${formatNumber(failures.missing_collection_ids.length)} 筆失敗收藏已不在目前目錄中`, true);
+        toast(`${formatNumber(failures.missing_collection_ids.length)} 本失敗收藏已不在目前目錄中`, true);
       }
     } catch (error) {
       toast(error.message, true);

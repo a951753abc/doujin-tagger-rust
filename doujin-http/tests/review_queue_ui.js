@@ -35,7 +35,7 @@ async function main() {
     "Review job lifecycle must be announced without leaving the Queue",
   );
   assert.ok(html.includes('id="review-search"'), "Review must expose its external-search action");
-  assert.ok(html.includes("在品質審核搜尋目前問題欄位；partial 時再試一次"), "shortcut help must document Review W");
+  assert.ok(html.includes("外部搜尋（品質審核搜尋目前問題欄位；partial 時再試一次）"), "shortcut help must document Review W");
 
   const activeOtherField = { id: 8, collection_id: 3, status: "pending", fields: ["title"] };
   const partialCurrentField = { id: 7, collection_id: 3, status: "partial", fields: ["parody"] };

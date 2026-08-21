@@ -47,7 +47,7 @@ assert.deepEqual(savedViewFilters({ missing: ["event", "circle"], tag: ["read", 
 assert.match(html, /id="edit-shelf-composition"/);
 assert.match(html, /id="shelf-composition-dialog"/);
 assert.match(html, /id="shelf-composition-list"/);
-assert.match(html, /優先顯示於 Saved Views/);
+assert.match(html, /優先顯示於智慧書架清單/);
 assert.match(script, /\/api\/shelf-configuration/);
 assert.match(script, /function renderShelfComposition/);
 assert.match(script, /function renderConfiguredShelf/);
