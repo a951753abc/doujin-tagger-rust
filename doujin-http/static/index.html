@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f7f3ec">
   <title>JP6 Doujin Archive</title>
-  <link rel="stylesheet" href="/assets/app.css?v=60">
-  <script src="/assets/app.js?v=60" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=61">
+  <script src="/assets/app.js?v=61" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要內容</a>
@@ -21,7 +21,7 @@
           <b id="activity-count" hidden>0</b>
         </button>
         <div>
-          <button class="utility-button" id="recent-button" type="button" aria-haspopup="dialog">最近開啟 <span id="recent-count">0</span> 冊</button>
+          <button class="utility-button" id="recent-button" type="button" aria-haspopup="dialog">最近開啟 <span id="recent-count">0</span> 本</button>
           <button class="utility-button" id="shortcuts-button" type="button" aria-haspopup="dialog">J / K 移動 · / 搜尋</button>
         </div>
       </div>
@@ -43,11 +43,8 @@
         <nav class="primary-nav" aria-label="主要功能">
           <a href="#shelf" data-route="shelf" aria-current="page">書架</a>
           <a href="#library" data-route="library">全部藏書</a>
-          <a href="#triage" data-route="triage">待歸檔 <b class="nav-count" id="triage-count" hidden>0</b></a>
-          <a href="#review" data-route="review">品質審核 <b class="nav-count" id="review-count" hidden>0</b></a>
-          <a href="#duplicates" data-route="duplicates">重複作品 <b class="nav-count" id="duplicate-count" hidden>0</b></a>
-          <a href="#workbench" data-route="workbench">工作台 <b class="nav-count" id="workbench-count" hidden>0</b></a>
-          <a href="#ehentai" data-route="ehentai">ExHentai</a>
+          <a href="#triage" data-route="operations">整理台 <b class="nav-count" id="operations-count" hidden>0</b></a>
+          <a href="#ehentai" data-route="ehentai">外部書庫</a>
           <a href="#stats" data-route="stats">統計</a>
           <a href="#settings" data-route="settings">設定</a>
         </nav>
@@ -69,7 +66,7 @@
         <div class="shelf-content" id="shelf-content" hidden>
           <aside class="tidy-strip">
             <p><strong>待整理</strong> <span id="shelf-tidy-summary">正在彙整待處理項目…</span></p>
-            <a href="#workbench">前往工作台 <span aria-hidden="true">→</span></a>
+            <a href="#workbench">前往整理台 <span aria-hidden="true">→</span></a>
           </aside>
 
           <div class="shelf-composition-heading">
@@ -196,7 +193,7 @@
               <strong id="saved-view-active-name"></strong>
               <small id="saved-view-dirty" hidden>條件已修改，尚未更新</small>
             </div>
-            <div class="saved-view-actions" aria-label="Saved View 動作">
+            <div class="saved-view-actions" aria-label="智慧書架動作">
               <button class="secondary-button compact-action" id="save-current-view" type="button">儲存目前檢視</button>
               <button class="secondary-button compact-action" id="update-saved-view" type="button" hidden>更新此檢視</button>
               <button class="text-button compact-action" id="save-as-view" type="button" hidden>另存新檢視</button>
@@ -269,7 +266,7 @@
                 <div class="primary-actions">
                   <button class="primary-button" id="read-button" type="button">用閱讀器開啟</button>
                   <button class="secondary-button" id="open-button" type="button">在系統中開啟</button>
-                  <button class="secondary-button" id="archive-button" type="button" hidden>歸檔到收藏區</button>
+                  <button class="secondary-button" id="archive-button" type="button" hidden>歸檔到典藏庫</button>
                 </div>
 
                 <dl class="metadata-list" id="metadata-list"></dl>
@@ -327,357 +324,350 @@
         </div>
 
         <aside class="selection-rail" id="selection-rail" aria-label="批次選取" hidden>
-          <p><strong id="selection-count">0</strong> 筆批次選取</p>
+          <p>已選 <strong id="selection-count">0</strong> 本</p>
           <span>批次操作只影響已選收藏；新載入結果不會自動加入</span>
           <div>
             <button class="secondary-button" id="clear-selection" type="button">清除選取</button>
             <button class="secondary-button" id="selection-quick-archive" type="button">快速歸檔 0 本</button>
-            <a class="primary-button button-link" id="selection-workbench-link" href="#workbench">前往工作台處理 0 筆</a>
+            <a class="primary-button button-link" id="selection-workbench-link" href="#workbench">前往整理台處理 0 本</a>
           </div>
         </aside>
       </section>
 
-      <section class="view" id="workbench-view" data-view="workbench" aria-labelledby="workbench-heading" hidden>
+      <section class="view operations-view" id="operations-view" aria-labelledby="operations-heading" hidden>
         <header class="page-heading">
           <div>
-            <p class="eyebrow">WORKBENCH / 批次與裁決</p>
-            <h1 id="workbench-heading">工作台</h1>
+            <p class="eyebrow">OPERATIONS / 整理台</p>
+            <h1 id="operations-heading">整理台</h1>
           </div>
-          <p>對已選收藏做批次操作、裁決同名候選、治理 metadata 正式名稱；檔案動作都由後端重新驗證後才執行。</p>
+          <p>所有待人工處理的佇列集中在這裡；檔案動作都由後端重新驗證後才執行。</p>
         </header>
 
-        <div class="operations-dashboard">
-          <section class="operations-section batch-desk" aria-labelledby="batch-desk-heading">
-            <div class="section-heading ruled-heading">
-              <div><p class="section-index">01 / 批次操作</p><h2 id="batch-desk-heading">已選收藏</h2></div>
-              <a class="text-link" id="return-to-library-context" data-library-context-link href="#library">返回原本的藏書位置調整選取 <span aria-hidden="true">→</span></a>
-            </div>
-            <div class="selection-summary" id="workbench-selection-summary" aria-live="polite"></div>
-            <ol class="selected-collection-list" id="selected-collection-list"></ol>
-            <div class="workbench-empty" id="selection-empty">
-              <span aria-hidden="true">選</span>
-              <div><h3>尚未選取收藏</h3><p>回到藏書，以核取方塊、全選已載入或反選已載入建立這次操作清單。</p></div>
-            </div>
-
-            <div class="batch-tools" id="batch-tools" hidden>
-              <form class="inline-operation" id="batch-tag-form">
-                <div><h3>批次加入標籤</h3><p>已具有同名標籤的收藏不會重複建立關聯。</p></div>
-                <label>標籤名稱
-                  <span class="tag-suggestion-combobox" data-tag-suggestions>
-                    <input id="batch-tag-input" name="tag" type="text" autocomplete="off" required role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="batch-tag-options" placeholder="搜尋既有標籤或建立新標籤">
-                    <ul class="facet-options tag-suggestion-options" id="batch-tag-options" role="listbox" hidden></ul>
-                  </span>
-                </label>
-                <button class="primary-button" type="submit">加入</button>
-              </form>
-
-              <form class="inline-operation" id="batch-metadata-form">
-                <div><h3>批次寫入手動值</h3><p>手動值會優先於外部資料、檔名解析與推斷結果。</p></div>
-                <label>欄位
-                  <select name="field"><option value="parody">原作</option><option value="classification">種類</option></select>
-                </label>
-                <label id="batch-metadata-value-label">新的原作<input name="value" type="text" autocomplete="off" required></label>
-                <button class="primary-button" type="submit">寫入</button>
-              </form>
-
-              <section class="enrichment-operation" aria-labelledby="batch-enrichment-heading">
-                <div class="enrichment-heading">
-                  <div><p class="section-index">EXTERNAL / 外部資料</p><h3 id="batch-enrichment-heading">批次補齊 metadata</h3><p>由既有背景 worker 依 provider 限速逐筆處理；沒有可靠估算，因此不顯示 ETA。</p></div>
-                  <button class="secondary-button" id="prepare-external-batch" type="button">檢查搜尋範圍</button>
-                </div>
-                <fieldset class="enrichment-strategy">
-                  <legend>搜尋策略</legend>
-                  <label><input type="radio" name="external-batch-strategy" value="only_missing" checked> 只搜尋目前缺少欄位</label>
-                  <label><input type="radio" name="external-batch-strategy" value="specified"> 搜尋指定欄位</label>
-                </fieldset>
-                <fieldset class="enrichment-fields">
-                  <legend>欄位</legend>
-                  <label><input type="checkbox" name="external-batch-field" value="title" checked> 標題</label>
-                  <label><input type="checkbox" name="external-batch-field" value="event" checked> 場次</label>
-                  <label><input type="checkbox" name="external-batch-field" value="circle" checked> 社團</label>
-                  <label><input type="checkbox" name="external-batch-field" value="authors" checked> 作者</label>
-                  <label><input type="checkbox" name="external-batch-field" value="parody" checked> 原作</label>
-                  <label><input type="checkbox" name="external-batch-field" value="classification" checked> 種類</label>
-                  <label><input type="checkbox" name="external-batch-field" value="is_dl" checked> DL 判定</label>
-                </fieldset>
-                <div class="enrichment-preflight" id="external-batch-preflight" aria-live="polite" hidden></div>
-                <div class="enrichment-actions" id="external-batch-actions" hidden>
-                  <button class="primary-button" id="start-external-batch" type="button">開始背景搜尋</button>
-                  <button class="text-button" id="cancel-external-batch" type="button">取消</button>
-                </div>
-                <div class="enrichment-result" id="external-batch-result" aria-live="polite" hidden></div>
-              </section>
-
-              <div class="file-operation-strip">
-                <div><p class="section-index">FILES / 檔案</p><h3>匯出、改名、搬移或刪除</h3><p>匯出只複製原始 ZIP；其他操作會由後端重新驗證來源、路徑與檔案狀態。</p></div>
-                <div>
-                  <button class="secondary-button" id="prepare-export" type="button">匯出 ZIP 套件</button>
-                  <button class="secondary-button" id="prepare-move" type="button">搬移至典藏庫</button>
-                  <button class="danger-button" id="prepare-delete" type="button">刪除已選收藏</button>
-                </div>
-              </div>
-
-              <section class="rename-workflow" aria-labelledby="rename-workflow-heading">
-                <form class="rename-template-form" id="rename-preflight-form">
-                  <div>
-                    <h3 id="rename-workflow-heading">Rename Template</h3>
-                    <p>缺少欄位會跳過並收緊分隔符；結果為空、衝突或不符合 Windows 規則時不會套用。第一版只支援 ZIP。</p>
-                  </div>
-                  <label>單一命名規則
-                    <input name="template" type="text" value="{event} [{circle}] {title}" autocomplete="off" spellcheck="false" required aria-describedby="rename-token-help">
-                  </label>
-                  <button class="secondary-button" type="submit">預覽批次改名</button>
-                </form>
-                <p class="rename-token-help" id="rename-token-help"><strong>可用欄位</strong> <code>{title}</code> <code>{event}</code> <code>{circle}</code> <code>{authors}</code> <code>{parody}</code> <code>{classification}</code> <code>{subcategory}</code> <code>{is_dl}</code></p>
-                <section class="rename-preflight" id="rename-preflight" aria-live="polite" hidden>
-                  <header>
-                    <div><p class="section-index">PREFLIGHT / 改名前檢查</p><h4 id="rename-preflight-summary">正在整理預覽…</h4></div>
-                    <div><label class="rename-status-filter">顯示<select id="rename-status-filter"><option value="all">全部狀態</option><option value="safe">可安全改名</option><option value="blocked">需處理／跳過</option><option value="collision">名稱衝突</option><option value="missing_metadata">缺少 metadata</option><option value="source_changed">來源已變更</option></select></label><button class="text-button" id="cancel-rename-preflight" type="button">收起</button><button class="primary-button" id="apply-rename-preflight" type="button">套用安全項目</button></div>
-                  </header>
-                  <p class="rename-preflight-note">完整預覽不會修改檔案；套用時會重新讀取 current path、metadata 與 collision，過期項目會逐筆拒絕。</p>
-                  <ol class="rename-change-list" id="rename-preflight-items"></ol>
-                </section>
-              </section>
-            </div>
-
-            <div class="batch-progress" id="batch-progress" role="status" aria-live="polite" hidden>
-              <div><strong id="batch-progress-label">準備批次操作…</strong><span id="batch-progress-count">0 / 0</span></div>
-              <progress id="batch-progress-bar" value="0" max="1"></progress>
-            </div>
-
-            <section class="batch-result" id="batch-result" aria-labelledby="batch-result-heading" hidden>
-              <div class="batch-result-heading"><h3 id="batch-result-heading">最近一次操作結果</h3><button class="text-button" id="retry-batch-failures" type="button" hidden>只重試失敗項目</button></div>
-              <div id="batch-result-summary"></div>
-              <ol id="batch-result-items"></ol>
-            </section>
-          </section>
-
-          <section class="operations-section identity-desk" aria-labelledby="identity-heading">
-            <div class="section-heading ruled-heading">
-              <div><p class="section-index">02 / 身分裁決</p><h2 id="identity-heading">同名候選裁決</h2></div>
-              <button class="text-button" id="refresh-candidates" type="button">重新整理</button>
-            </div>
-            <p class="section-intro">確認候選只記錄人工判斷，不會立即合併。每個同名候選都必須裁決後，才能進入身分合併預檢。</p>
-            <div class="identity-result" id="identity-result" aria-live="polite" hidden></div>
-            <div class="review-loading" id="candidate-loading" hidden><span class="loader" aria-hidden="true"></span> 正在讀取待裁決項目…</div>
-            <div class="candidate-groups" id="candidate-groups"></div>
-            <div class="workbench-empty" id="candidate-empty" hidden>
-              <span aria-hidden="true">清</span>
-              <div><h3>沒有待處理的同名候選</h3><p>重新掃描若發現已消失收藏的同名新位置，會在這裡等待人工裁決。</p></div>
-            </div>
-          </section>
-
-          <section class="operations-section vocabulary-desk" aria-labelledby="vocabulary-heading">
-            <div class="section-heading ruled-heading vocabulary-heading">
-              <div><p class="section-index">03 / 名稱治理</p><h2 id="vocabulary-heading">Metadata 正式名稱</h2></div>
-              <div class="vocabulary-heading-actions">
-                <label>欄位
-                  <select id="vocabulary-field">
-                    <option value="">全部</option>
-                    <option value="event">場次</option>
-                    <option value="circle">社團</option>
-                    <option value="author">作者</option>
-                    <option value="parody">原作</option>
-                  </select>
-                </label>
-                <button class="text-button" id="refresh-vocabulary" type="button">重新偵測</button>
-              </div>
-            </div>
-            <p class="section-intro">只列出經安全正規化後相同的名稱；候選不會自動合併。選定正式名稱後，先檢查影響收藏、人工值與 Saved Views，再執行治理。</p>
-            <div class="identity-result" id="vocabulary-result" aria-live="polite" hidden></div>
-            <div class="review-loading" id="vocabulary-loading" hidden><span class="loader" aria-hidden="true"></span> 正在比對 active metadata 名稱…</div>
-            <div class="vocabulary-groups" id="vocabulary-groups"></div>
-            <div class="workbench-empty" id="vocabulary-empty" hidden>
-              <span aria-hidden="true">正</span>
-              <div><h3>目前沒有名稱變體候選</h3><p>已拒絕的組合不會再次出現；已合併的 alias 會沿用既有 metadata 優先序。</p></div>
-            </div>
-          </section>
+        <div class="operations-tab-row">
+          <nav class="operations-tabs" aria-label="整理台分頁">
+            <a href="#triage" data-route="triage">待歸檔 <b class="tab-count" id="triage-count" hidden>0</b></a>
+            <a href="#review" data-route="review">品質審核 <b class="tab-count" id="review-count" hidden>0</b></a>
+            <a href="#duplicates" data-route="duplicates">重複作品 <b class="tab-count" id="duplicate-count" hidden>0</b></a>
+            <a href="#workbench" data-route="workbench">批次操作 <b class="tab-count" id="workbench-count" hidden>0</b></a>
+            <a href="#vocabulary" data-route="vocabulary">名稱治理 <b class="tab-count" id="vocabulary-count" hidden>0</b></a>
+          </nav>
+          <p class="operations-total">共 <span id="operations-total">0</span> 件待處理 · 完成後自動前進</p>
         </div>
-      </section>
 
-      <section class="view duplicate-view" id="duplicates-view" data-view="duplicates" aria-labelledby="duplicates-heading" hidden>
-        <header class="page-heading duplicate-page-heading">
-          <div><p class="eyebrow">DUPLICATE WORKS / 重複偵測</p><h1 id="duplicates-heading">重複作品</h1></div>
-          <p>偵測器只列出候選並保存人工判斷；確認重複不會合併身分，也不會刪除任何檔案。</p>
-        </header>
-        <section class="duplicate-scan-bar" aria-labelledby="duplicate-scan-heading">
-          <div><p class="section-index">FINGERPRINT INDEX / 內容索引</p><h2 id="duplicate-scan-heading">背景建立作品指紋</h2><p id="duplicate-job-detail">來源未變時沿用快取；工作固定同時處理 <span class="num">2</span> 本，可離開此頁繼續。</p></div>
-          <div class="duplicate-scan-actions">
-            <button class="secondary-button" id="start-duplicate-scan" type="button">掃描重複作品</button>
-            <button class="text-button" id="retry-duplicate-failures" type="button" hidden>重試失敗項目</button>
-          </div>
-          <div class="duplicate-progress" id="duplicate-progress" role="status" aria-live="polite" hidden>
-            <div><strong id="duplicate-job-status">準備建立指紋…</strong><span id="duplicate-job-counts"></span></div>
-            <progress id="duplicate-progress-bar" max="1" value="0"></progress>
-            <ol class="duplicate-failures" id="duplicate-failures" hidden></ol>
+        <section class="view" id="workbench-view" data-view="workbench" aria-label="批次操作" hidden>
+          <div class="operations-dashboard">
+            <section class="operations-section batch-desk" aria-labelledby="batch-desk-heading">
+              <div class="section-heading ruled-heading">
+                <div><p class="section-index">01 / 批次操作</p><h2 id="batch-desk-heading">已選收藏</h2></div>
+                <a class="text-link" id="return-to-library-context" data-library-context-link href="#library">返回原本的藏書位置調整選取 <span aria-hidden="true">→</span></a>
+              </div>
+              <div class="selection-summary" id="workbench-selection-summary" aria-live="polite"></div>
+              <ol class="selected-collection-list" id="selected-collection-list"></ol>
+              <div class="workbench-empty" id="selection-empty">
+                <span aria-hidden="true">選</span>
+                <div><h3>尚未選取收藏</h3><p>回到藏書，以核取方塊、全選已載入或反選已載入建立這次操作清單。</p></div>
+              </div>
+
+              <div class="batch-tools" id="batch-tools" hidden>
+                <form class="inline-operation" id="batch-tag-form">
+                  <div><h3>批次加入標籤</h3><p>已具有同名標籤的收藏不會重複建立關聯。</p></div>
+                  <label>標籤名稱
+                    <span class="tag-suggestion-combobox" data-tag-suggestions>
+                      <input id="batch-tag-input" name="tag" type="text" autocomplete="off" required role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="batch-tag-options" placeholder="搜尋既有標籤或建立新標籤">
+                      <ul class="facet-options tag-suggestion-options" id="batch-tag-options" role="listbox" hidden></ul>
+                    </span>
+                  </label>
+                  <button class="primary-button" type="submit">加入</button>
+                </form>
+
+                <form class="inline-operation" id="batch-metadata-form">
+                  <div><h3>批次寫入手動值</h3><p>手動值會優先於外部資料、檔名解析與推斷結果。</p></div>
+                  <label>欄位
+                    <select name="field"><option value="parody">原作</option><option value="classification">種類</option></select>
+                  </label>
+                  <label id="batch-metadata-value-label">新的原作<input name="value" type="text" autocomplete="off" required></label>
+                  <button class="primary-button" type="submit">寫入</button>
+                </form>
+
+                <section class="enrichment-operation" aria-labelledby="batch-enrichment-heading">
+                  <div class="enrichment-heading">
+                    <div><p class="section-index">EXTERNAL / 外部資料</p><h3 id="batch-enrichment-heading">批次補齊 metadata</h3><p>由既有背景 worker 依 provider 限速逐筆處理；沒有可靠估算，因此不顯示 ETA。</p></div>
+                    <button class="secondary-button" id="prepare-external-batch" type="button">檢查搜尋範圍</button>
+                  </div>
+                  <fieldset class="enrichment-strategy">
+                    <legend>搜尋策略</legend>
+                    <label><input type="radio" name="external-batch-strategy" value="only_missing" checked> 只搜尋目前缺少欄位</label>
+                    <label><input type="radio" name="external-batch-strategy" value="specified"> 搜尋指定欄位</label>
+                  </fieldset>
+                  <fieldset class="enrichment-fields">
+                    <legend>欄位</legend>
+                    <label><input type="checkbox" name="external-batch-field" value="title" checked> 標題</label>
+                    <label><input type="checkbox" name="external-batch-field" value="event" checked> 場次</label>
+                    <label><input type="checkbox" name="external-batch-field" value="circle" checked> 社團</label>
+                    <label><input type="checkbox" name="external-batch-field" value="authors" checked> 作者</label>
+                    <label><input type="checkbox" name="external-batch-field" value="parody" checked> 原作</label>
+                    <label><input type="checkbox" name="external-batch-field" value="classification" checked> 種類</label>
+                    <label><input type="checkbox" name="external-batch-field" value="is_dl" checked> DL 判定</label>
+                  </fieldset>
+                  <div class="enrichment-preflight" id="external-batch-preflight" aria-live="polite" hidden></div>
+                  <div class="enrichment-actions" id="external-batch-actions" hidden>
+                    <button class="primary-button" id="start-external-batch" type="button">開始背景搜尋</button>
+                    <button class="text-button" id="cancel-external-batch" type="button">取消</button>
+                  </div>
+                  <div class="enrichment-result" id="external-batch-result" aria-live="polite" hidden></div>
+                </section>
+
+                <div class="file-operation-strip">
+                  <div><p class="section-index">FILES / 檔案</p><h3>匯出、改名、搬移或刪除</h3><p>匯出只複製原始 ZIP；其他操作會由後端重新驗證來源、路徑與檔案狀態。</p></div>
+                  <div>
+                    <button class="secondary-button" id="prepare-export" type="button">匯出 ZIP 套件</button>
+                    <button class="secondary-button" id="prepare-move" type="button">搬移至典藏庫</button>
+                    <button class="danger-button" id="prepare-delete" type="button">刪除已選收藏</button>
+                  </div>
+                </div>
+
+                <section class="rename-workflow" aria-labelledby="rename-workflow-heading">
+                  <form class="rename-template-form" id="rename-preflight-form">
+                    <div>
+                      <h3 id="rename-workflow-heading">批次改名規則</h3>
+                      <p>缺少欄位會跳過並收緊分隔符；結果為空、衝突或不符合 Windows 規則時不會套用。第一版只支援 ZIP。</p>
+                    </div>
+                    <label>單一命名規則
+                      <input name="template" type="text" value="{event} [{circle}] {title}" autocomplete="off" spellcheck="false" required aria-describedby="rename-token-help">
+                    </label>
+                    <button class="secondary-button" type="submit">預覽批次改名</button>
+                  </form>
+                  <p class="rename-token-help" id="rename-token-help"><strong>可用欄位</strong> <code>{title}</code> <code>{event}</code> <code>{circle}</code> <code>{authors}</code> <code>{parody}</code> <code>{classification}</code> <code>{subcategory}</code> <code>{is_dl}</code></p>
+                  <section class="rename-preflight" id="rename-preflight" aria-live="polite" hidden>
+                    <header>
+                      <div><p class="section-index">PREFLIGHT / 改名前檢查</p><h4 id="rename-preflight-summary">正在整理預覽…</h4></div>
+                      <div><label class="rename-status-filter">顯示<select id="rename-status-filter"><option value="all">全部狀態</option><option value="safe">可安全改名</option><option value="blocked">需處理／跳過</option><option value="collision">名稱衝突</option><option value="missing_metadata">缺少 metadata</option><option value="source_changed">來源已變更</option></select></label><button class="text-button" id="cancel-rename-preflight" type="button">收起</button><button class="primary-button" id="apply-rename-preflight" type="button">套用安全項目</button></div>
+                    </header>
+                    <p class="rename-preflight-note">完整預覽不會修改檔案；套用時會重新讀取 current path、metadata 與 collision，過期項目會逐筆拒絕。</p>
+                    <ol class="rename-change-list" id="rename-preflight-items"></ol>
+                  </section>
+                </section>
+              </div>
+
+              <div class="batch-progress" id="batch-progress" role="status" aria-live="polite" hidden>
+                <div><strong id="batch-progress-label">準備批次操作…</strong><span id="batch-progress-count">0 / 0</span></div>
+                <progress id="batch-progress-bar" value="0" max="1"></progress>
+              </div>
+
+              <section class="batch-result" id="batch-result" aria-labelledby="batch-result-heading" hidden>
+                <div class="batch-result-heading"><h3 id="batch-result-heading">最近一次操作結果</h3><button class="text-button" id="retry-batch-failures" type="button" hidden>只重試失敗項目</button></div>
+                <div id="batch-result-summary"></div>
+                <ol id="batch-result-items"></ol>
+              </section>
+            </section>
+
+            <section class="operations-section identity-desk" aria-labelledby="identity-heading">
+              <div class="section-heading ruled-heading">
+                <div><p class="section-index">02 / 身分裁決</p><h2 id="identity-heading">同名候選裁決</h2></div>
+                <button class="text-button" id="refresh-candidates" type="button">重新整理</button>
+              </div>
+              <p class="section-intro">確認候選只記錄人工判斷，不會立即合併。每個同名候選都必須裁決後，才能進入身分合併預檢。</p>
+              <div class="identity-result" id="identity-result" aria-live="polite" hidden></div>
+              <div class="review-loading" id="candidate-loading" hidden><span class="loader" aria-hidden="true"></span> 正在讀取待裁決項目…</div>
+              <div class="candidate-groups" id="candidate-groups"></div>
+              <div class="workbench-empty" id="candidate-empty" hidden>
+                <span aria-hidden="true">清</span>
+                <div><h3>沒有待處理的同名候選</h3><p>重新掃描若發現已消失收藏的同名新位置，會在這裡等待人工裁決。</p></div>
+              </div>
+            </section>
+
+            <section class="operations-section vocabulary-desk" aria-labelledby="vocabulary-heading">
+              <div class="section-heading ruled-heading vocabulary-heading">
+                <div><p class="section-index">03 / 名稱治理</p><h2 id="vocabulary-heading">Metadata 正式名稱</h2></div>
+                <div class="vocabulary-heading-actions">
+                  <label>欄位
+                    <select id="vocabulary-field">
+                      <option value="">全部</option>
+                      <option value="event">場次</option>
+                      <option value="circle">社團</option>
+                      <option value="author">作者</option>
+                      <option value="parody">原作</option>
+                    </select>
+                  </label>
+                  <button class="text-button" id="refresh-vocabulary" type="button">重新偵測</button>
+                </div>
+              </div>
+              <p class="section-intro">只列出經安全正規化後相同的名稱；候選不會自動合併。選定正式名稱後，先檢查影響收藏、人工值與智慧書架，再執行治理。</p>
+              <div class="identity-result" id="vocabulary-result" aria-live="polite" hidden></div>
+              <div class="review-loading" id="vocabulary-loading" hidden><span class="loader" aria-hidden="true"></span> 正在比對 active metadata 名稱…</div>
+              <div class="vocabulary-groups" id="vocabulary-groups"></div>
+              <div class="workbench-empty" id="vocabulary-empty" hidden>
+                <span aria-hidden="true">正</span>
+                <div><h3>目前沒有名稱變體候選</h3><p>已拒絕的組合不會再次出現；已合併的 alias 會沿用既有 metadata 優先序。</p></div>
+              </div>
+            </section>
           </div>
         </section>
-        <div class="duplicate-toolbar">
-          <p id="duplicate-summary">先建立指紋，系統才會列出 exact、content 與 probable 候選。</p>
-          <label>證據層級
-            <select id="duplicate-level">
-              <option value="">全部候選</option>
-              <option value="exact">Exact file</option>
-              <option value="content">Same content</option>
-              <option value="probable">Probable work</option>
-            </select>
-          </label>
-          <button class="text-button" id="refresh-duplicates" type="button">重新整理</button>
-        </div>
-        <div class="review-loading" id="duplicate-loading" hidden><span class="loader" aria-hidden="true"></span> 正在整理重複證據…</div>
-        <div class="duplicate-groups" id="duplicate-groups" aria-live="polite"></div>
-        <div class="workbench-empty duplicate-empty" id="duplicate-empty" hidden>
-          <span aria-hidden="true">清</span><div><h2>目前沒有符合條件的候選</h2><p>已標記「不是重複」的 pair 會保持安靜；內容改變後才會重新評估。</p></div>
-        </div>
-      </section>
 
-      <section class="view triage-view" id="triage-view" data-view="triage" aria-labelledby="triage-heading" hidden>
-        <header class="page-heading triage-page-heading">
-          <div>
-            <p class="eyebrow">INBOX TRIAGE / 下載區收藏</p>
-            <h1 id="triage-heading">待歸檔</h1>
-          </div>
-          <p>只列出下載區尚未歸檔的收藏；每本都先做一次歸檔預檢，確認目的地後才動檔案。</p>
-        </header>
-
-        <div class="triage-toolbar">
-          <div class="triage-count-copy" aria-live="polite">
-            <strong id="triage-total">正在清點待歸檔收藏…</strong>
-            <span id="triage-position"></span>
-          </div>
-          <button class="text-button" id="reset-triage-skips" type="button" hidden>重新顯示本次略過項目</button>
-          <button class="text-button" id="refresh-triage" type="button">重新整理清單</button>
-        </div>
-
-        <div class="triage-loading" id="triage-loading" role="status" hidden><span class="loader" aria-hidden="true"></span> 正在整理下載區收藏…</div>
-        <div class="triage-error" id="triage-error" role="alert" hidden>
-          <strong>無法載入待歸檔清單</strong>
-          <p id="triage-error-message"></p>
-          <button class="secondary-button" id="retry-triage" type="button">再試一次</button>
-        </div>
-        <div class="triage-empty" id="triage-empty" hidden>
-          <span aria-hidden="true">空</span>
-          <div><h2>下載區沒有待歸檔的收藏</h2><p id="triage-empty-message">新掃描進來的收藏會出現在這裡，等你決定去向。</p></div>
-          <a class="text-button" id="triage-empty-library-link" href="#library?source=downloads">前往全部藏書查看下載區</a>
-        </div>
-
-        <article class="triage-desk" id="triage-desk" hidden aria-live="polite">
-          <section class="triage-book" aria-labelledby="triage-title">
-            <div class="triage-cover-stage">
-              <img id="triage-cover" alt="" width="360" height="480">
-              <span id="triage-source" class="source-ribbon">下載區</span>
+        <section class="view duplicate-view" id="duplicates-view" data-view="duplicates" aria-label="重複作品" hidden>
+          <section class="duplicate-scan-bar" aria-labelledby="duplicate-scan-heading">
+            <div><p class="section-index">FINGERPRINT INDEX / 內容索引</p><h2 id="duplicate-scan-heading">背景建立作品指紋</h2><p id="duplicate-job-detail">來源未變時沿用快取；工作固定同時處理 <span class="num">2</span> 本，可離開此頁繼續。</p></div>
+            <div class="duplicate-scan-actions">
+              <button class="secondary-button" id="start-duplicate-scan" type="button">掃描重複作品</button>
+              <button class="text-button" id="retry-duplicate-failures" type="button" hidden>重試失敗項目</button>
             </div>
-            <p class="triage-sequence" id="triage-sequence"></p>
-            <h2 id="triage-title"></h2>
-            <p class="filename" id="triage-filename"></p>
-            <dl class="triage-context" id="triage-context"></dl>
-            <div class="triage-tags" id="triage-tags"></div>
+            <div class="duplicate-progress" id="duplicate-progress" role="status" aria-live="polite" hidden>
+              <div><strong id="duplicate-job-status">準備建立指紋…</strong><span id="duplicate-job-counts"></span></div>
+              <progress id="duplicate-progress-bar" max="1" value="0"></progress>
+              <ol class="duplicate-failures" id="duplicate-failures" hidden></ol>
+            </div>
           </section>
+          <div class="duplicate-toolbar">
+            <p id="duplicate-summary">先建立指紋，系統才會列出 exact、content 與 probable 候選。</p>
+            <label>證據層級
+              <select id="duplicate-level">
+                <option value="">全部候選</option>
+                <option value="exact">檔案完全相同 (exact)</option>
+                <option value="content">內容相同 (content)</option>
+                <option value="probable">疑似同作品 (probable)</option>
+              </select>
+            </label>
+            <button class="text-button" id="refresh-duplicates" type="button">重新整理</button>
+          </div>
+          <div class="review-loading" id="duplicate-loading" hidden><span class="loader" aria-hidden="true"></span> 正在整理重複證據…</div>
+          <div class="duplicate-groups" id="duplicate-groups" aria-live="polite"></div>
+          <div class="workbench-empty duplicate-empty" id="duplicate-empty" hidden>
+            <span aria-hidden="true">清</span><div><h2>目前沒有符合條件的候選</h2><p>已標記「不是重複」的 pair 會保持安靜；內容改變後才會重新評估。</p></div>
+          </div>
+        </section>
 
-          <section class="triage-readiness" aria-labelledby="triage-readiness-heading">
-            <header class="triage-readiness-heading">
-              <div><p class="eyebrow">DESTINATION / 歸檔預檢</p><h2 id="triage-readiness-heading">這本要去哪裡</h2></div>
-              <span class="triage-status-badge" id="triage-status">預檢中</span>
-            </header>
-            <div class="triage-destination" id="triage-destination">
-              <p class="triage-destination-label" id="triage-destination-label">正在取得歸檔預檢結果…</p>
-              <p class="triage-destination-path" id="triage-destination-path" hidden></p>
+        <section class="view triage-view" id="triage-view" data-view="triage" aria-label="待歸檔" hidden>
+          <div class="triage-toolbar">
+            <div class="triage-count-copy" aria-live="polite">
+              <strong id="triage-total">正在清點待歸檔收藏…</strong>
+              <span id="triage-position"></span>
             </div>
-            <section class="triage-quality" aria-labelledby="triage-quality-heading">
-              <h3 id="triage-quality-heading">編目資料狀態</h3>
-              <p id="triage-quality-summary"></p>
-              <div class="triage-quality-actions" id="triage-quality-actions"></div>
+            <button class="text-button" id="reset-triage-skips" type="button" hidden>重新顯示本次略過項目</button>
+            <button class="text-button" id="refresh-triage" type="button">重新整理清單</button>
+          </div>
+
+          <div class="triage-loading" id="triage-loading" role="status" hidden><span class="loader" aria-hidden="true"></span> 正在整理下載區收藏…</div>
+          <div class="triage-error" id="triage-error" role="alert" hidden>
+            <strong>無法載入待歸檔清單</strong>
+            <p id="triage-error-message"></p>
+            <button class="secondary-button" id="retry-triage" type="button">再試一次</button>
+          </div>
+          <div class="triage-empty empty-state" id="triage-empty" hidden>
+            <span aria-hidden="true">空</span>
+            <div><h2>下載區沒有待歸檔的收藏</h2><p id="triage-empty-message">新掃描進來的收藏會出現在這裡，等你決定去向。</p></div>
+            <a class="text-button" id="triage-empty-library-link" href="#library?source=downloads">前往全部藏書查看下載區</a>
+          </div>
+
+          <article class="triage-desk" id="triage-desk" hidden aria-live="polite">
+            <section class="triage-book" aria-labelledby="triage-title">
+              <div class="triage-cover-stage">
+                <img id="triage-cover" alt="" width="360" height="480">
+                <span id="triage-source" class="source-ribbon">下載區</span>
+              </div>
+              <p class="triage-sequence" id="triage-sequence"></p>
+              <h2 id="triage-title"></h2>
+              <p class="filename" id="triage-filename"></p>
+              <dl class="triage-context" id="triage-context"></dl>
+              <div class="triage-tags" id="triage-tags"></div>
             </section>
-          </section>
 
-          <aside class="triage-actions" aria-label="待歸檔操作">
-            <p><span>KEYBOARD FIRST</span> 歸檔後依偏好自動前進下一本。</p>
-            <button class="primary-button" id="triage-archive" type="button"><kbd>A</kbd> 歸檔到典藏庫</button>
-            <button class="secondary-button" id="triage-edit" type="button"><kbd>E</kbd> 編輯 metadata</button>
-            <button class="secondary-button" id="triage-search" type="button"><kbd>W</kbd> 外部搜尋</button>
-            <button class="text-button" id="triage-skip" type="button"><kbd>S</kbd> 本次略過</button>
-            <button class="text-button" id="triage-detail" type="button"><kbd>O</kbd> 打開完整 Detail</button>
-            <div class="triage-navigation">
-              <button class="text-button" id="triage-previous" type="button"><kbd>K</kbd> 上一本</button>
-              <button class="text-button" id="triage-next" type="button">下一本 <kbd>J</kbd></button>
+            <section class="triage-readiness" aria-labelledby="triage-readiness-heading">
+              <header class="triage-readiness-heading">
+                <div><p class="eyebrow">DESTINATION / 歸檔預檢</p><h2 id="triage-readiness-heading">這本要去哪裡</h2></div>
+                <span class="triage-status-badge" id="triage-status">預檢中</span>
+              </header>
+              <div class="triage-destination" id="triage-destination">
+                <p class="triage-destination-label" id="triage-destination-label">正在取得歸檔預檢結果…</p>
+                <p class="triage-destination-path" id="triage-destination-path" hidden></p>
+              </div>
+              <section class="triage-quality" aria-labelledby="triage-quality-heading">
+                <h3 id="triage-quality-heading">編目資料狀態</h3>
+                <p id="triage-quality-summary"></p>
+                <div class="triage-quality-actions" id="triage-quality-actions"></div>
+              </section>
+            </section>
+
+            <aside class="triage-actions" aria-label="待歸檔操作">
+              <p><span>KEYBOARD FIRST</span> 歸檔後依偏好自動前進下一本。</p>
+              <button class="primary-button" id="triage-archive" type="button"><kbd>A</kbd> 歸檔到典藏庫</button>
+              <button class="secondary-button" id="triage-edit" type="button"><kbd>E</kbd> 編輯 metadata</button>
+              <button class="secondary-button" id="triage-search" type="button"><kbd>W</kbd> 外部搜尋</button>
+              <button class="text-button" id="triage-skip" type="button"><kbd>S</kbd> 本次略過</button>
+              <button class="text-button" id="triage-detail" type="button"><kbd>O</kbd> 打開完整 Detail</button>
+              <div class="triage-navigation">
+                <button class="text-button" id="triage-previous" type="button"><kbd>K</kbd> 上一本</button>
+                <button class="text-button" id="triage-next" type="button">下一本 <kbd>J</kbd></button>
+              </div>
+            </aside>
+          </article>
+        </section>
+
+        <section class="view review-view" id="review-view" data-view="review" aria-label="品質審核" hidden>
+          <div class="review-toolbar">
+            <div class="review-count-copy" aria-live="polite">
+              <strong id="review-total">正在清點待審項目…</strong>
+              <span id="review-position"></span>
             </div>
-          </aside>
-        </article>
-      </section>
-
-      <section class="view review-view" id="review-view" data-view="review" aria-labelledby="review-heading" hidden>
-        <header class="page-heading review-page-heading">
-          <div>
-            <p class="eyebrow">DATA QUALITY / 資料品質</p>
-            <h1 id="review-heading">品質審核</h1>
+            <select id="review-kind" aria-label="只看">
+              <option value="all">全部問題</option>
+              <option value="candidate">候選待裁決</option>
+              <option value="missing">缺少 metadata</option>
+            </select>
+            <button class="text-button" id="refresh-review" type="button">重新整理 Queue</button>
           </div>
-          <p>Queue 只列出缺少主要 metadata 或仍有候選待裁決的收藏；每次決定都沿用既有來源、信心與優先序。</p>
-        </header>
 
-        <div class="review-toolbar">
-          <div class="review-count-copy" aria-live="polite">
-            <strong id="review-total">正在清點待審項目…</strong>
-            <span id="review-position"></span>
+          <div class="review-loading" id="review-loading" role="status" hidden><span class="loader" aria-hidden="true"></span> 正在整理待審證據…</div>
+          <div class="review-error" id="review-error" role="alert" hidden>
+            <strong>無法載入品質審核 Queue</strong>
+            <p id="review-error-message"></p>
+            <button class="secondary-button" id="retry-review" type="button">再試一次</button>
           </div>
-          <select id="review-kind" aria-label="只看">
-            <option value="all">全部問題</option>
-            <option value="candidate">候選待裁決</option>
-            <option value="missing">缺少 metadata</option>
-          </select>
-          <button class="text-button" id="refresh-review" type="button">重新整理 Queue</button>
-        </div>
+          <div class="review-empty empty-state" id="review-empty" hidden>
+            <span aria-hidden="true">清</span>
+            <div><h2>目前沒有需要人工處理的資料</h2><p id="review-empty-message">缺少的主要欄位都已補齊，候選也都完成裁決。</p></div>
+            <button class="secondary-button" id="reset-review-skips" type="button" hidden>重新顯示本次略過項目</button>
+          </div>
 
-        <div class="review-loading" id="review-loading" role="status" hidden><span class="loader" aria-hidden="true"></span> 正在整理待審證據…</div>
-        <div class="review-error" id="review-error" role="alert" hidden>
-          <strong>無法載入品質審核 Queue</strong>
-          <p id="review-error-message"></p>
-          <button class="secondary-button" id="retry-review" type="button">再試一次</button>
-        </div>
-        <div class="review-empty" id="review-empty" hidden>
-          <span aria-hidden="true">清</span>
-          <div><h2>目前沒有需要人工處理的資料</h2><p id="review-empty-message">缺少的主要欄位都已補齊，候選也都完成裁決。</p></div>
-          <button class="secondary-button" id="reset-review-skips" type="button" hidden>重新顯示本次略過項目</button>
-        </div>
+          <article class="review-desk" id="review-desk" hidden aria-live="polite">
+            <section class="review-book" aria-labelledby="review-title">
+              <div class="review-cover-stage">
+                <img id="review-cover" alt="" width="360" height="480">
+                <span id="review-source" class="source-ribbon"></span>
+              </div>
+              <p class="review-sequence" id="review-sequence"></p>
+              <h2 id="review-title"></h2>
+              <p class="filename" id="review-filename"></p>
+              <dl class="review-context" id="review-context"></dl>
+            </section>
 
-        <article class="review-desk" id="review-desk" hidden aria-live="polite">
-          <section class="review-book" aria-labelledby="review-title">
-            <div class="review-cover-stage">
-              <img id="review-cover" alt="" width="360" height="480">
-              <span id="review-source" class="source-ribbon"></span>
-            </div>
-            <p class="review-sequence" id="review-sequence"></p>
-            <h2 id="review-title"></h2>
-            <p class="filename" id="review-filename"></p>
-            <dl class="review-context" id="review-context"></dl>
-          </section>
+            <section class="review-evidence" aria-labelledby="review-problem-heading">
+              <header class="review-evidence-heading">
+                <div><p class="eyebrow">WHY THIS ITEM / 待審原因</p><h2 id="review-problem-heading">需要人工判斷</h2></div>
+                <div class="review-problem-badges" id="review-problems"></div>
+              </header>
+              <div class="review-decision" id="review-decision"></div>
+              <details class="review-more-evidence" id="review-more-evidence">
+                <summary>查看這本收藏的其他問題與候選</summary>
+                <div id="review-all-issues"></div>
+              </details>
+            </section>
 
-          <section class="review-evidence" aria-labelledby="review-problem-heading">
-            <header class="review-evidence-heading">
-              <div><p class="eyebrow">WHY THIS ITEM / 待審原因</p><h2 id="review-problem-heading">需要人工判斷</h2></div>
-              <div class="review-problem-badges" id="review-problems"></div>
-            </header>
-            <div class="review-decision" id="review-decision"></div>
-            <details class="review-more-evidence" id="review-more-evidence">
-              <summary>查看這本收藏的其他問題與候選</summary>
-              <div id="review-all-issues"></div>
-            </details>
-          </section>
-
-          <aside class="review-actions" aria-label="審核操作">
-            <p><span>KEYBOARD FIRST</span> 做完後依最新狀態重新核對 Queue。</p>
-            <button class="primary-button review-accept" id="review-accept" type="button"><kbd>A</kbd> 採用主要候選</button>
-            <button class="secondary-button" id="review-reject" type="button"><kbd>R</kbd> 拒絕主要候選</button>
-            <button class="secondary-button" id="review-search" type="button" aria-describedby="review-external-status"><kbd>W</kbd> 搜尋外部資料</button>
-            <section class="external-job-status review-external-status" id="review-external-status" role="status" aria-live="polite" aria-atomic="true" hidden></section>
-            <button class="secondary-button" id="review-edit" type="button"><kbd>E</kbd> 手動編輯</button>
-            <button class="text-button" id="review-skip" type="button"><kbd>S</kbd> 本次略過</button>
-            <button class="text-button" id="review-detail" type="button">打開完整 Detail <span aria-hidden="true">→</span></button>
-            <div class="review-navigation">
-              <button class="text-button" id="review-previous" type="button"><kbd>K</kbd> 上一筆</button>
-              <button class="text-button" id="review-next" type="button">下一筆 <kbd>J</kbd></button>
-            </div>
-          </aside>
-        </article>
+            <aside class="review-actions" aria-label="審核操作">
+              <p><span>KEYBOARD FIRST</span> 做完後依最新狀態重新核對 Queue。</p>
+              <button class="primary-button review-accept" id="review-accept" type="button"><kbd>A</kbd> 採用主要候選</button>
+              <button class="secondary-button" id="review-reject" type="button"><kbd>R</kbd> 拒絕主要候選</button>
+              <button class="secondary-button" id="review-search" type="button" aria-describedby="review-external-status"><kbd>W</kbd> 搜尋外部資料</button>
+              <section class="external-job-status review-external-status" id="review-external-status" role="status" aria-live="polite" aria-atomic="true" hidden></section>
+              <button class="secondary-button" id="review-edit" type="button"><kbd>E</kbd> 手動編輯</button>
+              <button class="text-button" id="review-skip" type="button"><kbd>S</kbd> 本次略過</button>
+              <button class="text-button" id="review-detail" type="button">打開完整 Detail <span aria-hidden="true">→</span></button>
+              <div class="review-navigation">
+                <button class="text-button" id="review-previous" type="button"><kbd>K</kbd> 上一本</button>
+                <button class="text-button" id="review-next" type="button">下一本 <kbd>J</kbd></button>
+              </div>
+            </aside>
+          </article>
+        </section>
       </section>
 
       <section class="view" id="stats-view" data-view="stats" aria-labelledby="stats-heading" hidden>
@@ -721,7 +711,7 @@
           <p id="ehentai-error-message"></p>
           <button class="secondary-button" id="ehentai-retry" type="button">再試一次</button>
         </section>
-        <section class="ehentai-empty" id="ehentai-empty" aria-labelledby="ehentai-empty-heading">
+        <section class="ehentai-empty empty-state" id="ehentai-empty" aria-labelledby="ehentai-empty-heading">
           <span aria-hidden="true">外</span>
           <div>
             <h2 id="ehentai-empty-heading">從一組關鍵字開始</h2>
@@ -1123,11 +1113,11 @@
 
   <dialog id="saved-view-dialog" aria-labelledby="saved-view-dialog-heading">
     <form class="dialog-shell saved-view-dialog" id="saved-view-form">
-      <header><div><p class="eyebrow">SMART COLLECTION / 智慧書架</p><h2 id="saved-view-dialog-heading">儲存目前檢視</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉 Saved View 編輯">×</button></header>
+      <header><div><p class="eyebrow">SMART COLLECTION / 智慧書架</p><h2 id="saved-view-dialog-heading">儲存目前檢視</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉智慧書架編輯">×</button></header>
       <p class="dialog-intro" id="saved-view-dialog-intro">保存的是目前查詢規則；新收藏與 metadata 變更會自動反映。</p>
       <label>檢視名稱<input name="name" id="saved-view-name" type="text" maxlength="80" required autocomplete="off"></label>
       <div class="saved-view-rule-summary" id="saved-view-rule-summary" aria-live="polite"></div>
-      <label class="saved-view-pin"><input name="pinned" type="checkbox" checked> <span><strong>優先顯示於 Saved Views</strong><small>只調整檢視清單排序；首頁書牆請用「編輯首頁書牆」加入。</small></span></label>
+      <label class="saved-view-pin"><input name="pinned" type="checkbox" checked> <span><strong>優先顯示於智慧書架清單</strong><small>只調整檢視清單排序；首頁書牆請用「編輯首頁書牆」加入。</small></span></label>
       <div class="dialog-footer"><button class="text-button" data-close-dialog type="button">取消</button><button class="primary-button" id="confirm-saved-view" type="submit">儲存檢視</button></div>
     </form>
   </dialog>
@@ -1135,9 +1125,9 @@
   <dialog id="shelf-composition-dialog" aria-labelledby="shelf-composition-dialog-heading">
     <form class="dialog-shell shelf-composition-dialog" id="shelf-composition-form">
       <header><div><p class="eyebrow">HOME SHELVES / 首頁書牆</p><h2 id="shelf-composition-dialog-heading">編輯首頁書牆</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉首頁書牆編輯">×</button></header>
-      <p class="dialog-intro">調整顯示、順序與預覽冊數。智慧書架沿用既有 Saved View 規則，不會保存固定收藏清單。</p>
+      <p class="dialog-intro">調整顯示、順序與預覽本數。智慧書架沿用既有檢視規則，不會保存固定收藏清單。</p>
       <ol class="shelf-composition-list" id="shelf-composition-list" aria-label="首頁書牆順序"></ol>
-      <div class="shelf-composition-add"><label for="shelf-composition-saved-view">加入智慧書架</label><select id="shelf-composition-saved-view"><option value="">選擇既有 Saved View</option></select><button class="secondary-button" id="add-saved-view-shelf" type="button">加入</button></div>
+      <div class="shelf-composition-add"><label for="shelf-composition-saved-view">加入智慧書架</label><select id="shelf-composition-saved-view"><option value="">選擇既有智慧書架</option></select><button class="secondary-button" id="add-saved-view-shelf" type="button">加入</button></div>
       <div class="dialog-footer split-footer"><button class="text-button" id="reset-shelf-composition" type="button">恢復預設首頁</button><span><button class="text-button" data-close-dialog type="button">取消</button><button class="primary-button" id="save-shelf-composition" type="submit">儲存首頁書牆</button></span></div>
     </form>
   </dialog>
@@ -1213,14 +1203,14 @@
       <label>目的典藏庫
         <select name="archive_root_id" id="archive-target-select" required></select>
       </label>
-      <label><input type="checkbox" id="archive-target-set-default" name="set_default"> 設為預設收藏區</label>
+      <label><input type="checkbox" id="archive-target-set-default" name="set_default"> 設為預設典藏庫</label>
       <div class="dialog-footer"><button class="text-button" data-close-dialog type="button">取消</button><button class="primary-button" type="submit">選定並繼續</button></div>
     </form>
   </dialog>
 
   <dialog id="archive-confirm-dialog" aria-labelledby="archive-confirm-dialog-heading">
     <form class="dialog-shell" id="archive-confirm-form">
-      <header><div><p class="eyebrow">ARCHIVE / 歸檔</p><h2 id="archive-confirm-dialog-heading">歸檔到收藏區</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉">×</button></header>
+      <header><div><p class="eyebrow">ARCHIVE / 歸檔</p><h2 id="archive-confirm-dialog-heading">歸檔到典藏庫</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉">×</button></header>
       <p class="dialog-intro" id="archive-confirm-message"></p>
       <div class="dialog-footer"><button class="text-button" data-close-dialog type="button">取消</button><button class="primary-button" id="archive-confirm-submit" type="submit">確認歸檔</button></div>
     </form>
@@ -1255,7 +1245,7 @@
         <ul class="export-preflight-warnings" id="export-preflight-warnings"></ul>
       </section>
       <p class="field-note">第一版採整包成功規則：任何來源失敗都不會產生正式 ZIP，並會清理 <code>.partial</code>。開始後目前不能取消。</p>
-      <div class="dialog-footer"><button class="text-button" data-close-dialog type="button">返回工作台</button><button class="secondary-button" id="refresh-export-preflight" type="button">重新檢查</button><button class="primary-button" id="start-export" type="submit" disabled>開始匯出</button></div>
+      <div class="dialog-footer"><button class="text-button" data-close-dialog type="button">返回整理台</button><button class="secondary-button" id="refresh-export-preflight" type="button">重新檢查</button><button class="primary-button" id="start-export" type="submit" disabled>開始匯出</button></div>
     </form>
   </dialog>
 
@@ -1294,7 +1284,7 @@
   <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-heading">
     <div class="dialog-shell compact-dialog">
       <header><h2 id="shortcuts-heading">鍵盤操作</h2><button class="icon-button" data-close-dialog type="button" aria-label="關閉">×</button></header>
-      <dl class="shortcut-list"><dt><kbd>/</kbd></dt><dd>跳到搜尋</dd><dt><kbd>J</kbd> / <kbd>K</kbd></dt><dd>移動目前查看收藏或審核項目</dd><dt><kbd>A</kbd> / <kbd>R</kbd></dt><dd>在品質審核採用／拒絕主要候選</dd><dt><kbd>E</kbd> / <kbd>S</kbd></dt><dd>在品質審核手動編輯／本次略過</dd><dt><kbd>W</kbd></dt><dd>在品質審核搜尋目前問題欄位；partial 時再試一次</dd><dt><kbd>A</kbd> / <kbd>E</kbd> / <kbd>W</kbd></dt><dd>僅在待歸檔模式：歸檔／編輯 metadata／外部搜尋</dd><dt><kbd>S</kbd> / <kbd>O</kbd></dt><dd>僅在待歸檔模式：本次略過／打開完整 Detail</dd><dt><kbd>Space</kbd></dt><dd>切換目前查看收藏的批次選取</dd><dt><kbd>?</kbd></dt><dd>顯示這份說明</dd><dt><kbd>Esc</kbd></dt><dd>關閉對話框</dd></dl>
+      <dl class="shortcut-list"><dt><kbd>/</kbd></dt><dd>跳到搜尋</dd><dt><kbd>J</kbd> / <kbd>K</kbd></dt><dd>下一本／上一本（藏書、待歸檔、品質審核通用）</dd><dt><kbd>A</kbd></dt><dd>本分頁主要動作：待歸檔＝歸檔到典藏庫，品質審核＝採用主要候選</dd><dt><kbd>R</kbd></dt><dd>品質審核：拒絕主要候選</dd><dt><kbd>S</kbd></dt><dd>本次略過</dd><dt><kbd>E</kbd></dt><dd>編輯 metadata</dd><dt><kbd>W</kbd></dt><dd>外部搜尋（品質審核搜尋目前問題欄位；partial 時再試一次）</dd><dt><kbd>O</kbd></dt><dd>待歸檔：打開完整 Detail</dd><dt><kbd>Space</kbd></dt><dd>切換目前查看收藏的批次選取</dd><dt><kbd>?</kbd></dt><dd>顯示這份說明</dd><dt><kbd>Esc</kbd></dt><dd>關閉對話框</dd></dl>
     </div>
   </dialog>
 

@@ -915,8 +915,8 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("<html lang=\"zh-Hant\">"));
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
-    assert!(document.contains("href=\"/assets/app.css?v=60\""));
-    assert!(document.contains("src=\"/assets/app.js?v=60\" defer"));
+    assert!(document.contains("href=\"/assets/app.css?v=61\""));
+    assert!(document.contains("src=\"/assets/app.js?v=61\" defer"));
     assert!(document.contains("id=\"duplicates-view\""));
     assert!(document.contains("id=\"start-duplicate-scan\""));
     assert!(document.contains("id=\"rename-preflight-form\""));
@@ -929,7 +929,7 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains(
         "id=\"review-external-status\" role=\"status\" aria-live=\"polite\" aria-atomic=\"true\""
     ));
-    assert!(document.contains("在品質審核搜尋目前問題欄位；partial 時再試一次"));
+    assert!(document.contains("外部搜尋（品質審核搜尋目前問題欄位；partial 時再試一次）"));
     assert!(document.contains("id=\"library-scroll-sentinel\""));
     assert!(document.contains("id=\"library-load-more\""));
     assert!(document.contains("id=\"library-load-announcer\""));
@@ -1015,10 +1015,16 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("id=\"quick-archive-dialog\""));
     assert!(document.contains("id=\"quick-archive-items\""));
     assert!(document.contains("id=\"quick-archive-submit\""));
-    assert!(document.contains("移動目前查看收藏"));
+    assert!(document.contains("下一本／上一本（藏書、待歸檔、品質審核通用）"));
     assert!(document.contains("切換目前查看收藏的批次選取"));
     assert!(!document.contains(">加標籤</a>"));
     assert!(!document.contains(">寫入手動值</a>"));
+    assert!(document.contains("id=\"operations-view\""));
+    assert!(document.contains("aria-label=\"整理台分頁\""));
+    assert!(document.contains("data-route=\"vocabulary\""));
+    assert!(document.contains("id=\"operations-count\""));
+    assert!(document.contains("id=\"operations-total\""));
+    assert!(document.contains("id=\"vocabulary-count\""));
     assert!(document.contains("id=\"triage-view\""));
     assert!(document.contains("data-view=\"triage\""));
     assert!(document.contains("data-route=\"triage\""));
@@ -1041,8 +1047,9 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("name=\"triage_auto_advance\""));
     assert!(document.contains("id=\"triage-auto-advance\""));
     assert!(document.contains("待歸檔：歸檔成功後自動前進下一本"));
-    assert!(document.contains("僅在待歸檔模式：歸檔／編輯 metadata／外部搜尋"));
-    assert!(document.contains("僅在待歸檔模式：本次略過／打開完整 Detail"));
+    assert!(document.contains("本分頁主要動作：待歸檔＝歸檔到典藏庫，品質審核＝採用主要候選"));
+    assert!(document.contains("待歸檔：打開完整 Detail"));
+    assert!(document.contains("品質審核：拒絕主要候選"));
     assert!(document.contains("id=\"delete-dialog\""));
     assert!(document.contains("id=\"consolidation-dialog\""));
     assert!(document.contains("移到資源回收桶"));
@@ -1121,9 +1128,9 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("if (libraryLoadPromise) return libraryLoadPromise"));
     assert!(script.contains("function moveLibraryFocus"));
     assert!(script.contains("button?.scrollIntoView({ block: \"nearest\" })"));
-    assert!(script.contains("已顯示全部 ${formatNumber(state.total)} 筆收藏"));
+    assert!(script.contains("已顯示全部 ${formatNumber(state.total)} 本收藏"));
     assert!(script.contains(
-        "已載入 ${formatNumber(additions.length)} 筆，尚有 ${formatNumber(remaining)} 筆"
+        "已載入 ${formatNumber(additions.length)} 本，尚有 ${formatNumber(remaining)} 本"
     ));
     assert!(script.contains("rootMargin: \"1200px 0px\""));
     assert!(script.contains("/api/collections"));
@@ -1209,16 +1216,16 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("從批次選取移除"));
     assert!(script.contains("查看 ${displayTitle(collection)} 詳情"));
     assert!(!script.contains("`選取 ${displayTitle(collection)}`"));
-    assert!(script.contains("批次選取 ${formatNumber(state.selectedIds.size)} / 已載入 ${formatNumber(state.items.length)} / 符合 ${formatNumber(state.total)}"));
+    assert!(script.contains("已選 ${formatNumber(state.selectedIds.size)} 本 · 已載入 ${formatNumber(state.items.length)} 本 · 符合 ${formatNumber(state.total)} 本"));
     assert!(script.contains("function initializeTagSuggestionInputs"));
     assert!(script.contains("使用 ${formatNumber(option.count)} 次"));
     assert!(script.contains("controller.form?.requestSubmit()"));
     assert!(script.contains("function renderMissingMetadataActions"));
     assert!(script.contains("openMetadataDialog(field)"));
-    assert!(script.contains("前往工作台處理 ${formatNumber(count)} 筆"));
+    assert!(script.contains("前往整理台處理 ${formatNumber(count)} 本"));
     assert!(script.contains("function selectionImpactSummary"));
     assert!(script.replace("\r\n", "\n").contains(
-        "numSpan(formatNumber(unaffectedCount)),\n      document.createTextNode(\" 筆不受影響。\"),"
+        "numSpan(formatNumber(unaffectedCount)),\n      document.createTextNode(\" 本不受影響。\"),"
     ));
     assert!(script.contains("const isCollectionButton"));
     assert!(script.contains("openMobileDetail(button, scrollPosition)"));
@@ -1292,7 +1299,7 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("function confirmSelectionClear"));
     assert!(script.contains("這會清除目前"));
     assert!(script.contains("event.key === \"Escape\" && !ui.filterPanel.hidden"));
-    assert!(script.contains("永久刪除 ${state.selectedIds.size} 筆"));
+    assert!(script.contains("永久刪除 ${state.selectedIds.size} 本"));
     assert!(script.contains("/api/file-actions/move/preflight"));
     assert!(script.contains("async function resolveQuickArchiveTarget"));
     assert!(script.contains("default_archive_root_id"));
@@ -1368,7 +1375,7 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("function renderTriageArchivedResult"));
     assert!(script.contains("function clearTriageArchivedResult"));
     assert!(script.contains("function setTriageItemActionsEnabled"));
-    assert!(script.contains("已歸檔這本，按 J 或「下一本」再處理下一筆。"));
+    assert!(script.contains("已歸檔這本，按 J 或「下一本」再處理下一本。"));
     assert!(script.contains("state.triageSkipped.add(collection.id)"));
     assert!(script.contains("state.triageReturnId = collection.id"));
     assert!(script.contains("function moveTriagePosition"));
