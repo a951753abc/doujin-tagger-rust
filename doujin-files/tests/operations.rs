@@ -8,7 +8,7 @@ use doujin_files::{
 use doujin_parser::PARSER_VERSION;
 use doujin_parser::domain::ParseInput;
 use doujin_parser::parser::parse_filename;
-use doujin_scanner::{FilenameNormalization, PendingCollection, SourceKind};
+use doujin_scanner::{FilenameNormalization, MediaKind, PendingCollection, SourceKind};
 use doujin_storage::lifecycle::{
     CollectionStatus, DeleteMode, FileOperationStatus, LocationStatus,
 };
@@ -56,6 +56,7 @@ impl TestTree {
                 parody_evidence: Vec::new(),
             }),
             filename_normalization: FilenameNormalization::Unchanged,
+            media_kind: MediaKind::Zip,
         }
     }
 }

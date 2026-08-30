@@ -5,7 +5,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use doujin_scanner::SourceKind;
+use doujin_scanner::{MediaKind, SourceKind};
 use doujin_storage::lifecycle::{DeleteMode, FileOperationKind, PendingFileOperation};
 use doujin_storage::roots::LibraryRootSnapshot;
 use doujin_storage::{CatalogRepository, StorageError};
@@ -101,10 +101,13 @@ pub enum LaunchAction {
     ConfiguredReader,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchReceipt {
     pub collection_id: i64,
     pub action: LaunchAction,
+    /// The sub-folder that was actually launched, `/`-separated, when the caller
+    /// asked for one instead of the collection folder itself.
+    pub entry_path: Option<String>,
 }
 
 #[derive(Debug)]
@@ -176,14 +179,19 @@ impl<'repository, 'launcher> CollectionLaunchService<'repository, 'launcher> {
         }
     }
 
-    pub fn open_default(&self, collection_id: i64) -> Result<LaunchReceipt, LaunchError> {
-        self.launch(collection_id, LaunchAction::SystemDefault, None)
+    pub fn open_default(
+        &self,
+        collection_id: i64,
+        entry: Option<&str>,
+    ) -> Result<LaunchReceipt, LaunchError> {
+        self.launch(collection_id, LaunchAction::SystemDefault, None, entry)
     }
 
     pub fn open_with_reader(
         &self,
         collection_id: i64,
         reader: Option<&Path>,
+        entry: Option<&str>,
     ) -> Result<LaunchReceipt, LaunchError> {
         let reader = reader.ok_or(LaunchError::ReaderNotConfigured)?;
         if !reader.is_absolute() {
@@ -193,7 +201,12 @@ impl<'repository, 'launcher> CollectionLaunchService<'repository, 'launcher> {
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(LaunchError::ReaderUnavailable);
         }
-        self.launch(collection_id, LaunchAction::ConfiguredReader, Some(reader))
+        self.launch(
+            collection_id,
+            LaunchAction::ConfiguredReader,
+            Some(reader),
+            entry,
+        )
     }
 
     fn launch(
@@ -201,19 +214,110 @@ impl<'repository, 'launcher> CollectionLaunchService<'repository, 'launcher> {
         collection_id: i64,
         action: LaunchAction,
         reader: Option<&Path>,
+        entry: Option<&str>,
     ) -> Result<LaunchReceipt, LaunchError> {
+        let media_kind = self.repository.collection_media_kind(collection_id)?;
+        let media_kind = MediaKind::parse(&media_kind).ok_or_else(|| {
+            LaunchError::InvalidCollectionFile(format!("未知的 media kind：{media_kind}"))
+        })?;
         let path = self.repository.active_collection_file_path(collection_id)?;
-        validate_launchable_zip(&path)?;
+        validate_launchable(&path, media_kind)?;
+        let (target, entry_path) = match entry {
+            Some(entry) => {
+                let (target, normalized) = resolve_launch_entry(&path, media_kind, entry)?;
+                (target, Some(normalized))
+            }
+            None => (path, None),
+        };
         let result = match reader {
-            Some(reader) => self.launcher.open_with_reader(reader, &path),
-            None => self.launcher.open_default(&path),
+            Some(reader) => self.launcher.open_with_reader(reader, &target),
+            None => self.launcher.open_default(&target),
         };
         result.map_err(|source| LaunchError::Launcher { action, source })?;
         Ok(LaunchReceipt {
             collection_id,
             action,
+            entry_path,
         })
     }
+}
+
+/// Resolves a caller-supplied sub-folder inside an image-folder collection. The
+/// whole path is validated before the launcher runs: a launch is an escape hatch
+/// out of the library root if the entry can traverse upwards or follow a link.
+fn resolve_launch_entry(
+    collection_path: &Path,
+    media_kind: MediaKind,
+    entry: &str,
+) -> Result<(PathBuf, String), LaunchError> {
+    if media_kind != MediaKind::ImageFolder {
+        return Err(LaunchError::InvalidCollectionFile(
+            "只有圖片資料夾可以指定子資料夾".to_owned(),
+        ));
+    }
+    let components = normalize_launch_entry(entry)
+        .ok_or_else(|| LaunchError::InvalidCollectionFile("指定的子資料夾路徑不安全".to_owned()))?;
+    let mut target = collection_path.to_path_buf();
+    for component in &components {
+        target.push(component);
+    }
+    let metadata = match fs::symlink_metadata(&target) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(LaunchError::CollectionFileNotFound);
+        }
+        Err(error) => return Err(LaunchError::InvalidCollectionFile(error.to_string())),
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(LaunchError::InvalidCollectionFile(
+            "指定的子資料夾不能是 symlink".to_owned(),
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(LaunchError::InvalidCollectionFile(
+            "指定的子資料夾必須是資料夾".to_owned(),
+        ));
+    }
+    let canonical_root = fs::canonicalize(collection_path)
+        .map_err(|error| LaunchError::InvalidCollectionFile(error.to_string()))?;
+    let canonical_target = fs::canonicalize(&target)
+        .map_err(|error| LaunchError::InvalidCollectionFile(error.to_string()))?;
+    if !canonical_target.starts_with(&canonical_root) {
+        return Err(LaunchError::InvalidCollectionFile(
+            "指定的子資料夾超出收藏資料夾".to_owned(),
+        ));
+    }
+    Ok((target, components.join("/")))
+}
+
+/// Splits a `/`- or `\`-separated relative sub-folder path into safe components,
+/// rejecting absolute paths, drive prefixes and stream names, NUL bytes, upward
+/// traversal, and the Windows filename aliases: a component ending with `.` or a
+/// space is silently trimmed by Windows (`"Text."` opens `Text`, `".. "` opens
+/// `..`), and a DOS device name never names a folder.
+fn normalize_launch_entry(entry: &str) -> Option<Vec<String>> {
+    let entry = entry.replace('\\', "/");
+    let entry = entry.trim_end_matches('/');
+    if entry.is_empty() || entry.starts_with('/') || entry.contains('\0') {
+        return None;
+    }
+    let mut components = Vec::new();
+    for component in entry.split('/') {
+        if component.is_empty() || component == "." || component == ".." {
+            return None;
+        }
+        if component.ends_with(['.', ' ']) {
+            return None;
+        }
+        if component.contains(':') {
+            return None;
+        }
+        if is_windows_reserved_name(component) {
+            return None;
+        }
+        components.push(component.to_owned());
+    }
+    (!components.is_empty()).then_some(components)
 }
 
 fn launch_action_name(action: LaunchAction) -> &'static str {
@@ -223,7 +327,7 @@ fn launch_action_name(action: LaunchAction) -> &'static str {
     }
 }
 
-fn validate_launchable_zip(path: &Path) -> Result<(), LaunchError> {
+fn validate_launchable(path: &Path, media_kind: MediaKind) -> Result<(), LaunchError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -231,19 +335,35 @@ fn validate_launchable_zip(path: &Path) -> Result<(), LaunchError> {
         }
         Err(error) => return Err(LaunchError::InvalidCollectionFile(error.to_string())),
     };
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+    if metadata.file_type().is_symlink() {
         return Err(LaunchError::InvalidCollectionFile(
-            "路徑必須是一般檔案且不能是 symlink".to_owned(),
+            "收藏路徑不能是 symlink".to_owned(),
         ));
     }
-    if !path
-        .extension()
-        .and_then(|value| value.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
-    {
-        return Err(LaunchError::InvalidCollectionFile(
-            "只允許開啟 ZIP 收藏".to_owned(),
-        ));
+    match media_kind {
+        MediaKind::Zip => {
+            if !metadata.is_file() {
+                return Err(LaunchError::InvalidCollectionFile(
+                    "ZIP 收藏的路徑必須是一般檔案".to_owned(),
+                ));
+            }
+            if !path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+            {
+                return Err(LaunchError::InvalidCollectionFile(
+                    "ZIP 收藏的副檔名必須是 .zip".to_owned(),
+                ));
+            }
+        }
+        MediaKind::ImageFolder => {
+            if !metadata.is_dir() {
+                return Err(LaunchError::InvalidCollectionFile(
+                    "圖片資料夾收藏的路徑必須是資料夾".to_owned(),
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -365,6 +485,14 @@ pub fn plan_archive_move(
             None,
             ArchiveMoveReadiness::NotDownloads,
             FileServiceError::InvalidFile("系統 move 只能從下載區開始".to_owned()),
+        ));
+    }
+    if repository.collection_media_kind(collection_id)? != "zip" {
+        return Ok(blocked_plan(
+            collection_id,
+            None,
+            ArchiveMoveReadiness::Blocked,
+            FileServiceError::InvalidFile("圖片資料夾不支援歸檔搬移，只支援 ZIP".to_owned()),
         ));
     }
     if let Err(error) = validate_zip_filename_component(&collection.filename) {
@@ -1161,5 +1289,36 @@ mod tests {
     fn missing_or_empty_event_uses_uncategorized_folder() {
         assert_eq!("未分類", safe_archive_folder(None));
         assert_eq!("未分類", safe_archive_folder(Some(" . ")));
+    }
+
+    /// Windows 會剝掉 component 尾端的 `.` 與空白，也會把 DOS device name 解讀成裝置，
+    /// 因此這些別名寫法都不能通過子資料夾檢查；尾端 `/` 的去除是既定規格，維持接受。
+    #[test]
+    fn launch_entries_reject_windows_filename_aliases() {
+        for entry in [
+            "Text.",
+            "Text ",
+            ".. ",
+            "CON",
+            "con.txt",
+            "Text:stream",
+            "Text\\..\\Textless",
+            "Text/../Textless",
+            "C:/Windows",
+        ] {
+            assert_eq!(
+                None,
+                normalize_launch_entry(entry),
+                "子資料夾 {entry} 必須被拒絕"
+            );
+        }
+        assert_eq!(
+            Some(vec!["Text".to_owned()]),
+            normalize_launch_entry("Text/")
+        );
+        assert_eq!(
+            Some(vec!["Text".to_owned(), "Textless".to_owned()]),
+            normalize_launch_entry("Text/Textless")
+        );
     }
 }

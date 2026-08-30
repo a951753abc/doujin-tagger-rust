@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+pub use doujin_scanner::MediaKind;
+
 use doujin_scanner::SourceKind;
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{OptionalExtension, params, params_from_iter};
@@ -138,6 +140,7 @@ pub struct CollectionSnapshot {
     pub id: i64,
     pub path: PathBuf,
     pub filename: String,
+    pub media_kind: MediaKind,
     pub root: Option<CollectionRootSnapshot>,
     pub title: Option<String>,
     pub event: Option<String>,
@@ -438,7 +441,8 @@ const COLLECTION_SELECT_SQL: &str =
                     WHERE collection_tag.collection_id = collection.id
                     ORDER BY tag.name
                 ) AS ordered_tags
-            ), '[]')";
+            ), '[]'),
+            collection.media_kind";
 
 const COLLECTION_FROM_SQL: &str = "FROM collections AS collection
      JOIN effective_metadata AS metadata ON metadata.collection_id = collection.id
@@ -637,6 +641,7 @@ struct RawCollectionRow {
     classification_subcategory: Option<String>,
     is_dl: Option<bool>,
     tags_json: String,
+    media_kind: String,
 }
 
 fn map_collection_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawCollectionRow> {
@@ -659,6 +664,7 @@ fn map_collection_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawCollection
         classification_subcategory: row.get(15)?,
         is_dl: row.get(16)?,
         tags_json: row.get(17)?,
+        media_kind: row.get(18)?,
     })
 }
 
@@ -677,10 +683,14 @@ fn decode_collection_row(row: RawCollectionRow) -> StorageResult<CollectionSnaps
             )));
         }
     };
+    let media_kind = MediaKind::parse(&row.media_kind).ok_or_else(|| {
+        StorageError::InvalidSchema(format!("未知的 media_kind：{}", row.media_kind))
+    })?;
     Ok(CollectionSnapshot {
         id: row.id,
         path: PathBuf::from(row.path),
         filename: row.filename,
+        media_kind,
         root,
         title: row.title,
         event: row.event,

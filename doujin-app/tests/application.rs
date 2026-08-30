@@ -3,26 +3,27 @@ use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use doujin_app::archive::ArchiveMovePreflightStatus;
 use doujin_app::external_search::{
     ExternalMetadataCandidate, ExternalMetadataProvider, ExternalSearchProviderError,
     ExternalSearchProviderIssue, ExternalSearchProviderResponse, ExternalSearchRequest,
     ExternalTagCandidate,
 };
-use doujin_app::archive::ArchiveMovePreflightStatus;
 use doujin_app::rename::{RenameExpectedItem, RenamePreflightStatus};
 use doujin_app::{
     ApplicationBatchOutcome, ApplicationError, ApplicationScanIssueKind, ApplicationScanMode,
     ApplicationScanOptions, ApplicationScanStatus, ApplicationService,
     ApplicationSettingsOverrides,
 };
-use doujin_files::RecycleBin;
+use doujin_files::{DeleteRequest, RecycleBin};
 use doujin_parser::domain::Authors;
-use doujin_scanner::{ScanRoot, SourceKind};
+use doujin_scanner::{MediaKind, ScanRoot, SourceKind};
 use doujin_storage::collections::{ReviewQueueKind, ReviewQueueQuery};
 use doujin_storage::covers::CoverSelectionStatus;
+use doujin_storage::duplicates::DuplicateLevel;
 use doujin_storage::external_search_batches::ExternalSearchBatchStrategy;
 use doujin_storage::jobs::{ExternalSearchErrorKind, ExternalSearchJobStatus};
-use doujin_storage::lifecycle::{CandidateDecision, CollectionStatus};
+use doujin_storage::lifecycle::{CandidateDecision, CollectionStatus, DeleteMode};
 use doujin_storage::metadata::{
     ConfidenceEvidence, MetadataAssertionDecision, MetadataField, MetadataValue,
 };
@@ -33,7 +34,7 @@ use doujin_storage::thumbnails::{
 };
 use doujin_storage::{CatalogRepository, StorageError};
 use doujin_thumbnails::{
-    ThumbnailConfig, ThumbnailGenerationSuccess, calculate_source_content_fingerprint,
+    ReadTarget, ThumbnailConfig, ThumbnailGenerationSuccess, calculate_source_content_fingerprint,
     generate_thumbnail,
 };
 use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
@@ -296,6 +297,23 @@ impl TestTree {
                 .expect("write image entry");
         }
         archive.finish().expect("finish image ZIP");
+        path
+    }
+
+    fn image_folder(&self, relative: &str, entries: &[(&str, [u8; 4])]) -> PathBuf {
+        let path = self.library().join(relative);
+        fs::create_dir_all(&path).expect("create image folder");
+        for (entry, color) in entries {
+            let image = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(24, 32, Rgba(*color)));
+            let mut encoded = Cursor::new(Vec::new());
+            image
+                .write_to(&mut encoded, ImageFormat::Png)
+                .expect("encode folder image");
+            let entry_path = path.join(entry);
+            fs::create_dir_all(entry_path.parent().expect("folder image parent"))
+                .expect("create folder image parent");
+            fs::write(entry_path, encoded.into_inner()).expect("write folder image");
+        }
         path
     }
 
@@ -1884,7 +1902,7 @@ fn thumbnail_cache_batch_promotes_selected_work_ahead_of_default_queue() {
         .expect("prepare selected thumbnail cache");
 
     assert_eq!(vec![selected_id], prepared.collection_ids);
-    assert!(BATCH_THUMBNAIL_PRIORITY > DEFAULT_THUMBNAIL_PRIORITY);
+    const _: () = assert!(BATCH_THUMBNAIL_PRIORITY > DEFAULT_THUMBNAIL_PRIORITY);
     assert_eq!(
         BATCH_THUMBNAIL_PRIORITY,
         application
@@ -1921,7 +1939,9 @@ fn archive_move_preflight_reports_collision_when_destination_is_existing_directo
 
     let repository = CatalogRepository::open_in_memory().expect("open catalog");
     let mut application = ApplicationService::new(repository, NoopRecycleBin);
-    application.run_scan(&[tree.root()]).expect("scan downloads root");
+    application
+        .run_scan(&[tree.root()])
+        .expect("scan downloads root");
     let collection_id = application
         .repository()
         .collection_id_for_current_path(&source_path)
@@ -1970,7 +1990,9 @@ fn archive_move_preflight_reports_collision_for_dangling_destination_symlink() {
 
     let repository = CatalogRepository::open_in_memory().expect("open catalog");
     let mut application = ApplicationService::new(repository, NoopRecycleBin);
-    application.run_scan(&[tree.root()]).expect("scan downloads root");
+    application
+        .run_scan(&[tree.root()])
+        .expect("scan downloads root");
     let collection_id = application
         .repository()
         .collection_id_for_current_path(&source_path)
@@ -1998,5 +2020,871 @@ fn archive_move_preflight_reports_collision_for_dangling_destination_symlink() {
     assert_eq!(
         ArchiveMovePreflightStatus::Collision,
         preflight.items[0].status
+    );
+}
+
+#[test]
+fn image_folder_scan_indexes_the_folder_once_and_survives_reopen() {
+    let tree = TestTree::new("image-folder-scan");
+    let folder = tree.image_folder(
+        "[circle] folder work",
+        &[
+            ("001.png", [10, 20, 30, 255]),
+            ("002.png", [40, 50, 60, 255]),
+        ],
+    );
+    let inner_zip = tree.zip("[circle] folder work/deep/[c] inner.zip");
+    let mut application = ApplicationService::new(
+        CatalogRepository::open(tree.database()).expect("open catalog"),
+        NoopRecycleBin,
+    );
+
+    let report = application.run_scan(&[tree.root()]).expect("initial scan");
+
+    assert_eq!(1, report.summary.added);
+    assert_eq!(1, report.summary.pending);
+    assert_eq!(1, report.summary.discovered);
+    let collection_id = application
+        .repository()
+        .collection_id_for_current_path(&folder)
+        .expect("folder lookup")
+        .expect("folder collection");
+    let snapshot = application
+        .collection(collection_id)
+        .expect("folder collection detail");
+    assert_eq!(MediaKind::ImageFolder, snapshot.media_kind);
+    assert_eq!(Some("circle"), snapshot.circle.as_deref());
+    assert_eq!(Some("folder work"), snapshot.title.as_deref());
+    assert_eq!("[circle] folder work", snapshot.filename);
+    assert_eq!(
+        None,
+        application
+            .repository()
+            .collection_id_for_current_path(&inner_zip)
+            .expect("inner zip lookup")
+    );
+    assert!(folder.is_dir());
+
+    application
+        .set_manual_metadata(
+            collection_id,
+            MetadataField::Event,
+            MetadataValue::Text("手動場次".to_owned()),
+        )
+        .expect("manual event");
+    application
+        .add_collection_tag(collection_id, "folder-tag")
+        .expect("tag folder collection");
+
+    let second = application.run_scan(&[tree.root()]).expect("second scan");
+
+    assert_eq!(0, second.summary.added);
+    assert_eq!(1, second.summary.skipped);
+    assert_eq!(
+        1,
+        application
+            .repository()
+            .collection_count()
+            .expect("collection count")
+    );
+    assert_eq!(
+        1,
+        application
+            .repository()
+            .parser_run_count()
+            .expect("parser run count")
+    );
+    let after_rescan = application
+        .collection(collection_id)
+        .expect("detail after rescan");
+    assert_eq!(Some("手動場次"), after_rescan.event.as_deref());
+    assert_eq!(vec!["folder-tag".to_owned()], after_rescan.tags);
+    drop(application);
+
+    let mut reopened = ApplicationService::new(
+        CatalogRepository::open(tree.database()).expect("reopen catalog"),
+        NoopRecycleBin,
+    );
+    let third = reopened
+        .run_scan(&[tree.root()])
+        .expect("scan after reopen");
+
+    assert_eq!(0, third.summary.added);
+    assert_eq!(1, third.summary.skipped);
+    assert_eq!(
+        1,
+        reopened
+            .repository()
+            .collection_count()
+            .expect("collection count after reopen")
+    );
+    assert_eq!(
+        1,
+        reopened
+            .repository()
+            .parser_run_count()
+            .expect("parser run count after reopen")
+    );
+    let after_reopen = reopened
+        .collection(collection_id)
+        .expect("detail after reopen");
+    assert_eq!(MediaKind::ImageFolder, after_reopen.media_kind);
+    assert_eq!(Some("手動場次"), after_reopen.event.as_deref());
+    assert_eq!(vec!["folder-tag".to_owned()], after_reopen.tags);
+    assert!(folder.is_dir());
+}
+
+#[test]
+fn zip_replaced_by_a_folder_is_reported_as_a_media_kind_mismatch() {
+    let tree = TestTree::new("swap-zip-to-folder");
+    let swapped = tree.zip("[circle] swap.zip");
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application.run_scan(&[tree.root()]).expect("initial scan");
+    let collection_id = application
+        .repository()
+        .collection_id_for_current_path(&swapped)
+        .expect("zip lookup")
+        .expect("zip collection");
+    fs::remove_file(&swapped).expect("remove indexed zip");
+    tree.image_folder("[circle] swap.zip", &[("001.png", [10, 20, 30, 255])]);
+
+    let report = application.run_scan(&[tree.root()]).expect("mismatch scan");
+
+    assert_eq!(ApplicationScanStatus::Partial, report.status);
+    assert_eq!(1, report.issues.len());
+    assert_eq!(
+        ApplicationScanIssueKind::MediaKindMismatch,
+        report.issues[0].kind
+    );
+    assert_eq!(swapped, report.issues[0].path);
+    assert_eq!(0, report.summary.tombstoned);
+    assert_eq!(
+        1,
+        application
+            .repository()
+            .collection_count()
+            .expect("collection count")
+    );
+    assert_eq!(
+        1,
+        application
+            .repository()
+            .parser_run_count()
+            .expect("parser run count")
+    );
+    assert_eq!(
+        MediaKind::Zip,
+        application
+            .collection(collection_id)
+            .expect("collection detail")
+            .media_kind
+    );
+}
+
+#[test]
+fn folder_replaced_by_a_zip_is_reported_as_a_media_kind_mismatch() {
+    let tree = TestTree::new("swap-folder-to-zip");
+    let swapped = tree.image_folder("[circle] swap2.zip", &[("001.png", [10, 20, 30, 255])]);
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application.run_scan(&[tree.root()]).expect("initial scan");
+    let collection_id = application
+        .repository()
+        .collection_id_for_current_path(&swapped)
+        .expect("folder lookup")
+        .expect("folder collection");
+    fs::remove_dir_all(&swapped).expect("remove indexed folder");
+    fs::write(&swapped, b"zip placeholder").expect("write zip in place of folder");
+
+    let report = application.run_scan(&[tree.root()]).expect("mismatch scan");
+
+    assert_eq!(ApplicationScanStatus::Partial, report.status);
+    assert_eq!(1, report.issues.len());
+    assert_eq!(
+        ApplicationScanIssueKind::MediaKindMismatch,
+        report.issues[0].kind
+    );
+    assert_eq!(swapped, report.issues[0].path);
+    assert_eq!(0, report.summary.tombstoned);
+    assert_eq!(
+        1,
+        application
+            .repository()
+            .collection_count()
+            .expect("collection count")
+    );
+    assert_eq!(
+        1,
+        application
+            .repository()
+            .parser_run_count()
+            .expect("parser run count")
+    );
+    assert_eq!(
+        MediaKind::ImageFolder,
+        application
+            .collection(collection_id)
+            .expect("collection detail")
+            .media_kind
+    );
+    assert!(swapped.is_file());
+}
+
+#[test]
+fn reconciliation_only_pairs_a_missing_collection_with_the_same_media_kind() {
+    let tree = TestTree::new("cross-kind-reconciliation");
+    let twin = tree.zip("[circle] Twin.zip");
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application.run_scan(&[tree.root()]).expect("initial scan");
+    let twin_id = application
+        .repository()
+        .collection_id_for_current_path(&twin)
+        .expect("twin lookup")
+        .expect("twin collection");
+    fs::remove_file(&twin).expect("remove twin zip");
+    tree.image_folder(
+        "folder-twin/[circle] Twin.zip",
+        &[("001.png", [10, 20, 30, 255])],
+    );
+
+    let folder_preflight = application
+        .preflight_scan(&[tree.root()])
+        .expect("cross kind preflight");
+
+    assert!(folder_preflight.tombstone_candidates.is_empty());
+    assert_eq!(0, folder_preflight.expectation.possible_tombstones);
+
+    let folder_report = application
+        .run_scan(&[tree.root()])
+        .expect("cross kind scan");
+
+    assert_eq!(0, folder_report.summary.tombstoned);
+    assert_eq!(0, folder_report.summary.candidate_links_created);
+
+    let zip_twin = tree.zip("zip-twin/[circle] Twin.zip");
+    let zip_preflight = application
+        .preflight_scan(&[tree.root()])
+        .expect("same kind preflight");
+
+    assert_eq!(1, zip_preflight.expectation.possible_tombstones);
+    assert_eq!(1, zip_preflight.tombstone_candidates.len());
+    assert_eq!(
+        zip_twin,
+        zip_preflight.tombstone_candidates[0].candidate_path
+    );
+
+    let zip_report = application
+        .run_scan(&[tree.root()])
+        .expect("same kind scan");
+
+    assert_eq!(1, zip_report.summary.tombstoned);
+    assert_eq!(1, zip_report.summary.candidate_links_created);
+    let zip_twin_id = application
+        .repository()
+        .collection_id_for_current_path(&zip_twin)
+        .expect("zip twin lookup")
+        .expect("zip twin collection");
+    let links = application.tombstone_candidates().expect("candidate links");
+    assert_eq!(1, links.len());
+    assert_eq!(twin_id, links[0].tombstone_collection_id);
+    assert_eq!(zip_twin_id, links[0].candidate_collection_id);
+}
+
+/// 消失的收藏只能配對到真正的資料夾：若同名路徑已經被換成 symlink／directory junction，
+/// 跟隨連結會把 library root 以外的內容當成候選，於是舊收藏被 tombstone 到別處。
+/// Windows 上建立 directory symlink 需要特權，junction 不需要，因此以 junction 當 fixture；
+/// 建立失敗時略過本測試。
+#[cfg(windows)]
+#[test]
+fn a_junction_is_not_a_valid_reconciliation_candidate() {
+    let tree = TestTree::new("junction-candidate");
+    let real = tree.image_folder("real/[circle] Ghost", &[("001.png", [10, 20, 30, 255])]);
+    let old = tree.image_folder("old/[circle] Ghost", &[("001.png", [40, 50, 60, 255])]);
+    let elsewhere = tree.image_folder("elsewhere", &[("001.png", [70, 80, 90, 255])]);
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application.run_scan(&[tree.root()]).expect("initial scan");
+    let old_id = application
+        .repository()
+        .collection_id_for_current_path(&old)
+        .expect("old lookup")
+        .expect("old collection");
+
+    fs::remove_dir_all(&real).expect("remove real candidate folder");
+    let created = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&real)
+        .arg(&elsewhere)
+        .status();
+    match created {
+        Ok(status) if status.success() => {}
+        other => {
+            eprintln!("跳過 junction 子情境，建立 directory junction 失敗：{other:?}");
+            return;
+        }
+    }
+    fs::remove_dir_all(&old).expect("remove old folder");
+
+    let preflight = application
+        .preflight_scan(&[tree.root()])
+        .expect("junction preflight");
+
+    assert!(preflight.tombstone_candidates.is_empty());
+    assert_eq!(0, preflight.expectation.possible_tombstones);
+    assert_eq!(0, preflight.expectation.possible_candidate_links);
+
+    let report = application.run_scan(&[tree.root()]).expect("junction scan");
+
+    assert_eq!(0, report.summary.tombstoned);
+    assert_eq!(0, report.summary.candidate_links_created);
+    assert_eq!(
+        CollectionStatus::Active,
+        application
+            .repository()
+            .collection_status(old_id)
+            .expect("old collection status")
+    );
+
+    // 控制組：同一位置換回真資料夾後，候選必須出現，證明上面的空清單不是恆真。
+    fs::remove_dir(&real).expect("remove junction");
+    tree.image_folder("real/[circle] Ghost", &[("001.png", [10, 20, 30, 255])]);
+    let recovered = application
+        .preflight_scan(&[tree.root()])
+        .expect("real folder preflight");
+
+    assert_eq!(1, recovered.tombstone_candidates.len());
+    assert_eq!(real, recovered.tombstone_candidates[0].candidate_path);
+    assert_eq!(old, recovered.tombstone_candidates[0].tombstone_path);
+}
+
+#[test]
+fn image_folder_collections_reject_archive_move_and_delete_batches() {
+    let tree = TestTree::new("image-folder-batches");
+    let folder = tree.image_folder("[circle] folder ops", &[("001.png", [10, 20, 30, 255])]);
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application
+        .run_scan(&[tree.root()])
+        .expect("scan downloads root");
+    let collection_id = application
+        .repository()
+        .collection_id_for_current_path(&folder)
+        .expect("folder lookup")
+        .expect("folder collection");
+    let archive_path = tree.path.join("archive");
+    fs::create_dir_all(&archive_path).expect("create archive root");
+    let archive_root = application
+        .register_library_root(&archive_path, SourceKind::Archive, "歸檔區")
+        .expect("register archive root");
+
+    let moved = application.move_collections_to_archive(&[collection_id], archive_root.id);
+    let deleted = application.delete_collections(&[DeleteRequest {
+        collection_id,
+        mode: DeleteMode::Soft,
+    }]);
+
+    assert_eq!(1, moved.failed());
+    assert_eq!(0, moved.succeeded());
+    assert_eq!(1, deleted.failed());
+    assert_eq!(0, deleted.succeeded());
+    assert_eq!(
+        0,
+        application
+            .repository()
+            .file_operation_count()
+            .expect("file operation count")
+    );
+    assert!(folder.is_dir());
+    assert!(folder.join("001.png").is_file());
+    assert_eq!(
+        MediaKind::ImageFolder,
+        application
+            .collection(collection_id)
+            .expect("folder detail")
+            .media_kind
+    );
+}
+
+/// 名字看起來像 ZIP 的圖片資料夾，在 `validate_source_zip` 之前就必須被 media kind 擋下：
+/// 若資料夾在 preflight 之後被同名一般檔案取代，來源檢查會放行，於是歸檔區被建出場次資料夾。
+#[test]
+fn image_folder_named_like_a_zip_is_blocked_before_touching_the_archive_root() {
+    let tree = TestTree::new("image-folder-zip-name");
+    let folder = tree.image_folder("[circle] Archive me.zip", &[("001.png", [10, 20, 30, 255])]);
+    let archive_path = tree.path.join("archive");
+    fs::create_dir_all(&archive_path).expect("create archive root");
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application
+        .run_scan(&[tree.root()])
+        .expect("scan downloads root");
+    let collection_id = application
+        .repository()
+        .collection_id_for_current_path(&folder)
+        .expect("folder lookup")
+        .expect("folder collection");
+    assert_eq!(
+        MediaKind::ImageFolder,
+        application
+            .repository()
+            .collection(collection_id)
+            .expect("collection snapshot")
+            .media_kind
+    );
+    let archive_root = application
+        .register_library_root(&archive_path, SourceKind::Archive, "歸檔區")
+        .expect("register archive root");
+
+    let preflight = application
+        .move_preflight(&[collection_id], archive_root.id)
+        .expect("move preflight");
+    assert_eq!(1, preflight.items.len());
+    assert_eq!(
+        ArchiveMovePreflightStatus::Blocked,
+        preflight.items[0].status
+    );
+    let message = preflight.items[0]
+        .message
+        .clone()
+        .expect("blocked preflight message");
+    assert!(message.contains("只支援 ZIP"), "實際訊息：{message}");
+
+    fs::remove_dir_all(&folder).expect("remove image folder");
+    fs::write(&folder, b"zip placeholder").expect("write same named file");
+    let moved = application.move_collections_to_archive(&[collection_id], archive_root.id);
+
+    assert_eq!(1, moved.failed());
+    assert_eq!(0, moved.succeeded());
+    assert_eq!(
+        0,
+        fs::read_dir(&archive_path)
+            .expect("read archive root")
+            .count()
+    );
+    assert_eq!(
+        0,
+        application
+            .repository()
+            .file_operation_count()
+            .expect("file operation count")
+    );
+    assert!(folder.is_file());
+}
+
+fn folder_snapshot(directory: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut entries = Vec::new();
+    let mut stack = vec![directory.to_owned()];
+    while let Some(current) = stack.pop() {
+        for entry in fs::read_dir(&current).expect("read folder snapshot") {
+            let entry = entry.expect("snapshot entry");
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                let relative = path
+                    .strip_prefix(directory)
+                    .expect("snapshot relative path")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                entries.push((relative, fs::read(&path).expect("snapshot bytes")));
+            }
+        }
+    }
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries
+}
+
+#[test]
+fn scanned_image_folder_generates_webp_thumbnail_without_touching_the_source() {
+    let tree = TestTree::new("image-folder-thumbnail");
+    let source = tree.image_folder(
+        "[circle] folder thumb",
+        &[("b.png", [0, 0, 255, 255]), ("a.png", [255, 0, 0, 255])],
+    );
+    let before = folder_snapshot(&source);
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let config = ThumbnailConfig::new(tree.path.join("cache"), 300, 400, 80).expect("config");
+    let mut application =
+        ApplicationService::with_thumbnails(repository, NoopRecycleBin, config.clone());
+    application.run_scan(&[tree.root()]).expect("scan");
+    let collection_id = application
+        .repository()
+        .collection_id_for_current_path(&source)
+        .expect("collection lookup")
+        .expect("collection ID");
+    assert_eq!(
+        MediaKind::ImageFolder,
+        application
+            .repository()
+            .collection(collection_id)
+            .expect("collection snapshot")
+            .media_kind
+    );
+
+    application
+        .request_thumbnail(collection_id)
+        .expect("request thumbnail");
+    let request = application
+        .start_thumbnail_generation(collection_id)
+        .expect("start thumbnail");
+    assert_eq!(source, request.source_path);
+    assert_eq!(None, request.selected_entry);
+    let result = generate_thumbnail(&request);
+    assert!(
+        result.is_ok(),
+        "folder thumbnail generation failed: {:?}",
+        result.as_ref().err()
+    );
+    application
+        .finish_thumbnail_generation(collection_id, result)
+        .expect("finish thumbnail");
+    assert_eq!(
+        ThumbnailStatus::Ready,
+        application
+            .repository()
+            .thumbnail_state(collection_id)
+            .expect("thumbnail state")
+            .status
+    );
+
+    let bytes = application
+        .read_thumbnail_cache(collection_id)
+        .expect("read thumbnail cache")
+        .expect("cached thumbnail bytes");
+    assert_eq!(b"RIFF", &bytes[0..4]);
+    assert_eq!(b"WEBP", &bytes[8..12]);
+
+    let candidates = application
+        .cover_candidates(collection_id, 24)
+        .expect("cover candidates");
+    assert_eq!("a.png", candidates.items[0].entry_path);
+    assert_eq!(before, folder_snapshot(&source));
+}
+
+#[test]
+fn scanned_image_folder_lists_previews_and_selects_cover_candidates_without_escaping() {
+    let tree = TestTree::new("image-folder-cover");
+    let source = tree.image_folder(
+        "[circle] folder cover",
+        &[
+            ("01.png", [255, 0, 0, 255]),
+            ("02.png", [0, 255, 0, 255]),
+            ("sub/03.png", [0, 0, 255, 255]),
+        ],
+    );
+    let before = folder_snapshot(&source);
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let config = ThumbnailConfig::new(tree.path.join("cache"), 300, 400, 80).expect("config");
+    let mut application = ApplicationService::with_thumbnails(repository, NoopRecycleBin, config);
+    application.run_scan(&[tree.root()]).expect("scan");
+    let collection_id = application
+        .repository()
+        .collection_id_for_current_path(&source)
+        .expect("collection lookup")
+        .expect("collection ID");
+
+    let candidates = application
+        .cover_candidates(collection_id, 24)
+        .expect("cover candidates");
+    assert_eq!(3, candidates.items.len());
+    assert_eq!(
+        vec!["01.png", "02.png", "sub/03.png"],
+        candidates
+            .items
+            .iter()
+            .map(|item| item.entry_path.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        vec![1, 2, 3],
+        candidates
+            .items
+            .iter()
+            .map(|item| item.page_order)
+            .collect::<Vec<_>>()
+    );
+    for item in &candidates.items {
+        assert_eq!(24, item.width);
+        assert_eq!(32, item.height);
+    }
+
+    let preview = application
+        .cover_candidate_preview(collection_id, "sub/03.png")
+        .expect("cover candidate preview");
+    assert!(!preview.is_empty());
+    assert_eq!(b"RIFF", &preview[0..4]);
+
+    let selection = application
+        .select_cover(collection_id, "sub/03.png", &candidates.source_fingerprint)
+        .expect("select folder cover");
+    assert_eq!("sub/03.png", selection.entry_path);
+
+    assert!(
+        application
+            .cover_candidate_preview(collection_id, "../escape.png")
+            .is_err()
+    );
+    assert!(
+        application
+            .select_cover(
+                collection_id,
+                "../escape.png",
+                &candidates.source_fingerprint
+            )
+            .is_err()
+    );
+    assert_eq!(before, folder_snapshot(&source));
+}
+
+#[test]
+fn duplicate_scan_fingerprints_image_folders_and_pairs_identical_content() {
+    let tree = TestTree::new("image-folder-duplicate");
+    let pages: [(&str, [u8; 4]); 3] = [
+        ("01.png", [255, 0, 0, 255]),
+        ("02.png", [0, 255, 0, 255]),
+        ("03.png", [0, 0, 255, 255]),
+    ];
+    let first = tree.image_folder("[circle] dup a", &pages);
+    let second = tree.image_folder("[circle] dup b", &pages);
+    let other = tree.image_folder(
+        "[circle] other",
+        &[
+            ("01.png", [10, 20, 30, 255]),
+            ("02.png", [40, 50, 60, 255]),
+            ("03.png", [70, 80, 90, 255]),
+        ],
+    );
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application.run_scan(&[tree.root()]).expect("scan");
+    let first_id = application
+        .repository()
+        .collection_id_for_current_path(&first)
+        .expect("collection lookup")
+        .expect("collection ID");
+    let second_id = application
+        .repository()
+        .collection_id_for_current_path(&second)
+        .expect("collection lookup")
+        .expect("collection ID");
+    let other_id = application
+        .repository()
+        .collection_id_for_current_path(&other)
+        .expect("collection lookup")
+        .expect("collection ID");
+
+    let job = application
+        .start_duplicate_scan()
+        .expect("start duplicate scan");
+    assert_eq!(3, job.total);
+    while let Some(request) = application
+        .claim_duplicate_fingerprint()
+        .expect("claim duplicate work")
+    {
+        let result = calculate_source_content_fingerprint(&request.source_path);
+        application
+            .finish_duplicate_fingerprint(&request, result)
+            .expect("finish duplicate work");
+    }
+    let completed = application
+        .duplicate_scan_job(job.id)
+        .expect("completed duplicate scan");
+    assert_eq!(3, completed.processed);
+    assert_eq!(0, completed.failed);
+
+    let fingerprint = application
+        .repository()
+        .duplicate_fingerprint(first_id)
+        .expect("read folder fingerprint")
+        .expect("folder fingerprint stored");
+    assert_eq!(None, fingerprint.file_sha256);
+    assert_eq!(3, fingerprint.image_count);
+
+    let candidates = application
+        .repository()
+        .duplicate_candidates()
+        .expect("duplicate candidates");
+    assert_eq!(1, candidates.len());
+    let pair = &candidates[0];
+    assert_eq!(DuplicateLevel::Content, pair.level);
+    let mut pair_ids = vec![pair.left.collection.id, pair.right.collection.id];
+    pair_ids.sort_unstable();
+    let mut expected_ids = vec![first_id, second_id];
+    expected_ids.sort_unstable();
+    assert_eq!(expected_ids, pair_ids);
+    assert!(!pair_ids.contains(&other_id));
+
+    application
+        .start_duplicate_scan()
+        .expect("start cached duplicate scan");
+    assert!(
+        application
+            .claim_duplicate_fingerprint()
+            .expect("cached duplicate scan finishes without hashing")
+            .is_none()
+    );
+}
+
+/// 變體父層收藏（`Text/`＋`Textless/`）合併成一筆之後，手動選封面必須看得到每個
+/// 直接子資料夾的第一張，閱讀目標列表也要能列出可以單獨開啟的子資料夾。
+#[test]
+fn variant_subfolder_collection_offers_per_subfolder_covers_and_read_targets() {
+    let tree = TestTree::new("variant-cover-read-targets");
+    let text_pages = (1..=30u32)
+        .map(|page| (format!("Text_{page:03}.png"), [page as u8, 0, 0, 255]))
+        .collect::<Vec<_>>();
+    let textless_pages = (1..=30u32)
+        .map(|page| (format!("Textless_{page:03}.png"), [0, 0, page as u8, 255]))
+        .collect::<Vec<_>>();
+    tree.image_folder(
+        "[circle] variant work/Text",
+        &text_pages
+            .iter()
+            .map(|(name, color)| (name.as_str(), *color))
+            .collect::<Vec<_>>(),
+    );
+    tree.image_folder(
+        "[circle] variant work/Textless",
+        &textless_pages
+            .iter()
+            .map(|(name, color)| (name.as_str(), *color))
+            .collect::<Vec<_>>(),
+    );
+    let work = tree.library().join("[circle] variant work");
+    let archive = tree.image_zip("[circle] flat.zip", &[("001.png", [0, 255, 0, 255])]);
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let config = ThumbnailConfig::new(tree.path.join("cache"), 300, 400, 80).expect("config");
+    let mut application = ApplicationService::with_thumbnails(repository, NoopRecycleBin, config);
+    application.run_scan(&[tree.root()]).expect("scan");
+    let collection_id = application
+        .repository()
+        .collection_id_for_current_path(&work)
+        .expect("collection lookup")
+        .expect("collection ID");
+    let archive_id = application
+        .repository()
+        .collection_id_for_current_path(&archive)
+        .expect("ZIP lookup")
+        .expect("ZIP collection ID");
+
+    let candidates = application
+        .cover_candidates(collection_id, 24)
+        .expect("cover candidates");
+    assert_eq!(24, candidates.items.len());
+    assert_eq!("Text/Text_001.png", candidates.items[0].entry_path);
+    let last = candidates.items.last().expect("last candidate");
+    assert_eq!("Textless/Textless_001.png", last.entry_path);
+    assert_eq!(31, last.page_order);
+
+    let selection = application
+        .select_cover(
+            collection_id,
+            "Textless/Textless_001.png",
+            &candidates.source_fingerprint,
+        )
+        .expect("select variant cover");
+    assert_eq!("Textless/Textless_001.png", selection.entry_path);
+
+    let read_targets = application
+        .read_targets(collection_id)
+        .expect("folder read targets");
+    assert_eq!(MediaKind::ImageFolder, read_targets.media_kind);
+    assert_eq!(0, read_targets.direct_image_count);
+    assert_eq!(
+        vec![
+            ReadTarget {
+                entry_path: "Text".to_owned(),
+                image_count: 30,
+            },
+            ReadTarget {
+                entry_path: "Textless".to_owned(),
+                image_count: 30,
+            },
+        ],
+        read_targets.targets
+    );
+
+    let archive_targets = application
+        .read_targets(archive_id)
+        .expect("ZIP read targets");
+    assert_eq!(MediaKind::Zip, archive_targets.media_kind);
+    assert_eq!(0, archive_targets.direct_image_count);
+    assert!(archive_targets.targets.is_empty());
+}
+
+#[test]
+fn variant_subfolders_are_indexed_as_one_collection_end_to_end() {
+    let tree = TestTree::new("variant-parent-scan");
+    tree.image_folder(
+        "[circle] variant work/Text",
+        &[("Text_001.png", [255, 0, 0, 255])],
+    );
+    tree.image_folder(
+        "[circle] variant work/Textless",
+        &[("Textless_001.png", [0, 0, 255, 255])],
+    );
+    let work = tree.library().join("[circle] variant work");
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let config = ThumbnailConfig::new(tree.path.join("cache"), 300, 400, 80).expect("config");
+    let mut application = ApplicationService::with_thumbnails(repository, NoopRecycleBin, config);
+
+    let report = application.run_scan(&[tree.root()]).expect("initial scan");
+
+    assert_eq!(1, report.summary.added);
+    let collection_id = application
+        .repository()
+        .collection_id_for_current_path(&work)
+        .expect("collection lookup")
+        .expect("collection ID");
+    let snapshot = application
+        .collection(collection_id)
+        .expect("collection detail");
+    assert_eq!(MediaKind::ImageFolder, snapshot.media_kind);
+    assert_eq!("[circle] variant work", snapshot.filename);
+    assert_eq!(Some("circle"), snapshot.circle.as_deref());
+    assert_eq!(Some("variant work"), snapshot.title.as_deref());
+
+    application
+        .request_thumbnail(collection_id)
+        .expect("request thumbnail");
+    let request = application
+        .start_thumbnail_generation(collection_id)
+        .expect("start thumbnail");
+    assert_eq!(work, request.source_path);
+    let result = generate_thumbnail(&request);
+    assert!(
+        result.is_ok(),
+        "variant folder thumbnail generation failed: {:?}",
+        result.as_ref().err()
+    );
+    application
+        .finish_thumbnail_generation(collection_id, result)
+        .expect("finish thumbnail");
+    assert_eq!(
+        ThumbnailStatus::Ready,
+        application
+            .repository()
+            .thumbnail_state(collection_id)
+            .expect("thumbnail state")
+            .status
+    );
+
+    let candidates = application
+        .cover_candidates(collection_id, 24)
+        .expect("cover candidates");
+    assert_eq!("Text/Text_001.png", candidates.items[0].entry_path);
+
+    let second = application.run_scan(&[tree.root()]).expect("second scan");
+
+    assert_eq!(0, second.summary.added);
+    assert_eq!(1, second.summary.skipped);
+    assert_eq!(
+        1,
+        application
+            .repository()
+            .collection_count()
+            .expect("collection count")
     );
 }

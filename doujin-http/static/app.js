@@ -301,6 +301,8 @@
   let libraryLoadPromise = null;
   let archiveTargetResolver = null;
   let archiveTargetConfirmed = false;
+  let readTargetResolver = null;
+  let readTargetConfirmed = false;
   let thumbnailRequestsInFlight = 0;
   let lastThumbnailRequestEpoch = 0;
   let lastThumbnailStatusId = 0;
@@ -401,6 +403,7 @@
       detailKicker: byId("detail-kicker"),
       detailTitle: byId("detail-title"),
       detailFilename: byId("detail-filename"),
+      detailMediaKind: byId("detail-media-kind"),
       metadataList: byId("metadata-list"),
       missingMetadataActions: byId("missing-metadata-actions"),
       metadataEvidence: byId("metadata-evidence"),
@@ -423,6 +426,9 @@
       recentDialog: byId("recent-dialog"),
       recentList: byId("recent-list"),
       recentCount: byId("recent-count"),
+      readTargetDialog: byId("read-target-dialog"),
+      readTargetForm: byId("read-target-form"),
+      readTargetOptions: byId("read-target-options"),
       focusFilterDialog: byId("focus-filter-dialog"),
       focusFilterMessage: byId("focus-filter-message"),
       discardFilterDialog: byId("discard-filter-dialog"),
@@ -870,6 +876,8 @@
     ui.archiveButton.addEventListener("click", archiveSelectedToLibrary);
     ui.archiveTargetForm.addEventListener("submit", submitArchiveTargetDialog);
     ui.archiveTargetDialog.addEventListener("close", handleArchiveTargetDialogClose);
+    ui.readTargetForm.addEventListener("submit", submitReadTargetDialog);
+    ui.readTargetDialog.addEventListener("close", handleReadTargetDialogClose);
     ui.archiveConfirmForm.addEventListener("submit", executeArchiveToLibrary);
     ui.selectionQuickArchive.addEventListener("click", prepareQuickArchive);
     ui.quickArchiveForm.addEventListener("submit", executeQuickArchive);
@@ -3487,6 +3495,9 @@
       const title = el("span", "item-title", displayTitle(collection));
       const meta = el("span", "item-meta", [collection.event, collection.parody || collection.parody_raw].filter(Boolean).join(" · ") || "場次與原作未整理");
       const flags = el("span", "item-flags");
+      if (collection.media_kind === "image_folder") {
+        flags.append(el("span", "mini-flag media-flag", "圖片資料夾"));
+      }
       [collection.event, collection.classification_top, collection.parody].filter(Boolean).slice(0, 3).forEach((value) => {
         flags.append(el("span", "mini-flag", value));
       });
@@ -3589,10 +3600,11 @@
     ui.detailCover.alt = `${displayTitle(collection)}的封面`;
     bindThumbnail(ui.detailCover, collection.id);
     ui.detailSource.textContent = collection.root?.source === "downloads" ? "新收藏" : "典藏庫";
-    ui.archiveButton.hidden = collection.root?.source !== "downloads";
+    ui.archiveButton.hidden = collection.root?.source !== "downloads" || collection.media_kind === "image_folder";
     ui.detailKicker.textContent = [collection.event, collection.classification_top, collection.classification_subcategory].filter(Boolean).join(" · ") || "尚未分類";
     ui.detailTitle.textContent = displayTitle(collection);
     ui.detailFilename.textContent = collection.filename;
+    ui.detailMediaKind.hidden = collection.media_kind !== "image_folder";
     ui.detailPath.textContent = collection.path;
 
     ui.metadataList.replaceChildren();
@@ -3783,26 +3795,99 @@
   async function launchSelected(kind) {
     if (!state.selected) return;
     const button = kind === "read" ? byId("read-button") : byId("open-button");
-    const original = button.textContent;
+    // 重複觸發（雙擊、快捷鍵）會再開一次已開啟的 dialog 並覆寫 resolver，
+    // 讓第一個 Promise 永遠不 resolve；按鈕在整段流程期間都保持 disabled。
+    if (button.disabled) return;
     button.disabled = true;
-    button.textContent = kind === "read" ? "正在啟動閱讀器…" : "正在開啟…";
+    const original = button.textContent;
     try {
-      await api(`/api/collections/${state.selected.id}/${kind}`, { method: "POST" });
-      rememberLaunch(state.selected, kind);
-      toast(kind === "read" ? "已交給閱讀器開啟" : "已交給系統開啟");
-    } catch (error) {
-      toast(error.message, true);
+      let entryPath;
+      if (kind === "read" && state.selected.media_kind === "image_folder") {
+        let readTargets;
+        try {
+          readTargets = await api(`/api/collections/${state.selected.id}/read-targets`);
+        } catch (error) {
+          toast(error.message, true);
+          return;
+        }
+        if (readTargets.targets && readTargets.targets.length > 0) {
+          const selection = await openReadTargetDialog(readTargets);
+          if (selection === null) return;
+          entryPath = selection || undefined;
+        }
+      }
+      button.textContent = kind === "read" ? "正在啟動閱讀器…" : "正在開啟…";
+      try {
+        const options = { method: "POST" };
+        if (entryPath) options.body = { entry_path: entryPath };
+        await api(`/api/collections/${state.selected.id}/${kind}`, options);
+        rememberLaunch(state.selected, kind, entryPath);
+        toast(kind === "read" ? "已交給閱讀器開啟" : "已交給系統開啟");
+      } catch (error) {
+        toast(error.message, true);
+      }
     } finally {
       button.disabled = false;
       button.textContent = original;
     }
   }
 
-  function rememberLaunch(collection, action) {
+  function openReadTargetDialog(readTargets) {
+    return new Promise((resolve) => {
+      if (readTargetResolver || ui.readTargetDialog.open) {
+        resolve(null);
+        return;
+      }
+      readTargetResolver = resolve;
+      readTargetConfirmed = false;
+      ui.readTargetOptions.replaceChildren();
+      const wholeLabel = el("label");
+      const wholeInput = document.createElement("input");
+      wholeInput.type = "radio";
+      wholeInput.name = "entry_path";
+      wholeInput.value = "";
+      const wholeSpan = el("span");
+      wholeSpan.append(el("strong", "", "整個資料夾"), el("small", "", `直接圖片 ${readTargets.direct_image_count} 張`));
+      wholeLabel.append(wholeInput, wholeSpan);
+      ui.readTargetOptions.append(wholeLabel);
+      readTargets.targets.forEach((target, index) => {
+        const label = el("label");
+        const input = document.createElement("input");
+        input.type = "radio";
+        input.name = "entry_path";
+        input.value = target.entry_path;
+        if (index === 0) input.checked = true;
+        const span = el("span");
+        span.append(el("strong", "", target.entry_path), el("small", "", `${target.image_count} 張`));
+        label.append(input, span);
+        ui.readTargetOptions.append(label);
+      });
+      ui.readTargetDialog.showModal();
+    });
+  }
+
+  function submitReadTargetDialog(event) {
+    event.preventDefault();
+    readTargetConfirmed = true;
+    const selected = ui.readTargetForm.querySelector('input[name="entry_path"]:checked');
+    ui.readTargetDialog.close();
+    const resolve = readTargetResolver;
+    readTargetResolver = null;
+    resolve?.(selected ? selected.value : "");
+  }
+
+  function handleReadTargetDialogClose() {
+    if (readTargetConfirmed) return;
+    const resolve = readTargetResolver;
+    readTargetResolver = null;
+    resolve?.(null);
+  }
+
+  function rememberLaunch(collection, action, entryPath) {
     const entry = {
       id: collection.id,
       title: displayTitle(collection),
-      filename: collection.filename,
+      filename: entryPath ? `${collection.filename}／${entryPath}` : collection.filename,
       action,
       openedAt: new Date().toISOString(),
     };

@@ -262,6 +262,7 @@
                 <p class="detail-kicker" id="detail-kicker"></p>
                 <h2 id="detail-title"></h2>
                 <p class="filename" id="detail-filename"></p>
+                <span id="detail-media-kind" class="media-badge" hidden>圖片資料夾</span>
 
                 <div class="primary-actions">
                   <button class="primary-button" id="read-button" type="button">用閱讀器開啟</button>
@@ -1109,6 +1110,14 @@
       <ol class="recent-list" id="recent-list"></ol>
       <div class="dialog-footer"><button class="text-button danger-text" id="clear-recent" type="button">清除最近紀錄</button></div>
     </div>
+  </dialog>
+
+  <dialog id="read-target-dialog" aria-labelledby="read-target-dialog-heading">
+    <form class="dialog-shell" id="read-target-form">
+      <header><div><p class="eyebrow">READER / 閱讀器</p><h2 id="read-target-dialog-heading">選擇要閱讀的子資料夾</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="關閉">×</button></header>
+      <div class="read-target-options" id="read-target-options"></div>
+      <div class="dialog-footer"><button class="text-button" data-close-dialog type="button">取消</button><button class="primary-button" type="submit">用閱讀器開啟</button></div>
+    </form>
   </dialog>
 
   <dialog id="saved-view-dialog" aria-labelledby="saved-view-dialog-heading">

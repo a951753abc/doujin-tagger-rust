@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use doujin_parser::PARSER_VERSION;
 use doujin_parser::domain::{Authors, Classification, Parody, ParseInput};
 use doujin_parser::parser::parse_filename;
-use doujin_scanner::{FilenameNormalization, PendingCollection, SourceKind};
+use doujin_scanner::{FilenameNormalization, MediaKind, PendingCollection, SourceKind};
 use doujin_storage::canonical::{CanonicalMappingEvidence, EntityKind};
 use doujin_storage::collections::{
     CollectionFilters, CollectionQuery, CollectionRootSnapshot, CollectionSort,
@@ -73,6 +73,7 @@ impl TestTree {
                 parody_evidence: Vec::new(),
             }),
             filename_normalization: FilenameNormalization::Unchanged,
+            media_kind: MediaKind::Zip,
         }
     }
 
@@ -103,6 +104,33 @@ impl TestTree {
                 parody_evidence: Vec::new(),
             }),
             filename_normalization: FilenameNormalization::Unchanged,
+            media_kind: MediaKind::Zip,
+        }
+    }
+
+    fn pending_folder_under(
+        &self,
+        root_name: &str,
+        source: SourceKind,
+        folder_name: &str,
+    ) -> PendingCollection {
+        let root = self.path.join(root_name);
+        let path = root.join(folder_name);
+        fs::create_dir_all(&path).expect("create nested image folder");
+        fs::write(path.join("001.jpg"), b"jpg placeholder").expect("create folder image");
+        PendingCollection {
+            folder: path.parent().expect("image folder parent").to_owned(),
+            path,
+            root_path: root,
+            root_label: format!("測試來源 {root_name}"),
+            source,
+            parser_version: PARSER_VERSION.to_owned(),
+            parsed: parse_filename(&ParseInput {
+                filename: folder_name.to_owned(),
+                parody_evidence: Vec::new(),
+            }),
+            filename_normalization: FilenameNormalization::Unchanged,
+            media_kind: MediaKind::ImageFolder,
         }
     }
 }
@@ -2200,7 +2228,7 @@ fn scanner_result_is_ingested_with_evidence_selection_projection_and_fts() {
     assert_eq!(1, repository.parser_run_count().expect("parser runs"));
     assert_eq!(5, repository.assertion_count().expect("assertions"));
     assert_eq!(
-        HashSet::from([expected_path]),
+        HashMap::from([(expected_path, MediaKind::Zip)]),
         repository.current_paths().expect("current paths")
     );
     let collection_id = repository
@@ -4972,6 +5000,51 @@ fn completed_move_rejects_non_archive_destination_root() {
     );
 }
 
+/// `record_completed_system_move` 只檢查目的地是不是一般檔案，因此在同名檔案落到歸檔區時，
+/// 圖片資料夾收藏也會被記成已完成的 ZIP move。media kind gate 必須在任何寫入之前擋下。
+#[test]
+fn completed_move_rejects_image_folder_collection_before_any_write() {
+    let tree = TestTree::new("completed-move-image-folder");
+    let pending =
+        tree.pending_folder_under("downloads", SourceKind::Downloads, "[circle] folder move");
+    let folder_path = pending.path.clone();
+    let archive_root = tree.path.join("archive");
+    fs::create_dir(&archive_root).expect("create archive root");
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    repository
+        .ingest_collection(&pending)
+        .expect("ingest image folder");
+    let collection_id = repository
+        .collection_id_for_current_path(&folder_path)
+        .expect("folder lookup")
+        .expect("folder collection");
+    let archive_root_id = repository
+        .register_library_root(&archive_root, SourceKind::Archive, "測試歸檔區")
+        .expect("register archive root");
+    fs::remove_dir_all(&folder_path).expect("remove image folder");
+    let destination = archive_root.join("[circle] folder move.zip");
+    fs::write(&destination, b"zip placeholder").expect("write destination file");
+
+    assert!(matches!(
+        repository.record_completed_system_move(collection_id, archive_root_id, &destination),
+        Err(StorageError::InvalidLifecycle(_))
+    ));
+
+    let history = repository
+        .location_history(collection_id)
+        .expect("location history");
+    assert_eq!(1, history.len());
+    assert_eq!(folder_path, history[0].path);
+    assert_eq!(LocationStatus::Current, history[0].status);
+    assert_eq!(0, repository.file_operation_count().expect("no operation"));
+    assert_eq!(
+        CollectionStatus::Active,
+        repository
+            .collection_status(collection_id)
+            .expect("collection status")
+    );
+}
+
 #[test]
 fn destructive_operation_rejects_similar_prefix_path_outside_registered_root() {
     let tree = TestTree::new("operation-outside-root");
@@ -5502,4 +5575,260 @@ fn consolidation_preserves_tombstone_selection_over_candidate_nonmanual_value() 
             .iter()
             .any(|assertion| assertion.value_json == "\"candidate external title\"")
     );
+}
+
+#[test]
+fn image_folder_collection_reads_back_as_image_folder_in_every_read_model() {
+    let tree = TestTree::new("image-folder-read-model");
+    let pending =
+        tree.pending_folder_under("downloads", SourceKind::Downloads, "[circle] folder work");
+    let folder_path = pending.path.clone();
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    assert_eq!(
+        IngestOutcome::Inserted,
+        repository
+            .ingest_collection(&pending)
+            .expect("ingest image folder")
+    );
+    let collection_id = repository
+        .collection_id_for_current_path(&folder_path)
+        .expect("folder lookup")
+        .expect("folder collection");
+
+    let snapshot = repository
+        .collection(collection_id)
+        .expect("folder collection detail");
+    assert_eq!(MediaKind::ImageFolder, snapshot.media_kind);
+    assert_eq!(folder_path, snapshot.path);
+    assert_eq!("[circle] folder work", snapshot.filename);
+
+    let page = repository
+        .collections(&CollectionQuery::default())
+        .expect("collection page");
+    assert_eq!(1, page.items.len());
+    assert_eq!(MediaKind::ImageFolder, page.items[0].media_kind);
+
+    let locations = repository
+        .active_collection_locations()
+        .expect("active collection locations");
+    assert_eq!(1, locations.len());
+    assert_eq!(folder_path, locations[0].path);
+    assert_eq!(MediaKind::ImageFolder, locations[0].media_kind);
+
+    let current_paths = repository.current_paths().expect("current paths");
+    assert_eq!(
+        Some(&MediaKind::ImageFolder),
+        current_paths.get(&folder_path)
+    );
+
+    assert_eq!(
+        IngestOutcome::SkippedExisting,
+        repository
+            .ingest_collection(&pending)
+            .expect("re-ingest same image folder")
+    );
+    assert_eq!(1, repository.parser_run_count().expect("parser run count"));
+    assert_eq!(1, repository.collection_count().expect("collection count"));
+    assert!(folder_path.is_dir());
+    assert!(folder_path.join("001.jpg").is_file());
+}
+
+#[test]
+fn tombstone_candidate_links_only_form_between_the_same_media_kind() {
+    let tree = TestTree::new("tombstone-media-kind");
+    let filename = "[circle] Same.zip";
+    let old = tree.pending_under("downloads", SourceKind::Downloads, filename);
+    let old_path = old.path.clone();
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    repository.ingest_collection(&old).expect("ingest old zip");
+    let old_id = repository
+        .collection_id_for_current_path(&old_path)
+        .expect("old lookup")
+        .expect("old collection");
+    fs::remove_file(&old_path).expect("remove old zip");
+    repository
+        .mark_collection_missing(old_id)
+        .expect("mark old missing");
+
+    let folder = tree.pending_folder_under("folder-root", SourceKind::Archive, filename);
+    repository
+        .ingest_collection(&folder)
+        .expect("ingest image folder with the same filename");
+    assert!(
+        repository
+            .tombstone_candidates(old_id)
+            .expect("cross kind links")
+            .is_empty()
+    );
+    assert_eq!(
+        0,
+        repository
+            .tombstone_candidate_count()
+            .expect("cross kind link count")
+    );
+    assert_eq!(
+        0,
+        repository
+            .link_tombstones_to_active_same_filename()
+            .expect("cross kind backfill")
+    );
+
+    let zip = tree.pending_under("zip-root", SourceKind::Archive, filename);
+    let zip_path = zip.path.clone();
+    repository
+        .ingest_collection(&zip)
+        .expect("ingest zip candidate");
+    let zip_id = repository
+        .collection_id_for_current_path(&zip_path)
+        .expect("zip lookup")
+        .expect("zip collection");
+    let links = repository
+        .tombstone_candidates(old_id)
+        .expect("same kind links");
+    assert_eq!(1, links.len());
+    assert_eq!(zip_id, links[0].candidate_collection_id);
+    assert_eq!(
+        1,
+        repository
+            .tombstone_candidate_count()
+            .expect("same kind link count")
+    );
+}
+
+#[test]
+fn legacy_cross_media_kind_link_is_kept_but_invisible_and_undecidable() {
+    let tree = TestTree::new("legacy-cross-kind-link");
+    let filename = "[circle] Legacy.zip";
+    let old = tree.pending_under("downloads", SourceKind::Downloads, filename);
+    let old_path = old.path.clone();
+    let folder = tree.pending_folder_under("folder-root", SourceKind::Archive, filename);
+    let folder_path = folder.path.clone();
+    let mut repository = CatalogRepository::open(tree.database()).expect("open catalog");
+    repository.ingest_collection(&old).expect("ingest old zip");
+    let old_id = repository
+        .collection_id_for_current_path(&old_path)
+        .expect("old lookup")
+        .expect("old collection");
+    fs::remove_file(&old_path).expect("remove old zip");
+    repository
+        .mark_collection_missing(old_id)
+        .expect("mark old missing");
+    repository
+        .ingest_collection(&folder)
+        .expect("ingest image folder");
+    let folder_id = repository
+        .collection_id_for_current_path(&folder_path)
+        .expect("folder lookup")
+        .expect("folder collection");
+    drop(repository);
+
+    let connection = Connection::open(tree.database()).expect("open raw catalog");
+    connection
+        .execute(
+            "INSERT INTO tombstone_candidates(
+                 tombstone_collection_id, candidate_collection_id, reason
+             ) VALUES (?1, ?2, 'same_filename')",
+            [old_id, folder_id],
+        )
+        .expect("insert legacy cross kind link");
+    drop(connection);
+
+    let mut repository = CatalogRepository::open(tree.database()).expect("reopen catalog");
+    assert!(
+        repository
+            .tombstone_candidates(old_id)
+            .expect("tombstone links")
+            .is_empty()
+    );
+    assert!(
+        repository
+            .all_tombstone_candidates()
+            .expect("all links")
+            .is_empty()
+    );
+    assert_eq!(
+        0,
+        repository.tombstone_candidate_count().expect("link count")
+    );
+    assert!(matches!(
+        repository.decide_tombstone_candidate(old_id, folder_id, CandidateDecision::Confirmed),
+        Err(StorageError::InvalidLifecycle(_))
+    ));
+    let preflight = repository
+        .consolidation_preflight(old_id, folder_id)
+        .expect("cross kind preflight");
+    assert!(!preflight.ready);
+    assert!(
+        preflight
+            .blockers
+            .iter()
+            .any(|blocker| blocker.kind == "candidate_link_missing")
+    );
+
+    let connection = Connection::open(tree.database()).expect("reopen raw catalog");
+    let stored: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM tombstone_candidates
+             WHERE tombstone_collection_id = ?1 AND candidate_collection_id = ?2",
+            [old_id, folder_id],
+            |row| row.get(0),
+        )
+        .expect("legacy link row");
+    assert_eq!(1, stored);
+}
+
+#[test]
+fn image_folder_collection_rejects_move_and_delete_before_any_journal_entry() {
+    let tree = TestTree::new("image-folder-operations");
+    let pending =
+        tree.pending_folder_under("downloads", SourceKind::Downloads, "[circle] folder ops");
+    let folder_path = pending.path.clone();
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    repository
+        .ingest_collection(&pending)
+        .expect("ingest image folder");
+    let collection_id = repository
+        .collection_id_for_current_path(&folder_path)
+        .expect("folder lookup")
+        .expect("folder collection");
+    let archive_root = tree.path.join("archive");
+    fs::create_dir_all(&archive_root).expect("create archive root");
+    let archive_root_id = repository
+        .register_library_root(&archive_root, SourceKind::Archive, "測試歸檔區")
+        .expect("register archive root");
+    let destination = archive_root.join("[circle] folder ops.zip");
+    let rename_destination = folder_path.with_file_name("x.zip");
+
+    let assert_every_operation_rejected = |repository: &mut CatalogRepository| {
+        assert!(matches!(
+            repository.begin_system_move(collection_id, archive_root_id, &destination),
+            Err(StorageError::InvalidLifecycle(_))
+        ));
+        assert!(matches!(
+            repository.begin_delete(collection_id, DeleteMode::Soft),
+            Err(StorageError::InvalidLifecycle(_))
+        ));
+        assert!(matches!(
+            repository.begin_delete(collection_id, DeleteMode::Permanent),
+            Err(StorageError::InvalidLifecycle(_))
+        ));
+        assert!(matches!(
+            repository.begin_rename(collection_id, &folder_path, &rename_destination),
+            Err(StorageError::InvalidLifecycle(_))
+        ));
+        assert_eq!(
+            0,
+            repository
+                .file_operation_count()
+                .expect("file operation count")
+        );
+    };
+
+    assert_every_operation_rejected(&mut repository);
+    assert!(folder_path.is_dir());
+
+    fs::remove_dir_all(&folder_path).expect("remove image folder");
+    fs::write(&folder_path, b"zip placeholder").expect("write same named file");
+    assert_every_operation_rejected(&mut repository);
+    assert!(folder_path.is_file());
 }

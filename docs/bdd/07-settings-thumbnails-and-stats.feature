@@ -90,6 +90,14 @@ Feature: 設定、縮圖與收藏統計
     And 實際收藏檔案不應被修改
     And 系統應回報清除數量
 
+  @current @thumbnail-006
+  Scenario: 封面候選包含各子資料夾的第一張
+    Given 收藏內的圖片分布在多個子資料夾
+    When 系統列出候選封面
+    Then 候選應包含自然排序前段的圖片
+    And 也應包含每個第一層子資料夾的第一張圖片
+    And 自動縮圖仍使用整體自然排序的第一張
+
   @current @stats-001
   Scenario: 顯示收藏統計摘要
     Given 收藏索引中已有資料

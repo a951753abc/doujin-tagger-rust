@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use doujin_scanner::MediaKind;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CollectionStatus {
     Active,
@@ -88,6 +90,7 @@ pub struct ActiveCollectionLocationSnapshot {
     pub collection_id: i64,
     pub path: PathBuf,
     pub root_path: PathBuf,
+    pub media_kind: MediaKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

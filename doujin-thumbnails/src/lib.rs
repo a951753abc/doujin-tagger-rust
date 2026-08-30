@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use doujin_scanner::is_supported_image_extension;
 use doujin_storage::thumbnails::ThumbnailErrorKind;
 use image::error::ImageError;
 use image::imageops::FilterType;
@@ -23,6 +24,8 @@ const MAX_IMAGE_ALLOC_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_DIRECTORY_DEPTH: usize = 32;
 const MAX_SOURCE_ENTRIES: usize = 10_000;
 const MAX_CANDIDATE_SCAN_ENTRIES: usize = 96;
+const MAX_CANDIDATE_LEAD_DIRECTORIES: usize = 8;
+const MAX_CANDIDATE_LEAD_ATTEMPTS: usize = 4;
 const MAX_CANDIDATE_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_COVER_CANDIDATES: usize = 24;
 pub const DUPLICATE_FINGERPRINT_ALGORITHM_VERSION: &str = "sha256-pages-v1";
@@ -111,6 +114,14 @@ pub struct CoverCandidate {
     pub height: u32,
 }
 
+/// One launchable reading target inside an image-folder collection: either the
+/// folder's own images or a direct sub-folder that holds at least one image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadTarget {
+    pub entry_path: String,
+    pub image_count: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ThumbnailGenerationSuccess {
     pub width: u32,
@@ -140,8 +151,22 @@ impl fmt::Display for ThumbnailError {
 
 impl Error for ThumbnailError {}
 
+/// Reads the collection root's own metadata without following links. A collection
+/// source must be a real ZIP file or image folder: a symbolic link or directory
+/// junction at the root would let the pipeline read outside the library root.
+fn source_root_metadata(source_path: &Path) -> Result<fs::Metadata, ThumbnailError> {
+    let metadata = fs::symlink_metadata(source_path).map_err(source_io)?;
+    if metadata.file_type().is_symlink() {
+        return Err(ThumbnailError::new(
+            ThumbnailErrorKind::Unsupported,
+            "收藏來源不可為 symbolic link",
+        ));
+    }
+    Ok(metadata)
+}
+
 pub fn source_fingerprint(source_path: &Path) -> Result<String, ThumbnailError> {
-    let metadata = fs::metadata(source_path).map_err(source_io)?;
+    let metadata = source_root_metadata(source_path)?;
     let modified = metadata.modified().map_err(source_io)?;
     let duration = modified.duration_since(UNIX_EPOCH).unwrap_or_default();
     let mut fingerprint = format!(
@@ -177,13 +202,7 @@ pub fn source_fingerprint(source_path: &Path) -> Result<String, ThumbnailError> 
 pub fn calculate_source_content_fingerprint(
     source_path: &Path,
 ) -> Result<SourceContentFingerprint, ThumbnailError> {
-    let metadata = fs::symlink_metadata(source_path).map_err(source_io)?;
-    if metadata.file_type().is_symlink() {
-        return Err(ThumbnailError::new(
-            ThumbnailErrorKind::Unsupported,
-            "收藏來源不可為 symbolic link",
-        ));
-    }
+    let metadata = source_root_metadata(source_path)?;
     if metadata.is_file() {
         calculate_zip_content_fingerprint(source_path)
     } else if metadata.is_dir() {
@@ -200,13 +219,7 @@ pub fn calculate_source_content_fingerprint(
 /// hashing is necessary. Directory identity covers every supported image's path,
 /// size, and mtime; archive identity covers the ZIP path, size, and mtime.
 pub fn duplicate_source_fingerprint(source_path: &Path) -> Result<String, ThumbnailError> {
-    let metadata = fs::symlink_metadata(source_path).map_err(source_io)?;
-    if metadata.file_type().is_symlink() {
-        return Err(ThumbnailError::new(
-            ThumbnailErrorKind::Unsupported,
-            "收藏來源不可為 symbolic link",
-        ));
-    }
+    let metadata = source_root_metadata(source_path)?;
     if metadata.is_dir() {
         Ok(directory_source_identity(source_path)?.0)
     } else if metadata.is_file() {
@@ -478,6 +491,7 @@ pub fn cover_source_fingerprint(
     source_path: &Path,
     selected_entry: Option<&str>,
 ) -> Result<String, ThumbnailError> {
+    source_root_metadata(source_path)?;
     let mut fingerprint = source_fingerprint(source_path)?;
     match selected_entry {
         None => fingerprint.push_str(":cover:auto"),
@@ -509,54 +523,167 @@ pub fn cover_source_fingerprint(
     Ok(fingerprint)
 }
 
+/// Collects cover candidates. Sources whose pages live in sub-folders (a work kept
+/// as `Text/` plus `Textless/`, for example) would otherwise only ever offer the
+/// first sub-folder's opening pages, so the first image of each of the leading
+/// first-level sub-folders is always offered before the scan fills the rest.
 pub fn cover_candidates(
     source_path: &Path,
     limit: usize,
 ) -> Result<Vec<CoverCandidate>, ThumbnailError> {
     let limit = limit.clamp(1, MAX_COVER_CANDIDATES);
+    source_root_metadata(source_path)?;
     let entries = source_entries(source_path)?;
+    let leads = first_level_directory_leads(&entries);
     let mut candidates = Vec::with_capacity(limit);
     let mut total_bytes = 0u64;
-    for (page_order, entry_path) in entries
-        .into_iter()
-        .take(MAX_CANDIDATE_SCAN_ENTRIES)
-        .enumerate()
-    {
+    let mut attempted: Vec<usize> = Vec::new();
+    for attempts in &leads {
         if candidates.len() == limit {
             break;
         }
-        let Ok(bytes) = read_source_entry(source_path, &entry_path) else {
-            continue;
-        };
-        total_bytes = total_bytes.saturating_add(bytes.len() as u64);
-        if total_bytes > MAX_CANDIDATE_TOTAL_BYTES {
-            return Err(ThumbnailError::new(
-                ThumbnailErrorKind::ResourceLimit,
-                "候選封面累計解壓資料超過 256 MiB 限制",
-            ));
+        for &index in attempts {
+            attempted.push(index);
+            if let Some(candidate) =
+                read_cover_candidate(source_path, &entries[index], index, &mut total_bytes)?
+            {
+                candidates.push(candidate);
+                break;
+            }
         }
-        let Ok(image) = decode_image(bytes) else {
+    }
+    for (index, entry_path) in entries.iter().enumerate().take(MAX_CANDIDATE_SCAN_ENTRIES) {
+        if candidates.len() == limit {
+            break;
+        }
+        if attempted.contains(&index) {
+            continue;
+        }
+        if let Some(candidate) =
+            read_cover_candidate(source_path, entry_path, index, &mut total_bytes)?
+        {
+            candidates.push(candidate);
+        }
+    }
+    candidates.sort_by_key(|candidate| candidate.page_order);
+    Ok(candidates)
+}
+
+/// Positions of the leading entries of each of the leading first-level sub-folders,
+/// in natural order. Entries are already naturally sorted, so a folder's positions
+/// are that folder's naturally first images; the caller tries them in order and keeps
+/// the first one that reads and decodes, so an unreadable opening page does not cost
+/// the folder its slot.
+fn first_level_directory_leads(entries: &[String]) -> Vec<Vec<usize>> {
+    let mut directories: Vec<&str> = Vec::new();
+    let mut leads: Vec<Vec<usize>> = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let Some((directory, _)) = entry.split_once('/') else {
             continue;
         };
-        candidates.push(CoverCandidate {
-            filename: entry_path
-                .rsplit('/')
-                .next()
-                .unwrap_or(&entry_path)
-                .to_owned(),
-            entry_path,
-            page_order: page_order + 1,
-            width: image.width(),
-            height: image.height(),
-        });
+        match directories.iter().position(|name| *name == directory) {
+            Some(position) => {
+                let attempts = &mut leads[position];
+                if attempts.len() < MAX_CANDIDATE_LEAD_ATTEMPTS {
+                    attempts.push(index);
+                }
+            }
+            None if directories.len() < MAX_CANDIDATE_LEAD_DIRECTORIES => {
+                directories.push(directory);
+                leads.push(vec![index]);
+            }
+            None => {}
+        }
+        if directories.len() == MAX_CANDIDATE_LEAD_DIRECTORIES
+            && leads
+                .iter()
+                .all(|attempts| attempts.len() == MAX_CANDIDATE_LEAD_ATTEMPTS)
+        {
+            break;
+        }
     }
-    Ok(candidates)
+    leads
+}
+
+/// Reads and decodes one candidate. Unreadable or undecodable entries yield `None`
+/// so the caller can skip them; only the shared unpacked-bytes budget errors out.
+fn read_cover_candidate(
+    source_path: &Path,
+    entry_path: &str,
+    index: usize,
+    total_bytes: &mut u64,
+) -> Result<Option<CoverCandidate>, ThumbnailError> {
+    let Ok(bytes) = read_source_entry(source_path, entry_path) else {
+        return Ok(None);
+    };
+    *total_bytes = total_bytes.saturating_add(bytes.len() as u64);
+    if *total_bytes > MAX_CANDIDATE_TOTAL_BYTES {
+        return Err(ThumbnailError::new(
+            ThumbnailErrorKind::ResourceLimit,
+            "候選封面累計解壓資料超過 256 MiB 限制",
+        ));
+    }
+    let Ok(image) = decode_image(bytes) else {
+        return Ok(None);
+    };
+    Ok(Some(CoverCandidate {
+        filename: entry_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(entry_path)
+            .to_owned(),
+        entry_path: entry_path.to_owned(),
+        page_order: index + 1,
+        width: image.width(),
+        height: image.height(),
+    }))
+}
+
+/// Lists what a reader can be pointed at for an image-folder collection: how many
+/// images sit directly in the folder, plus every direct sub-folder that holds at
+/// least one image somewhere in its subtree.
+pub fn directory_read_targets(
+    source_path: &Path,
+) -> Result<(usize, Vec<ReadTarget>), ThumbnailError> {
+    let metadata = source_root_metadata(source_path)?;
+    if !metadata.is_dir() {
+        return Err(ThumbnailError::new(
+            ThumbnailErrorKind::Unsupported,
+            "閱讀目標列表只支援圖片資料夾收藏",
+        ));
+    }
+    let mut direct_image_count = 0usize;
+    let mut targets = Vec::new();
+    for entry in fs::read_dir(source_path).map_err(source_io)? {
+        let entry = entry.map_err(source_io)?;
+        let file_type = entry.file_type().map_err(source_io)?;
+        let path = entry.path();
+        if file_type.is_dir() {
+            if entry.file_name() == "__MACOSX" {
+                continue;
+            }
+            let mut images = Vec::new();
+            collect_directory_images(source_path, &path, 1, &mut images)?;
+            if images.is_empty() {
+                continue;
+            }
+            targets.push(ReadTarget {
+                entry_path: entry.file_name().to_string_lossy().into_owned(),
+                image_count: images.len(),
+            });
+        } else if file_type.is_file() && is_supported_image(&path) {
+            direct_image_count += 1;
+        }
+    }
+    targets.sort_by(|left, right| natural_cmp(&left.entry_path, &right.entry_path));
+    Ok((direct_image_count, targets))
 }
 
 pub fn validate_cover_candidate(
     source_path: &Path,
     entry_path: &str,
 ) -> Result<CoverCandidate, ThumbnailError> {
+    source_root_metadata(source_path)?;
     let normalized = normalize_entry_path(entry_path).ok_or_else(|| {
         ThumbnailError::new(
             ThumbnailErrorKind::Unsupported,
@@ -599,6 +726,7 @@ pub fn cover_candidate_preview(
             "候選封面預覽尺寸必須介於 1 到 1024 像素",
         ));
     }
+    source_root_metadata(source_path)?;
     let normalized = validate_cover_candidate(source_path, entry_path)?.entry_path;
     let image = read_source_entry(source_path, &normalized).and_then(decode_image)?;
     let resized =
@@ -618,7 +746,7 @@ pub fn generate_thumbnail(
             "thumbnail 生成參數無效",
         ));
     }
-    let source_metadata = fs::metadata(&request.source_path).map_err(source_io)?;
+    let source_metadata = source_root_metadata(&request.source_path)?;
     let source_image = if let Some(entry_path) = request.selected_entry.as_deref() {
         read_source_entry(&request.source_path, entry_path)?
     } else if source_metadata.is_dir() {
@@ -961,14 +1089,7 @@ fn publish_cache(path: &Path, bytes: &[u8]) -> Result<(), ThumbnailError> {
 }
 
 fn is_supported_image(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            matches!(
-                extension.to_ascii_lowercase().as_str(),
-                "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp"
-            )
-        })
+    is_supported_image_extension(path)
 }
 
 fn natural_cmp(left: &str, right: &str) -> Ordering {
@@ -1248,6 +1369,178 @@ mod tests {
         );
     }
 
+    /// 變體父層收藏（`Text/`＋`Textless/`）手動選封面時必須看得到每個直接子資料夾的
+    /// 第一張，否則掃描前段只會塞滿第一個子資料夾的開頭頁。
+    #[test]
+    fn candidates_include_the_first_image_of_each_leading_sub_directory() {
+        let tree = TestTree::new("cover-candidates-variants");
+        let folder = tree.0.join("variant work");
+        for directory in ["Text", "Textless"] {
+            fs::create_dir_all(folder.join(directory)).expect("create variant directory");
+            for page in 1..=30u32 {
+                fs::write(
+                    folder.join(directory).join(format!("{page:03}.png")),
+                    png(8, 8, [page as u8, 0, 0, 255]),
+                )
+                .expect("write variant page");
+            }
+        }
+
+        let mut expected = vec![("Text/001.png".to_owned(), 1usize)];
+        expected.extend((2..=23u32).map(|page| (format!("Text/{page:03}.png"), page as usize)));
+        expected.push(("Textless/001.png".to_owned(), 31));
+
+        let folder_candidates = cover_candidates(&folder, 24).expect("folder candidates");
+        assert_eq!(
+            expected,
+            folder_candidates
+                .iter()
+                .map(|candidate| (candidate.entry_path.clone(), candidate.page_order))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(24, folder_candidates.len());
+
+        let archive = tree.0.join("variant work.zip");
+        let images = ["Text", "Textless"]
+            .into_iter()
+            .flat_map(|directory| {
+                (1..=30u32).map(move |page| {
+                    (
+                        format!("{directory}/{page:03}.png"),
+                        png(8, 8, [page as u8, 0, 0, 255]),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let references = images
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), bytes.clone()))
+            .collect::<Vec<_>>();
+        zip_with_images(
+            File::create(&archive).expect("create variant ZIP"),
+            &references,
+        );
+        let archive_candidates = cover_candidates(&archive, 24).expect("ZIP candidates");
+        assert_eq!(
+            expected,
+            archive_candidates
+                .iter()
+                .map(|candidate| (candidate.entry_path.clone(), candidate.page_order))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// 子資料夾自然排序的首圖讀不到或解不開時，名額必須由同一個子資料夾的下一張補上，
+    /// 否則變體收藏（`Text/`＋`Textless/`）會整個子資料夾看不到封面候選。
+    #[test]
+    fn leading_sub_directory_falls_back_to_its_next_image_when_the_first_is_undecodable() {
+        let tree = TestTree::new("cover-candidates-broken-lead");
+        let folder = tree.0.join("variant work");
+        for directory in ["Text", "Textless"] {
+            fs::create_dir_all(folder.join(directory)).expect("create variant directory");
+            for page in 1..=30u32 {
+                fs::write(
+                    folder.join(directory).join(format!("{page:03}.png")),
+                    png(8, 8, [page as u8, 0, 0, 255]),
+                )
+                .expect("write variant page");
+            }
+        }
+        fs::write(folder.join("Text").join("001.png"), b"not a png").expect("break Text lead");
+        fs::write(folder.join("Textless").join("001.png"), b"not a png")
+            .expect("break Textless lead");
+
+        let candidates = cover_candidates(&folder, 24).expect("folder candidates");
+        let listed = candidates
+            .iter()
+            .map(|candidate| (candidate.entry_path.clone(), candidate.page_order))
+            .collect::<Vec<_>>();
+        assert!(
+            listed.contains(&("Textless/002.png".to_owned(), 32)),
+            "Textless 的第二張必須補上首圖失去的名額：{listed:?}"
+        );
+        assert!(
+            listed.contains(&("Text/002.png".to_owned(), 2)),
+            "Text 的第二張必須補上首圖失去的名額：{listed:?}"
+        );
+        assert!(
+            !listed
+                .iter()
+                .any(|(entry_path, _)| entry_path == "Text/001.png"
+                    || entry_path == "Textless/001.png"),
+            "解不開的 entry 不得成為候選：{listed:?}"
+        );
+    }
+
+    #[test]
+    fn read_targets_list_direct_images_and_image_bearing_sub_directories() {
+        let tree = TestTree::new("read-targets");
+        let folder = tree.0.join("variant work");
+        fs::create_dir_all(folder.join("Text")).expect("create Text");
+        fs::create_dir_all(folder.join("Textless")).expect("create Textless");
+        fs::create_dir_all(folder.join("notes")).expect("create notes");
+        fs::create_dir_all(folder.join("__MACOSX")).expect("create __MACOSX");
+        fs::write(folder.join("a.png"), png(8, 8, [1, 0, 0, 255])).expect("root page");
+        fs::write(folder.join("Text/001.png"), png(8, 8, [2, 0, 0, 255])).expect("Text page 1");
+        fs::write(folder.join("Text/002.png"), png(8, 8, [3, 0, 0, 255])).expect("Text page 2");
+        fs::write(folder.join("Textless/001.png"), png(8, 8, [4, 0, 0, 255]))
+            .expect("Textless page");
+        fs::write(folder.join("notes/readme.txt"), b"not an image").expect("notes file");
+        fs::write(folder.join("__MACOSX/x.png"), png(8, 8, [5, 0, 0, 255])).expect("macosx page");
+
+        let (direct_image_count, targets) =
+            directory_read_targets(&folder).expect("directory read targets");
+        assert_eq!(1, direct_image_count);
+        assert_eq!(
+            vec![
+                ReadTarget {
+                    entry_path: "Text".to_owned(),
+                    image_count: 2,
+                },
+                ReadTarget {
+                    entry_path: "Textless".to_owned(),
+                    image_count: 1,
+                },
+            ],
+            targets
+        );
+
+        let archive = tree.0.join("book.zip");
+        zip_with_images(
+            File::create(&archive).expect("create ZIP"),
+            &[("001.png", png(8, 8, [0, 0, 255, 255]))],
+        );
+        assert_eq!(
+            ThumbnailErrorKind::Unsupported,
+            directory_read_targets(&archive)
+                .expect_err("ZIP has no directory read targets")
+                .kind
+        );
+
+        #[cfg(windows)]
+        {
+            let link = tree.0.join("link");
+            let created = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(&folder)
+                .status();
+            match created {
+                Ok(status) if status.success() => {}
+                other => {
+                    eprintln!("跳過 junction 子情境，建立 directory junction 失敗：{other:?}");
+                    return;
+                }
+            }
+            assert_eq!(
+                ThumbnailErrorKind::Unsupported,
+                directory_read_targets(&link)
+                    .expect_err("reject junction read targets")
+                    .kind
+            );
+        }
+    }
+
     #[test]
     fn candidates_enforce_limit_and_preview_is_bounded() {
         let tree = TestTree::new("candidate-limits");
@@ -1361,5 +1654,95 @@ mod tests {
                 .expect_err("reject duplicate normalized identity")
                 .kind
         );
+    }
+
+    /// 收藏根路徑是 symlink／directory junction 時，每個公開入口都必須在讀取來源前擋下：
+    /// 跟隨連結會讓 thumbnail pipeline 讀到 library root 以外的內容。Windows 上建立
+    /// directory symlink 需要 Developer Mode 或系統管理員權限，但 directory junction
+    /// 不需要，因此以 junction 當 fixture；建立失敗時略過本測試。
+    #[cfg(windows)]
+    #[test]
+    fn junction_collection_root_is_rejected_by_every_public_entry_point() {
+        let tree = TestTree::new("junction-root");
+        let target = tree.0.join("target");
+        fs::create_dir(&target).expect("create junction target");
+        fs::write(target.join("001.png"), png(40, 20, [255, 0, 0, 255])).expect("target page");
+        let link = tree.0.join("link");
+        let created = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&target)
+            .status();
+        match created {
+            Ok(status) if status.success() => {}
+            other => {
+                eprintln!("跳過 junction 子情境，建立 directory junction 失敗：{other:?}");
+                return;
+            }
+        }
+        assert!(
+            fs::symlink_metadata(&link)
+                .expect("junction metadata")
+                .file_type()
+                .is_symlink(),
+            "junction 必須被 symlink_metadata 判為 symlink，否則本測試不成立"
+        );
+
+        let link_cache = tree.0.join("cache").join("link.webp");
+        let rejections = [
+            source_fingerprint(&link).expect_err("reject junction source fingerprint"),
+            cover_source_fingerprint(&link, None).expect_err("reject junction cover fingerprint"),
+            cover_candidates(&link, 24).expect_err("reject junction cover candidates"),
+            validate_cover_candidate(&link, "001.png").expect_err("reject junction candidate"),
+            cover_candidate_preview(&link, "001.png", 100, 100)
+                .expect_err("reject junction preview"),
+            generate_thumbnail(&ThumbnailGenerationRequest {
+                source_path: link.clone(),
+                cache_path: link_cache.clone(),
+                width: 100,
+                height: 100,
+                quality: 80,
+                selected_entry: None,
+            })
+            .expect_err("reject junction thumbnail"),
+        ];
+        for error in &rejections {
+            assert_eq!(ThumbnailErrorKind::Unsupported, error.kind);
+            assert_eq!("收藏來源不可為 symbolic link", error.message);
+        }
+        assert!(!link_cache.exists(), "被拒絕的來源不得寫入 thumbnail 快取");
+
+        let target_cache = tree.0.join("cache").join("target.webp");
+        assert!(
+            source_fingerprint(&target)
+                .expect("real folder fingerprint")
+                .contains("001.png")
+        );
+        cover_source_fingerprint(&target, None).expect("real folder cover fingerprint");
+        let candidates = cover_candidates(&target, 24).expect("real folder candidates");
+        assert_eq!(1, candidates.len());
+        assert_eq!("001.png", candidates[0].entry_path);
+        assert_eq!(
+            "001.png",
+            validate_cover_candidate(&target, "001.png")
+                .expect("real folder candidate")
+                .entry_path
+        );
+        assert!(
+            !cover_candidate_preview(&target, "001.png", 100, 100)
+                .expect("real folder preview")
+                .is_empty()
+        );
+        let generated = generate_thumbnail(&ThumbnailGenerationRequest {
+            source_path: target.clone(),
+            cache_path: target_cache.clone(),
+            width: 100,
+            height: 100,
+            quality: 80,
+            selected_entry: None,
+        })
+        .expect("real folder thumbnail");
+        assert_eq!((100, 50), (generated.width, generated.height));
+        assert!(target_cache.is_file());
     }
 }

@@ -3,15 +3,18 @@
 use std::sync::TryLockError;
 
 use axum::Json;
+use axum::body::Bytes;
 use axum::extract::{Path, RawQuery, State};
-use doujin_app::ApplicationError;
+use axum::http::header::CONTENT_TYPE;
+use axum::http::{HeaderMap, StatusCode};
+use doujin_app::{ApplicationError, ApplicationReadTargets};
 use doujin_files::{LaunchAction, LaunchReceipt, RecycleBin};
 use doujin_storage::StorageError;
 use doujin_storage::collections::{
     CollectionPage, CollectionQueryLocation, CollectionRootSnapshot, CollectionSnapshot,
     ReviewQueuePage,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::ApiError;
 use crate::metadata::MetadataHistoryResponse;
@@ -25,6 +28,7 @@ pub(crate) struct LaunchResponse {
     collection_id: i64,
     action: &'static str,
     launched: bool,
+    entry_path: Option<String>,
 }
 
 impl From<LaunchReceipt> for LaunchResponse {
@@ -36,39 +40,116 @@ impl From<LaunchReceipt> for LaunchResponse {
                 LaunchAction::ConfiguredReader => "configured_reader",
             },
             launched: true,
+            entry_path: receipt.entry_path,
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LaunchRequest {
+    #[serde(default)]
+    entry_path: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ReadTargetsResponse {
+    collection_id: i64,
+    media_kind: &'static str,
+    direct_image_count: usize,
+    targets: Vec<ReadTargetResponse>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ReadTargetResponse {
+    entry_path: String,
+    image_count: usize,
 }
 
 pub(crate) async fn open_collection<R>(
     State(state): State<HttpState<R>>,
     Path(collection_id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> Result<Json<LaunchResponse>, ApiError>
 where
     R: RecycleBin + Send + 'static,
 {
-    launch_collection(state, collection_id, LaunchAction::SystemDefault).await
+    launch_collection(
+        state,
+        collection_id,
+        LaunchAction::SystemDefault,
+        &headers,
+        &body,
+    )
+    .await
 }
 
 pub(crate) async fn read_collection<R>(
     State(state): State<HttpState<R>>,
     Path(collection_id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> Result<Json<LaunchResponse>, ApiError>
 where
     R: RecycleBin + Send + 'static,
 {
-    launch_collection(state, collection_id, LaunchAction::ConfiguredReader).await
+    launch_collection(
+        state,
+        collection_id,
+        LaunchAction::ConfiguredReader,
+        &headers,
+        &body,
+    )
+    .await
+}
+
+/// 兩個啟動 endpoint 在子資料夾參數之前就存在，既有呼叫端不帶 request body，
+/// 因此 body 自行解析：空 body 代表開啟收藏本身（不看 `Content-Type`），
+/// 有內容時必須宣告 JSON media type 且是有效的 JSON。
+fn parse_launch_entry(headers: &HeaderMap, body: &[u8]) -> Result<Option<String>, ApiError> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(None);
+    }
+    if !is_json_media_type(headers) {
+        return Err(ApiError::new(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported_media_type",
+            "request body 的 Content-Type 必須是 application/json",
+        ));
+    }
+    let request: LaunchRequest = serde_json::from_slice(body)
+        .map_err(|_| ApiError::bad_request("invalid_json", "JSON request body 無效"))?;
+    Ok(request.entry_path)
+}
+
+/// `application/json` 與 `application/<subtype>+json`，允許 `; charset=...` 之類的參數。
+fn is_json_media_type(headers: &HeaderMap) -> bool {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .and_then(|essence| essence.split_once('/'))
+        .is_some_and(|(kind, subtype)| {
+            kind.eq_ignore_ascii_case("application")
+                && (subtype.eq_ignore_ascii_case("json")
+                    || subtype.to_ascii_lowercase().ends_with("+json"))
+        })
 }
 
 pub(crate) async fn launch_collection<R>(
     state: HttpState<R>,
     collection_id: String,
     action: LaunchAction,
+    headers: &HeaderMap,
+    body: &[u8],
 ) -> Result<Json<LaunchResponse>, ApiError>
 where
     R: RecycleBin + Send + 'static,
 {
     let collection_id = parse_collection_id(&collection_id)?;
+    let entry = parse_launch_entry(headers, body)?;
     let receipt = tokio::task::spawn_blocking(move || {
         let application = match state.application.try_lock() {
             Ok(application) => application,
@@ -80,15 +161,64 @@ where
             }
             Err(TryLockError::Poisoned(_)) => return Err(ApiError::internal()),
         };
+        let entry = entry.as_deref();
         match action {
-            LaunchAction::SystemDefault => application.open_collection(collection_id),
-            LaunchAction::ConfiguredReader => application.read_collection(collection_id),
+            LaunchAction::SystemDefault => application.open_collection(collection_id, entry),
+            LaunchAction::ConfiguredReader => application.read_collection(collection_id, entry),
         }
         .map_err(ApiError::from_launch)
     })
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(receipt.into()))
+}
+
+pub(crate) async fn get_read_targets<R>(
+    State(state): State<HttpState<R>>,
+    Path(collection_id): Path<String>,
+) -> Result<Json<ReadTargetsResponse>, ApiError>
+where
+    R: RecycleBin + Send + 'static,
+{
+    let collection_id = parse_collection_id(&collection_id)?;
+    let read_targets = tokio::task::spawn_blocking(move || {
+        let application = lock_interactive_application(&state.application)?;
+        match application.read_targets(collection_id) {
+            Ok(read_targets) => Ok(read_targets),
+            Err(ApplicationError::Storage(StorageError::CollectionNotFound(_))) => {
+                match application.merged_into_collection(collection_id) {
+                    Ok(Some(survivor_id)) => Err(ApiError::merged(survivor_id)),
+                    Ok(None) => Err(ApiError::from_storage(StorageError::CollectionNotFound(
+                        collection_id,
+                    ))),
+                    Err(error) => Err(ApiError::from_application(error)),
+                }
+            }
+            Err(error) => Err(ApiError::from_application(error)),
+        }
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(read_targets_response(collection_id, read_targets)))
+}
+
+fn read_targets_response(
+    collection_id: i64,
+    read_targets: ApplicationReadTargets,
+) -> ReadTargetsResponse {
+    ReadTargetsResponse {
+        collection_id,
+        media_kind: read_targets.media_kind.as_str(),
+        direct_image_count: read_targets.direct_image_count,
+        targets: read_targets
+            .targets
+            .into_iter()
+            .map(|target| ReadTargetResponse {
+                entry_path: target.entry_path,
+                image_count: target.image_count,
+            })
+            .collect(),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -110,6 +240,7 @@ pub(crate) struct CollectionResponse {
     id: i64,
     path: String,
     filename: String,
+    media_kind: &'static str,
     root: Option<CollectionRootResponse>,
     title: Option<String>,
     event: Option<String>,
@@ -156,6 +287,7 @@ impl From<CollectionSnapshot> for CollectionResponse {
             id: collection.id,
             path: collection.path.to_string_lossy().into_owned(),
             filename: collection.filename,
+            media_kind: collection.media_kind.as_str(),
             root: collection.root.map(Into::into),
             title: collection.title,
             event: collection.event,

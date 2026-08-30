@@ -355,10 +355,15 @@ fn candidate_decisions(
     tombstone_collection_id: i64,
 ) -> StorageResult<Vec<(i64, String)>> {
     let mut statement = connection.prepare(
-        "SELECT candidate_collection_id, decision
-         FROM tombstone_candidates
-         WHERE tombstone_collection_id = ?1
-         ORDER BY candidate_collection_id",
+        "SELECT candidate_link.candidate_collection_id, candidate_link.decision
+         FROM tombstone_candidates AS candidate_link
+         JOIN collections AS link_tombstone
+           ON link_tombstone.id = candidate_link.tombstone_collection_id
+         JOIN collections AS link_candidate
+           ON link_candidate.id = candidate_link.candidate_collection_id
+          AND link_candidate.media_kind = link_tombstone.media_kind
+         WHERE candidate_link.tombstone_collection_id = ?1
+         ORDER BY candidate_link.candidate_collection_id",
     )?;
     Ok(statement
         .query_map([tombstone_collection_id], |row| {

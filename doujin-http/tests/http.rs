@@ -285,6 +285,34 @@ impl TestTree {
         }
         archive.finish().expect("finish image ZIP");
     }
+
+    fn image_folder_outside_library(&self, relative: &str, entries: &[(&str, [u8; 4])]) -> PathBuf {
+        let path = self.path.join(relative);
+        fs::create_dir_all(&path).expect("create outside image folder");
+        for (entry, color) in entries {
+            let image = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(24, 32, Rgba(*color)));
+            let mut encoded = io::Cursor::new(Vec::new());
+            image
+                .write_to(&mut encoded, ImageFormat::Png)
+                .expect("encode folder image");
+            fs::write(path.join(entry), encoded.into_inner()).expect("write folder image");
+        }
+        path
+    }
+
+    fn image_folder(&self, relative: &str, entries: &[(&str, [u8; 4])]) -> PathBuf {
+        let path = self.library().join(relative);
+        fs::create_dir_all(&path).expect("create image folder");
+        for (entry, color) in entries {
+            let image = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(24, 32, Rgba(*color)));
+            let mut encoded = io::Cursor::new(Vec::new());
+            image
+                .write_to(&mut encoded, ImageFormat::Png)
+                .expect("encode folder image");
+            fs::write(path.join(entry), encoded.into_inner()).expect("write folder image");
+        }
+        path
+    }
 }
 
 impl Drop for TestTree {
@@ -1169,7 +1197,7 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("function updateActiveSavedView"));
     assert!(script.contains("function deleteActiveSavedView"));
     assert!(script.contains("params.set(\"view\", String(savedViewId))"));
-    assert!(script.contains("rememberLaunch(state.selected, kind)"));
+    assert!(script.contains("rememberLaunch(state.selected, kind, entryPath)"));
     assert!(script.contains("applyFilter(filterName, row.name)"));
     assert!(script.contains("/api/file-actions/move"));
     assert!(script.contains("/api/file-actions/rename/preflight"));
@@ -1339,9 +1367,11 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("batchResultItem(collection, \"skipped\", `未執行 · ${reason}`)"));
     assert!(stylesheet.contains(".batch-result .result-skipped span"));
     assert!(script.contains("state.requestNumber += 1;"));
-    assert!(script.contains(
-        "libraryLoadPromise.then(scheduleLibraryLoadCheck, scheduleLibraryLoadCheck)"
-    ));
+    assert!(
+        script.contains(
+            "libraryLoadPromise.then(scheduleLibraryLoadCheck, scheduleLibraryLoadCheck)"
+        )
+    );
     assert!(script.contains("const current = await api(\"/api/settings\");"));
     assert!(!script.contains("state.settingsSnapshot || await api"));
 
@@ -1383,13 +1413,24 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(script.contains("function externalSearchFields"));
     assert!(script.contains("state.triageAutoAdvance = ui.triageAutoAdvance.checked"));
     assert!(script.contains("writeStorage(TRIAGE_AUTO_ADVANCE_KEY, state.triageAutoAdvance)"));
-    assert!(script.contains(
-        "state.route === \"triage\" && !isTyping && !isDialogOpen() && !event.altKey"
-    ));
+    assert!(
+        script.contains(
+            "state.route === \"triage\" && !isTyping && !isDialogOpen() && !event.altKey"
+        )
+    );
     assert!(script.contains("[\"a\", \"e\", \"w\", \"s\", \"j\", \"k\", \"o\"].includes(key)"));
     assert!(stylesheet.contains(".triage-desk"));
     assert!(stylesheet.contains(".triage-status-badge"));
     assert!(stylesheet.contains(".triage-readiness"));
+    assert!(document.contains("id=\"detail-media-kind\""));
+    assert!(script.contains("collection.media_kind === \"image_folder\""));
+    assert!(stylesheet.contains(".media-badge"));
+    assert!(document.contains("id=\"read-target-dialog\""));
+    assert!(script.contains("/read-targets"));
+    assert!(script.contains("entry_path"));
+    // 重複觸發保護：按鈕在整段啟動流程期間 disabled，dialog 不會被第二次呼叫覆寫 resolver。
+    assert!(script.contains("if (button.disabled) return;"));
+    assert!(script.contains("if (readTargetResolver || ui.readTargetDialog.open) {"));
 
     let unknown_asset = server.request("GET", "/assets/unknown.css", &[]).await;
     assert_eq!(404, unknown_asset.status);
@@ -4965,7 +5006,8 @@ async fn settings_api_manages_default_archive_root_and_pins_stored_value_after_d
     let repository = CatalogRepository::open_in_memory().expect("open catalog");
     let thumbnail_config =
         ThumbnailConfig::new(tree.path.join("cache"), 300, 400, 80).expect("thumbnail config");
-    let application = ApplicationService::with_thumbnails(repository, NoopRecycleBin, thumbnail_config);
+    let application =
+        ApplicationService::with_thumbnails(repository, NoopRecycleBin, thumbnail_config);
     let server = RunningServer::start(application).await;
 
     let archive_root = server
@@ -4994,7 +5036,9 @@ async fn settings_api_manages_default_archive_root_and_pins_stored_value_after_d
         )
         .await;
     assert_eq!(200, downloads_root.status);
-    let downloads_root_id = downloads_root.json["id"].as_i64().expect("downloads root ID");
+    let downloads_root_id = downloads_root.json["id"]
+        .as_i64()
+        .expect("downloads root ID");
 
     let settings_payload = |default_archive_root_id: Option<i64>| {
         serde_json::json!({
@@ -5032,10 +5076,7 @@ async fn settings_api_manages_default_archive_root_and_pins_stored_value_after_d
         )
         .await;
     assert_eq!(400, downloads_rejected.status);
-    assert_eq!(
-        "invalid_settings",
-        downloads_rejected.json["error"]["code"]
-    );
+    assert_eq!("invalid_settings", downloads_rejected.json["error"]["code"]);
 
     let missing_rejected = server
         .request_json("PUT", "/api/settings", &settings_payload(Some(999)))
@@ -5055,7 +5096,10 @@ async fn settings_api_manages_default_archive_root_and_pins_stored_value_after_d
 
     let cleared_confirmed = server.request("GET", "/api/settings", &[]).await;
     assert_eq!(200, cleared_confirmed.status);
-    assert_eq!(Value::Null, cleared_confirmed.json["default_archive_root_id"]);
+    assert_eq!(
+        Value::Null,
+        cleared_confirmed.json["default_archive_root_id"]
+    );
 
     let reset = server
         .request_json(
@@ -6887,5 +6931,496 @@ async fn running_scan_conflict_and_unknown_scan_have_json_errors() {
     let wrong_method = server.request("DELETE", "/api/health", &[]).await;
     assert_eq!(405, wrong_method.status);
     assert_eq!("method_not_allowed", wrong_method.json["error"]["code"]);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn image_folder_collections_report_media_kind_and_launch_through_open_and_read() {
+    let tree = TestTree::new("image-folder-open");
+    let folder_name = "[circle] folder readable";
+    let folder_path = tree.image_folder(folder_name, &[("001.png", [255, 0, 0, 255])]);
+    let zip_name = "[circle] readable.zip";
+    tree.zip(zip_name);
+    let zip_path = tree.library().join(zip_name);
+    let reader_path = tree.root("reader.exe");
+    fs::write(&reader_path, b"fake reader").expect("create fake reader");
+    let launcher = RecordingLauncher::new(false);
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::with_launcher(
+        repository,
+        NoopRecycleBin,
+        launcher.clone(),
+        Some(reader_path.clone()),
+    );
+    application
+        .run_scan(&[ScanRoot {
+            path: tree.library(),
+            source: SourceKind::Archive,
+            label: "歸檔區".to_owned(),
+        }])
+        .expect("scan collections");
+    let folder_id = application
+        .repository()
+        .collection_id_for_current_path(&folder_path)
+        .expect("folder lookup")
+        .expect("folder collection");
+    let zip_id = application
+        .repository()
+        .collection_id_for_current_path(&zip_path)
+        .expect("zip lookup")
+        .expect("zip collection");
+    let server = RunningServer::start(application).await;
+
+    let detail = server
+        .request("GET", &format!("/api/collections/{folder_id}"), &[])
+        .await;
+    assert_eq!(200, detail.status);
+    assert_eq!("image_folder", detail.json["media_kind"]);
+    assert_eq!(folder_name, detail.json["filename"]);
+
+    let listed = server.request("GET", "/api/collections", &[]).await;
+    assert_eq!(200, listed.status);
+    let items = listed.json["items"].as_array().expect("collection items");
+    let folder_item = items
+        .iter()
+        .find(|item| item["id"] == folder_id)
+        .expect("folder item");
+    assert_eq!("image_folder", folder_item["media_kind"]);
+    let zip_item = items
+        .iter()
+        .find(|item| item["id"] == zip_id)
+        .expect("zip item");
+    assert_eq!("zip", zip_item["media_kind"]);
+
+    let opened = server
+        .request("POST", &format!("/api/collections/{folder_id}/open"), &[])
+        .await;
+    assert_eq!(200, opened.status);
+    assert_eq!("system_default", opened.json["action"]);
+    assert_eq!(true, opened.json["launched"]);
+
+    let read = server
+        .request("POST", &format!("/api/collections/{folder_id}/read"), &[])
+        .await;
+    assert_eq!(200, read.status);
+    assert_eq!("configured_reader", read.json["action"]);
+
+    assert_eq!(
+        vec![
+            LaunchCall {
+                reader: None,
+                path: folder_path.clone(),
+            },
+            LaunchCall {
+                reader: Some(reader_path),
+                path: folder_path,
+            },
+        ],
+        launcher.calls()
+    );
+    server.stop().await;
+}
+
+/// 變體父層收藏（`Text/`＋`Textless/`）合併成一筆之後，閱讀器要能只開其中一個子
+/// 資料夾；子資料夾參數同時是往 library root 外逃逸的入口，所有不安全輸入都必須在
+/// 呼叫 launcher 之前被擋下。
+#[tokio::test]
+async fn read_targets_are_listed_and_sub_folder_launches_are_validated_before_launching() {
+    let tree = TestTree::new("read-targets");
+    let variant_name = "[circle] variant work";
+    let variant_path = tree.library().join(variant_name);
+    tree.image_folder(
+        &format!("{variant_name}/Text"),
+        &[("001.png", [255, 0, 0, 255])],
+    );
+    tree.image_folder(
+        &format!("{variant_name}/Textless"),
+        &[("001.png", [0, 0, 255, 255])],
+    );
+    let flat_path = tree.image_folder("[circle] flat work", &[("001.png", [0, 255, 0, 255])]);
+    let zip_name = "[circle] readable.zip";
+    tree.zip(zip_name);
+    let zip_path = tree.library().join(zip_name);
+    let reader_path = tree.root("reader.exe");
+    fs::write(&reader_path, b"fake reader").expect("create fake reader");
+    let launcher = RecordingLauncher::new(false);
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::with_launcher(
+        repository,
+        NoopRecycleBin,
+        launcher.clone(),
+        Some(reader_path.clone()),
+    );
+    application
+        .run_scan(&[ScanRoot {
+            path: tree.library(),
+            source: SourceKind::Archive,
+            label: "歸檔區".to_owned(),
+        }])
+        .expect("scan collections");
+    let variant_id = application
+        .repository()
+        .collection_id_for_current_path(&variant_path)
+        .expect("variant lookup")
+        .expect("variant collection");
+    let flat_id = application
+        .repository()
+        .collection_id_for_current_path(&flat_path)
+        .expect("flat lookup")
+        .expect("flat collection");
+    let zip_id = application
+        .repository()
+        .collection_id_for_current_path(&zip_path)
+        .expect("zip lookup")
+        .expect("zip collection");
+    let server = RunningServer::start(application).await;
+
+    let variant_targets = server
+        .request(
+            "GET",
+            &format!("/api/collections/{variant_id}/read-targets"),
+            &[],
+        )
+        .await;
+    assert_eq!(200, variant_targets.status);
+    assert_eq!("image_folder", variant_targets.json["media_kind"]);
+    assert_eq!(0, variant_targets.json["direct_image_count"]);
+    assert_eq!(
+        serde_json::json!([
+            {"entry_path": "Text", "image_count": 1},
+            {"entry_path": "Textless", "image_count": 1}
+        ]),
+        variant_targets.json["targets"]
+    );
+
+    let flat_targets = server
+        .request(
+            "GET",
+            &format!("/api/collections/{flat_id}/read-targets"),
+            &[],
+        )
+        .await;
+    assert_eq!(200, flat_targets.status);
+    assert_eq!("image_folder", flat_targets.json["media_kind"]);
+    assert_eq!(1, flat_targets.json["direct_image_count"]);
+    assert_eq!(serde_json::json!([]), flat_targets.json["targets"]);
+
+    let zip_targets = server
+        .request(
+            "GET",
+            &format!("/api/collections/{zip_id}/read-targets"),
+            &[],
+        )
+        .await;
+    assert_eq!(200, zip_targets.status);
+    assert_eq!("zip", zip_targets.json["media_kind"]);
+    assert_eq!(0, zip_targets.json["direct_image_count"]);
+    assert_eq!(serde_json::json!([]), zip_targets.json["targets"]);
+
+    let missing_targets = server
+        .request("GET", "/api/collections/999999/read-targets", &[])
+        .await;
+    assert_eq!(404, missing_targets.status);
+    assert_eq!(
+        "collection_not_found",
+        missing_targets.json["error"]["code"]
+    );
+
+    let read = server
+        .request_json(
+            "POST",
+            &format!("/api/collections/{variant_id}/read"),
+            &serde_json::json!({"entry_path": "Textless"}),
+        )
+        .await;
+    assert_eq!(200, read.status);
+    assert_eq!("configured_reader", read.json["action"]);
+    assert_eq!("Textless", read.json["entry_path"]);
+    assert_eq!(
+        vec![LaunchCall {
+            reader: Some(reader_path.clone()),
+            path: variant_path.join("Textless"),
+        }],
+        launcher.calls()
+    );
+
+    let opened = server
+        .request("POST", &format!("/api/collections/{variant_id}/open"), &[])
+        .await;
+    assert_eq!(200, opened.status);
+    assert_eq!("system_default", opened.json["action"]);
+    assert_eq!(Value::Null, opened.json["entry_path"]);
+    assert_eq!(
+        vec![
+            LaunchCall {
+                reader: Some(reader_path),
+                path: variant_path.join("Textless"),
+            },
+            LaunchCall {
+                reader: None,
+                path: variant_path.clone(),
+            },
+        ],
+        launcher.calls()
+    );
+    let launched_before_rejections = launcher.calls().len();
+
+    for entry in [
+        "../",
+        "Text/../Textless",
+        "C:/Windows",
+        "Text.",
+        "Text ",
+        ".. ",
+        "CON",
+        "con.txt",
+        "Text:stream",
+        "Text\\..\\Textless",
+    ] {
+        let rejected = server
+            .request_json(
+                "POST",
+                &format!("/api/collections/{variant_id}/read"),
+                &serde_json::json!({"entry_path": entry}),
+            )
+            .await;
+        assert_eq!(409, rejected.status, "entry_path {entry} must be rejected");
+        assert_eq!("invalid_collection_file", rejected.json["error"]["code"]);
+        assert_eq!(launched_before_rejections, launcher.calls().len());
+    }
+
+    let missing_entry = server
+        .request_json(
+            "POST",
+            &format!("/api/collections/{variant_id}/read"),
+            &serde_json::json!({"entry_path": "Nope"}),
+        )
+        .await;
+    assert_eq!(404, missing_entry.status);
+    assert_eq!(
+        "collection_file_not_found",
+        missing_entry.json["error"]["code"]
+    );
+    assert_eq!(launched_before_rejections, launcher.calls().len());
+
+    let zip_entry = server
+        .request_json(
+            "POST",
+            &format!("/api/collections/{zip_id}/read"),
+            &serde_json::json!({"entry_path": "Text"}),
+        )
+        .await;
+    assert_eq!(409, zip_entry.status);
+    assert_eq!("invalid_collection_file", zip_entry.json["error"]["code"]);
+    assert_eq!(launched_before_rejections, launcher.calls().len());
+
+    let unknown_field = server
+        .request_json(
+            "POST",
+            &format!("/api/collections/{variant_id}/read"),
+            &serde_json::json!({"entry": "Text"}),
+        )
+        .await;
+    assert_eq!(400, unknown_field.status);
+    assert_eq!("invalid_json", unknown_field.json["error"]["code"]);
+    assert_eq!(launched_before_rejections, launcher.calls().len());
+
+    let wrong_media_type = server
+        .request_with_body(
+            "POST",
+            &format!("/api/collections/{variant_id}/read"),
+            &[("Content-Type", "text/plain")],
+            &serde_json::json!({"entry_path": "Textless"}).to_string(),
+        )
+        .await;
+    assert_eq!(415, wrong_media_type.status);
+    assert_eq!(
+        "unsupported_media_type",
+        wrong_media_type.json["error"]["code"]
+    );
+    assert_eq!(launched_before_rejections, launcher.calls().len());
+
+    #[cfg(windows)]
+    {
+        let outside =
+            tree.image_folder_outside_library("junction target", &[("001.png", [1, 2, 3, 255])]);
+        let link = variant_path.join("Link");
+        // directory symlink 在 Windows 需要 Developer Mode 或系統管理員權限，
+        // directory junction 不需要且同樣被 symlink_metadata 判為 symlink。
+        let created = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&outside)
+            .status();
+        match created {
+            Ok(status) if status.success() => {
+                let through_junction = server
+                    .request_json(
+                        "POST",
+                        &format!("/api/collections/{variant_id}/read"),
+                        &serde_json::json!({"entry_path": "Link"}),
+                    )
+                    .await;
+                assert_eq!(409, through_junction.status);
+                assert_eq!(
+                    "invalid_collection_file",
+                    through_junction.json["error"]["code"]
+                );
+                assert_eq!(launched_before_rejections, launcher.calls().len());
+            }
+            other => {
+                eprintln!("跳過 junction 子情境，建立 directory junction 失敗：{other:?}");
+            }
+        }
+    }
+
+    let charset_media_type = server
+        .request_with_body(
+            "POST",
+            &format!("/api/collections/{variant_id}/read"),
+            &[("Content-Type", "application/json; charset=utf-8")],
+            &serde_json::json!({"entry_path": "Textless"}).to_string(),
+        )
+        .await;
+    assert_eq!(200, charset_media_type.status);
+    assert_eq!("Textless", charset_media_type.json["entry_path"]);
+    assert_eq!(launched_before_rejections + 1, launcher.calls().len());
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn unsafe_image_folder_states_are_rejected_without_launching_anything() {
+    let tree = TestTree::new("image-folder-guard");
+    let folder_path = tree.image_folder("[circle] folder guard", &[("001.png", [255, 0, 0, 255])]);
+    let symlink_source =
+        tree.image_folder("[circle] symlink guard", &[("001.png", [0, 0, 255, 255])]);
+    let zip_name = "[circle] guard.zip";
+    tree.zip(zip_name);
+    let zip_path = tree.library().join(zip_name);
+    let reader_path = tree.root("reader.exe");
+    fs::write(&reader_path, b"fake reader").expect("create fake reader");
+    let launcher = RecordingLauncher::new(false);
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::with_launcher(
+        repository,
+        NoopRecycleBin,
+        launcher.clone(),
+        Some(reader_path),
+    );
+    application
+        .run_scan(&[ScanRoot {
+            path: tree.library(),
+            source: SourceKind::Archive,
+            label: "歸檔區".to_owned(),
+        }])
+        .expect("scan collections");
+    let folder_id = application
+        .repository()
+        .collection_id_for_current_path(&folder_path)
+        .expect("collection lookup")
+        .expect("collection");
+    let symlink_id = application
+        .repository()
+        .collection_id_for_current_path(&symlink_source)
+        .expect("collection lookup")
+        .expect("collection");
+    let zip_id = application
+        .repository()
+        .collection_id_for_current_path(&zip_path)
+        .expect("collection lookup")
+        .expect("collection");
+    let server = RunningServer::start(application).await;
+
+    let detail = server
+        .request("GET", &format!("/api/collections/{folder_id}"), &[])
+        .await;
+    assert_eq!(200, detail.status);
+    let root_id = detail.json["root"]["id"].as_i64().expect("root ID");
+
+    fs::remove_dir_all(&folder_path).expect("remove indexed folder");
+    let missing = server
+        .request("POST", &format!("/api/collections/{folder_id}/open"), &[])
+        .await;
+    assert_eq!(404, missing.status);
+    assert_eq!("collection_file_not_found", missing.json["error"]["code"]);
+    assert_eq!(0, launcher.calls().len());
+
+    fs::write(&folder_path, b"not a folder").expect("replace folder with a file");
+    let mismatched_open = server
+        .request("POST", &format!("/api/collections/{folder_id}/open"), &[])
+        .await;
+    assert_eq!(409, mismatched_open.status);
+    assert_eq!(
+        "invalid_collection_file",
+        mismatched_open.json["error"]["code"]
+    );
+    let mismatched_read = server
+        .request("POST", &format!("/api/collections/{folder_id}/read"), &[])
+        .await;
+    assert_eq!(409, mismatched_read.status);
+    assert_eq!(
+        "invalid_collection_file",
+        mismatched_read.json["error"]["code"]
+    );
+    assert_eq!(0, launcher.calls().len());
+    fs::remove_file(&folder_path).expect("remove stand-in file");
+    fs::create_dir(&folder_path).expect("restore folder");
+
+    fs::remove_file(&zip_path).expect("remove indexed ZIP");
+    fs::create_dir(&zip_path).expect("replace ZIP with a folder");
+    let zip_as_folder = server
+        .request("POST", &format!("/api/collections/{zip_id}/open"), &[])
+        .await;
+    assert_eq!(409, zip_as_folder.status);
+    assert_eq!(
+        "invalid_collection_file",
+        zip_as_folder.json["error"]["code"]
+    );
+    assert_eq!(0, launcher.calls().len());
+
+    #[cfg(windows)]
+    {
+        let target = tree.root("symlink target");
+        fs::create_dir_all(&target).expect("create junction target");
+        fs::remove_dir_all(&symlink_source).expect("remove real folder");
+        // directory symlink 在 Windows 需要 Developer Mode 或系統管理員權限，
+        // directory junction 不需要且同樣被 symlink_metadata 判為 symlink，因此用 junction 當 fixture。
+        let created = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&symlink_source)
+            .arg(&target)
+            .status();
+        match created {
+            Ok(status) if status.success() => {
+                let through_symlink = server
+                    .request("POST", &format!("/api/collections/{symlink_id}/open"), &[])
+                    .await;
+                assert_eq!(409, through_symlink.status);
+                assert_eq!(
+                    "invalid_collection_file",
+                    through_symlink.json["error"]["code"]
+                );
+                assert_eq!(0, launcher.calls().len());
+            }
+            other => {
+                eprintln!("跳過 junction 子情境，建立 directory junction 失敗：{other:?}");
+                fs::create_dir(&symlink_source).expect("restore folder after junction failure");
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = symlink_id;
+
+    let deactivated = server
+        .request("DELETE", &format!("/api/library-roots/{root_id}"), &[])
+        .await;
+    assert_eq!(200, deactivated.status);
+    let inactive_root = server
+        .request("POST", &format!("/api/collections/{folder_id}/open"), &[])
+        .await;
+    assert_eq!(409, inactive_root.status);
+    assert_eq!("invalid_lifecycle", inactive_root.json["error"]["code"]);
+    assert_eq!(0, launcher.calls().len());
     server.stop().await;
 }

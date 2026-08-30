@@ -1,6 +1,6 @@
 # JP6 Doujin Archive
 
-JP6 Doujin Archive 是一套以 Rust 開發、在本機執行的同人作品收藏管理工具。它會掃描指定資料夾中的 ZIP，從檔名解析作品資訊，建立可搜尋的 SQLite catalog，並提供書架、編目、批次整理與檔案管理介面。
+JP6 Doujin Archive 是一套以 Rust 開發、在本機執行的同人作品收藏管理工具。它會掃描指定資料夾中的 ZIP 與圖片資料夾，從檔名解析作品資訊，建立可搜尋的 SQLite catalog，並提供書架、編目、批次整理與檔案管理介面。
 
 本專案採本機優先設計：服務只監聽 `127.0.0.1`，不需要雲端帳號，也不會上傳 catalog 或收藏檔案。只有使用 E-Hentai／ExHentai 或 DLsite 搜尋外部 metadata 時才需要網路。
 
@@ -33,13 +33,15 @@ JP6 Doujin Archive 是一套以 Rust 開發、在本機執行的同人作品收�
 
 ## 主要功能
 
-- 遞迴掃描新收藏與典藏庫中的 ZIP，從檔名解析標題、場次、社團、作者、原作、分類、RJ 編號與 DL 標記。
+- 遞迴掃描新收藏與典藏庫中的 ZIP 與圖片資料夾，從檔名解析標題、場次、社團、作者、原作、分類、RJ 編號與 DL 標記。圖片資料夾以資料夾名稱解析，不會被改名。
 - 以書架、列表或比較模式瀏覽，並依 metadata、來源、標籤或缺漏欄位搜尋與篩選；常用條件可保存為智慧書架。
-- 從 ZIP 產生 WebP 縮圖，也可手動選擇其他圖片作為封面。
+- 從 ZIP 或圖片資料夾產生 WebP 縮圖，也可手動選擇其他圖片作為封面。
 - 手動編輯 metadata、管理標籤，或透過背景工作從 E-Hentai／ExHentai、DLsite 補齊資料。
 - 在整理台批次加標籤、補資料、改名、搬移、匯出或刪除收藏。
 - 在改名、搬移與匯出前執行預檢，並以內容指紋協助裁決完全相同或可能重複的作品。
 - 提供品質審核、名稱正規化、同名收藏身分合併與收藏統計。
+- 圖片資料夾收藏只提供非破壞性管理：可瀏覽、編輯 metadata 與標籤、產生縮圖與封面、參與重複判定並開啟閱讀；改名、搬移、刪除與匯出仍只支援 ZIP。
+- 只含 2～4 個變體子資料夾（例如有字／無字版）且沒有直接圖片的資料夾會視為一筆收藏；選擇封面時會列出各子資料夾的第一張，用閱讀器開啟時可選擇要閱讀的子資料夾。
 
 ## 介面導覽
 
@@ -216,8 +218,8 @@ Parser 黃金語料位於 [tests/fixtures/parser-corpus-v1.json](https://github.
 | `doujin-app` | 掃描、metadata、檔案操作、重複判定、改名與匯出的 use cases。 |
 | `doujin-storage` | SQLite schema、repository、搜尋索引與稽核資料。 |
 | `doujin-parser` | 檔名解析 library 與 JSON CLI。 |
-| `doujin-scanner` | 收藏發現、排除規則與安全檔名正規化。 |
-| `doujin-thumbnails` | ZIP 圖片選取、資源限制、縮放與 WebP cache。 |
+| `doujin-scanner` | ZIP 與圖片資料夾的收藏發現、排除規則與安全檔名正規化。 |
+| `doujin-thumbnails` | ZIP／圖片資料夾圖片選取、資源限制、縮放與 WebP cache。 |
 | `doujin-files` | 安全開啟、搬移、刪除與中斷操作復原。 |
 | `doujin-provider-ehentai` | E-Hentai／ExHentai metadata provider。 |
 | `doujin-provider-dlsite` | DLsite 精確 RJ 與保守 fallback provider。 |

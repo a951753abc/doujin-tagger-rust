@@ -313,6 +313,10 @@ where
             post(collections::read_collection::<R>),
         )
         .route(
+            "/api/collections/{collection_id}/read-targets",
+            get(collections::get_read_targets::<R>),
+        )
+        .route(
             "/api/collections/{collection_id}/thumbnail",
             get(thumbnails::get_thumbnail::<R>),
         )

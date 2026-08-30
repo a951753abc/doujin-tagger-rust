@@ -338,6 +338,10 @@ select:disabled {
   color: var(--ink-soft);
   font-size: var(--fs-caption);
 }
+.media-flag {
+  border-color: var(--accent-dark);
+  color: var(--accent-dark);
+}
 
 .layout-grid .item-index {
   display: none;
@@ -1382,6 +1386,36 @@ select:disabled {
   display: block;
 }
 .delete-mode-options small {
+  margin-top: 3px;
+  color: var(--ink-soft);
+  font-weight: 400;
+}
+.read-target-options {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0;
+}
+.read-target-options label {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  gap: 10px;
+  min-height: 64px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  cursor: pointer;
+}
+.read-target-options input {
+  width: 20px;
+  min-height: 20px;
+  margin: 3px 0 0;
+  accent-color: var(--accent);
+}
+.read-target-options strong,
+.read-target-options small {
+  display: block;
+}
+.read-target-options small {
   margin-top: 3px;
   color: var(--ink-soft);
   font-weight: 400;
@@ -3614,6 +3648,16 @@ img[data-thumbnail-status="failed"] {
   color: var(--muted);
   font-family: var(--mono);
   font-size: var(--fs-caption);
+}
+.media-badge {
+  display: inline-block;
+  margin: -8px 0 16px;
+  padding: 3px 8px;
+  border-radius: var(--r-badge);
+  background: var(--navy-tag-bg);
+  color: var(--accent-dark);
+  font-size: var(--fs-caption);
+  font-weight: 700;
 }
 .primary-actions {
   margin-bottom: 24px;
@@ -6977,6 +7021,10 @@ dialog::backdrop {
   border-top: 4px solid var(--warning);
 }
 .delete-mode-options label:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-pale);
+}
+.read-target-options label:has(input:checked) {
   border-color: var(--accent);
   background: var(--accent-pale);
 }

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use doujin_parser::PARSER_VERSION;
 use doujin_parser::domain::ParseInput;
 use doujin_parser::parser::parse_filename;
-use doujin_scanner::{FilenameNormalization, PendingCollection, SourceKind};
+use doujin_scanner::{FilenameNormalization, MediaKind, PendingCollection, SourceKind};
 use doujin_storage::CatalogRepository;
 use doujin_storage::collections::CollectionQuery;
 
@@ -64,6 +64,7 @@ fn allowlisted_library_batches_are_bounded_and_complete_with_10_001_collections(
                 parser_version: PARSER_VERSION.to_owned(),
                 parsed: parsed.clone(),
                 filename_normalization: FilenameNormalization::Unchanged,
+                media_kind: MediaKind::Zip,
             })
             .expect("ingest fixture collection");
     }

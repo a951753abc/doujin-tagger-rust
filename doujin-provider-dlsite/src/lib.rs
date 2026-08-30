@@ -843,7 +843,7 @@ mod tests {
 
     use doujin_app::external_search::{ExternalMetadataProvider, ExternalSearchRequest};
     use doujin_parser::domain::Identifier;
-    use doujin_storage::collections::CollectionSnapshot;
+    use doujin_storage::collections::{CollectionSnapshot, MediaKind};
     use doujin_storage::jobs::ExternalSearchErrorKind;
     use doujin_storage::metadata::{MetadataField, MetadataValue};
     use serde_json::Value;
@@ -941,6 +941,7 @@ mod tests {
                 id: 1,
                 path: PathBuf::from("test.zip"),
                 filename: "test.zip".to_owned(),
+                media_kind: MediaKind::Zip,
                 root: None,
                 title: title.map(str::to_owned),
                 event: None,

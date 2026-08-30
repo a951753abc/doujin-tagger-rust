@@ -6,6 +6,7 @@ rust-version = "1.97"
 publish = false
 
 [dependencies]
+doujin-scanner = { path = "../doujin-scanner" }
 doujin-storage = { path = "../doujin-storage" }
 image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 sha2 = "0.10.9"

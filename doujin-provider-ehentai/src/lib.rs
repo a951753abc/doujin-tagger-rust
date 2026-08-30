@@ -757,7 +757,7 @@ mod tests {
     use std::path::PathBuf;
 
     use doujin_parser::domain::Identifier;
-    use doujin_storage::collections::CollectionSnapshot;
+    use doujin_storage::collections::{CollectionSnapshot, MediaKind};
 
     use super::*;
 
@@ -813,6 +813,7 @@ mod tests {
                 id: 9,
                 path: PathBuf::from("H:/book.zip"),
                 filename: "book.zip".to_owned(),
+                media_kind: MediaKind::Zip,
                 root: None,
                 title: Some("巨乳ママとメンヘラ彼女を親子丼にして孕ませる話・終".to_owned()),
                 event: None,

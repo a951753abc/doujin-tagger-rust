@@ -49,6 +49,7 @@
 | DEC-041 | 外部候選冪等性 | 已決定 | 同一收藏、欄位、值、來源參照與 confidence 證據完全相同時，重複搜尋應重用同一 assertion；每次搜尋紀錄仍分別保存，既有採用或拒絕裁決不得被推翻，證據畫面只顯示一筆可裁決候選。 |
 | DEC-042 | E-Hentai／ExHentai metadata 與 tags | 已決定 | 外部搜尋以 E-Hentai／ExHentai 為主來源：唯一 gid/token 可精確查詢，否則只接受唯一完全相符書名；group、artist、parody 映射為 metadata，內容 namespace 保留為 additive collection tags，DLsite 只補缺少欄位。 |
 | DEC-043 | DLsite 場次 fallback | 已決定 | `DL` 代表作品已由 DLsite 成功匹配，不代表數位版。DLsite 商品缺少明確活動 option 時可提供 `DL` 場次候選；`[DL版]`、`[Digital]` 與 `is_dl` 不得單獨推斷場次。 |
+| DEC-044 | 變體子資料夾 | 已決定 | 沒有直接圖片與 ZIP、只含 2～4 個名稱不含括號的純圖片葉子資料夾、且子資料夾尚未入庫的資料夾視為一筆收藏；縮圖採整體自然排序第一張，封面候選加入各子資料夾第一張；閱讀時由收藏管理者選擇子資料夾，系統預設開啟仍開父層。 |
 
 ## DEC-003 語料盤點
 

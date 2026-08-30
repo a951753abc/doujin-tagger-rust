@@ -23,14 +23,14 @@ pub mod statistics;
 pub mod thumbnails;
 pub mod vocabulary;
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use doujin_scanner::{FilenameNormalization, PendingCollection, SourceKind};
+use doujin_scanner::{FilenameNormalization, MediaKind, PendingCollection, SourceKind};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::canonical::{CanonicalEntitySnapshot, CanonicalMappingEvidence, EntityKind};
@@ -77,6 +77,17 @@ const LIBRARY_BATCH_SIZE_MIGRATION: &str =
     include_str!("../migrations/0019_library_batch_size.sql");
 const SHELF_COMPOSITION_MIGRATION: &str = include_str!("../migrations/0020_shelf_composition.sql");
 const EXHENTAI_SESSION_MIGRATION: &str = include_str!("../migrations/0021_exhentai_session.sql");
+
+/// 只保留 tombstone 與 candidate media kind 相同的 `tombstone_candidates` 列；
+/// 需要查詢把 `tombstone_candidates` 別名為 `candidate_link`。
+const SAME_MEDIA_KIND_LINK_CONDITION: &str = "WHERE EXISTS (
+                 SELECT 1
+                 FROM collections AS link_tombstone
+                 JOIN collections AS link_candidate
+                   ON link_candidate.media_kind = link_tombstone.media_kind
+                 WHERE link_tombstone.id = candidate_link.tombstone_collection_id
+                   AND link_candidate.id = candidate_link.candidate_collection_id
+             )";
 
 struct Migration {
     version: i64,
@@ -1263,9 +1274,10 @@ impl CatalogRepository {
         let transaction = self.connection.transaction()?;
         let current = transaction
             .query_row(
-                "SELECT location.id, location.full_path, root.source_kind
+                "SELECT location.id, location.full_path, root.source_kind, collection.media_kind
                  FROM collection_locations AS location
                  JOIN library_roots AS root ON root.id = location.root_id
+                 JOIN collections AS collection ON collection.id = location.collection_id
                  WHERE location.collection_id = ?1 AND location.location_status = 'current'",
                 [collection_id],
                 |row| {
@@ -1273,6 +1285,7 @@ impl CatalogRepository {
                         row.get::<_, i64>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
                     ))
                 },
             )
@@ -1280,10 +1293,15 @@ impl CatalogRepository {
             .ok_or_else(|| {
                 StorageError::InvalidLifecycle(format!("收藏 {collection_id} 沒有目前位置"))
             })?;
-        let (location_id, source_path, source_kind) = current;
+        let (location_id, source_path, source_kind, media_kind) = current;
         if source_kind != "downloads" {
             return Err(StorageError::InvalidLifecycle(
                 "系統 move 只能從下載區開始".to_owned(),
+            ));
+        }
+        if media_kind != "zip" {
+            return Err(StorageError::InvalidLifecycle(
+                "圖片資料夾不支援此操作，只支援 ZIP".to_owned(),
             ));
         }
         if Path::new(&source_path).exists() {
@@ -1441,7 +1459,7 @@ impl CatalogRepository {
         &self,
     ) -> StorageResult<Vec<ActiveCollectionLocationSnapshot>> {
         let mut statement = self.connection.prepare(
-            "SELECT collection.id, location.full_path, root.path
+            "SELECT collection.id, location.full_path, root.path, collection.media_kind
              FROM collections AS collection
              JOIN collection_locations AS location ON location.collection_id = collection.id
              JOIN library_roots AS root ON root.id = location.root_id
@@ -1449,15 +1467,29 @@ impl CatalogRepository {
                AND location.location_status = 'current'
              ORDER BY collection.id",
         )?;
-        Ok(statement
+        let rows = statement
             .query_map([], |row| {
-                Ok(ActiveCollectionLocationSnapshot {
-                    collection_id: row.get(0)?,
-                    path: PathBuf::from(row.get::<_, String>(1)?),
-                    root_path: PathBuf::from(row.get::<_, String>(2)?),
-                })
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
             })?
-            .collect::<Result<Vec<_>, _>>()?)
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|(collection_id, path, root_path, media_kind)| {
+                let media_kind = MediaKind::parse(&media_kind).ok_or_else(|| {
+                    StorageError::InvalidSchema(format!("未知的 media_kind：{media_kind}"))
+                })?;
+                Ok(ActiveCollectionLocationSnapshot {
+                    collection_id,
+                    path: PathBuf::from(path),
+                    root_path: PathBuf::from(root_path),
+                    media_kind,
+                })
+            })
+            .collect()
     }
 
     pub fn link_tombstones_to_active_same_filename(&mut self) -> StorageResult<usize> {
@@ -1479,6 +1511,7 @@ impl CatalogRepository {
               AND candidate.status = 'active'
              WHERE tombstone.status = 'tombstone'
                AND tombstone.id <> candidate.id
+               AND candidate.media_kind = tombstone.media_kind
              ON CONFLICT(tombstone_collection_id, candidate_collection_id) DO NOTHING",
             [],
         )?;
@@ -1548,11 +1581,14 @@ impl CatalogRepository {
     }
 
     pub fn tombstone_candidate_count(&self) -> StorageResult<usize> {
-        let count =
-            self.connection
-                .query_row("SELECT count(*) FROM tombstone_candidates", [], |row| {
-                    row.get::<_, i64>(0)
-                })?;
+        let count = self.connection.query_row(
+            &format!(
+                "SELECT count(*) FROM tombstone_candidates AS candidate_link
+                 {SAME_MEDIA_KIND_LINK_CONDITION}"
+            ),
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
         usize::try_from(count).map_err(|_| {
             StorageError::InvalidSchema("tombstone candidate count 超出範圍".to_owned())
         })
@@ -1562,7 +1598,7 @@ impl CatalogRepository {
         &self,
         tombstone_collection_id: Option<i64>,
     ) -> StorageResult<Vec<TombstoneCandidateSnapshot>> {
-        let mut statement = self.connection.prepare(
+        let sql = format!(
             "SELECT candidate_link.tombstone_collection_id,
                     candidate_link.candidate_collection_id,
                     tombstone_location.full_path,
@@ -1581,10 +1617,12 @@ impl CatalogRepository {
              LEFT JOIN collection_locations AS candidate_location
                ON candidate_location.collection_id = candidate_link.candidate_collection_id
               AND candidate_location.location_status = 'current'
-             WHERE (?1 IS NULL OR candidate_link.tombstone_collection_id = ?1)
+             {SAME_MEDIA_KIND_LINK_CONDITION}
+               AND (?1 IS NULL OR candidate_link.tombstone_collection_id = ?1)
              ORDER BY candidate_link.tombstone_collection_id,
-                      candidate_link.candidate_collection_id",
-        )?;
+                      candidate_link.candidate_collection_id"
+        );
+        let mut statement = self.connection.prepare(&sql)?;
         let rows = statement
             .query_map([tombstone_collection_id], |row| {
                 Ok((
@@ -1650,7 +1688,9 @@ impl CatalogRepository {
         let changed = transaction.execute(
             "UPDATE tombstone_candidates
              SET decision = ?1, decided_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-             WHERE tombstone_collection_id = ?2 AND candidate_collection_id = ?3",
+             WHERE tombstone_collection_id = ?2 AND candidate_collection_id = ?3
+               AND (SELECT media_kind FROM collections WHERE id = ?2)
+                 = (SELECT media_kind FROM collections WHERE id = ?3)",
             params![
                 decision.as_str(),
                 tombstone_collection_id,
@@ -1682,14 +1722,19 @@ impl CatalogRepository {
         archive_root_id: i64,
         destination: &Path,
     ) -> StorageResult<PendingFileOperation> {
+        let transaction = self.connection.transaction()?;
+        let current = current_location_for_operation(&transaction, collection_id)?;
+        if current.media_kind != "zip" {
+            return Err(StorageError::InvalidLifecycle(
+                "圖片資料夾不支援此操作，只支援 ZIP".to_owned(),
+            ));
+        }
         if destination.exists() {
             return Err(StorageError::InvalidLifecycle(format!(
                 "move 目標已存在，禁止覆寫：{}",
                 destination.display()
             )));
         }
-        let transaction = self.connection.transaction()?;
-        let current = current_location_for_operation(&transaction, collection_id)?;
         if current.source_kind != "downloads" {
             return Err(StorageError::InvalidLifecycle(
                 "系統 move 只能從下載區開始".to_owned(),
@@ -1839,6 +1884,11 @@ impl CatalogRepository {
     ) -> StorageResult<PendingFileOperation> {
         let transaction = self.connection.transaction()?;
         let current = current_location_for_operation(&transaction, collection_id)?;
+        if current.media_kind != "zip" {
+            return Err(StorageError::InvalidLifecycle(
+                "圖片資料夾不支援此操作，只支援 ZIP".to_owned(),
+            ));
+        }
         if !current.path.is_file() {
             return Err(StorageError::InvalidLifecycle(format!(
                 "刪除來源 ZIP 不存在：{}",
@@ -2057,14 +2107,26 @@ impl CatalogRepository {
         Ok(strict == Some(1))
     }
 
-    pub fn current_paths(&self) -> StorageResult<HashSet<PathBuf>> {
+    pub fn current_paths(&self) -> StorageResult<HashMap<PathBuf, MediaKind>> {
         let mut statement = self.connection.prepare(
-            "SELECT full_path FROM collection_locations WHERE location_status = 'current'",
+            "SELECT location.full_path, collection.media_kind
+             FROM collection_locations AS location
+             JOIN collections AS collection ON collection.id = location.collection_id
+             WHERE location.location_status = 'current'",
         )?;
-        let paths = statement
-            .query_map([], |row| row.get::<_, String>(0))?
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(paths.into_iter().map(PathBuf::from).collect())
+        rows.into_iter()
+            .map(|(full_path, media_kind)| {
+                let media_kind = MediaKind::parse(&media_kind).ok_or_else(|| {
+                    StorageError::InvalidSchema(format!("未知的 media_kind：{media_kind}"))
+                })?;
+                Ok((PathBuf::from(full_path), media_kind))
+            })
+            .collect()
     }
 
     pub fn current_value_json(
@@ -3208,8 +3270,8 @@ fn ingest_one(
     let root_id = ensure_root(transaction, pending)?;
     transaction.execute(
         "INSERT INTO collections(status, media_kind, parser_version)
-         VALUES ('active', 'zip', ?1)",
-        [&pending.parser_version],
+         VALUES ('active', ?1, ?2)",
+        params![pending.media_kind.as_str(), &pending.parser_version],
     )?;
     let collection_id = transaction.last_insert_rowid();
 
@@ -3382,6 +3444,7 @@ fn link_matching_tombstones(
          WHERE collection.status = 'tombstone'
            AND location.filename = ?2 COLLATE NOCASE
            AND collection.id <> ?1
+           AND collection.media_kind = (SELECT media_kind FROM collections WHERE id = ?1)
          ON CONFLICT(tombstone_collection_id, candidate_collection_id) DO NOTHING",
         params![candidate_collection_id, filename],
     )?;

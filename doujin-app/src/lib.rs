@@ -19,7 +19,7 @@ use doujin_files::{
     SystemCollectionLauncher, SystemRecycleBin,
 };
 use doujin_scanner::{
-    FilenameNormalization, ScanIssueKind, ScanMode, ScanRoot, SourceKind,
+    FilenameNormalization, MediaKind, ScanIssueKind, ScanMode, ScanRoot, SourceKind,
     scan_new_collections_with_mode,
 };
 use doujin_storage::collections::{
@@ -52,9 +52,9 @@ use doujin_storage::vocabulary::{
 };
 use doujin_storage::{CatalogRepository, IngestOutcome, StorageError};
 use doujin_thumbnails::{
-    CoverCandidate, ThumbnailConfig, ThumbnailError, ThumbnailGenerationRequest,
+    CoverCandidate, ReadTarget, ThumbnailConfig, ThumbnailError, ThumbnailGenerationRequest,
     ThumbnailGenerationSuccess, cover_candidate_preview, cover_candidates,
-    cover_source_fingerprint, source_fingerprint, validate_cover_candidate,
+    cover_source_fingerprint, directory_read_targets, source_fingerprint, validate_cover_candidate,
 };
 use serde::{Deserialize, Serialize};
 
@@ -171,6 +171,7 @@ pub enum ApplicationScanIssueKind {
     ReadDirectory,
     ReadEntry,
     NonUnicodeFilename,
+    MediaKindMismatch,
     Ingest,
     Reconcile,
 }
@@ -183,6 +184,7 @@ impl ApplicationScanIssueKind {
             Self::ReadDirectory => "read_directory",
             Self::ReadEntry => "read_entry",
             Self::NonUnicodeFilename => "non_unicode_filename",
+            Self::MediaKindMismatch => "media_kind_mismatch",
             Self::Ingest => "ingest",
             Self::Reconcile => "reconcile",
         }
@@ -197,6 +199,7 @@ impl From<ScanIssueKind> for ApplicationScanIssueKind {
             ScanIssueKind::ReadDirectory => Self::ReadDirectory,
             ScanIssueKind::ReadEntry => Self::ReadEntry,
             ScanIssueKind::NonUnicodeFilename => Self::NonUnicodeFilename,
+            ScanIssueKind::MediaKindMismatch => Self::MediaKindMismatch,
         }
     }
 }
@@ -346,6 +349,15 @@ pub struct ApplicationCoverCandidate {
     pub page_order: usize,
     pub width: u32,
     pub height: u32,
+}
+
+/// What a reader can be pointed at for one collection: ZIP collections are opened
+/// whole, image folders may offer sub-folders such as `Text` and `Textless`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplicationReadTargets {
+    pub media_kind: MediaKind,
+    pub direct_image_count: usize,
+    pub targets: Vec<ReadTarget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -547,9 +559,12 @@ impl<R: RecycleBin> ApplicationService<R> {
         let anticipated_paths = scan_output
             .pending
             .iter()
-            .map(|pending| match &pending.filename_normalization {
-                FilenameNormalization::PlannedRename { renamed, .. } => renamed.clone(),
-                _ => pending.path.clone(),
+            .map(|pending| {
+                let path = match &pending.filename_normalization {
+                    FilenameNormalization::PlannedRename { renamed, .. } => renamed.clone(),
+                    _ => pending.path.clone(),
+                };
+                (path, pending.media_kind)
             })
             .collect::<Vec<_>>();
         let mut tombstone_candidates = Vec::new();
@@ -565,7 +580,8 @@ impl<R: RecycleBin> ApplicationService<R> {
             };
             for candidate in &locations {
                 if candidate.collection_id == missing.collection_id
-                    || !candidate.path.is_file()
+                    || candidate.media_kind != missing.media_kind
+                    || !path_matches_media_kind(&candidate.path, candidate.media_kind)
                     || !same_filename(&candidate.path, filename)
                 {
                     continue;
@@ -577,8 +593,10 @@ impl<R: RecycleBin> ApplicationService<R> {
                     candidate_path: candidate.path.clone(),
                 });
             }
-            for candidate_path in &anticipated_paths {
-                if !same_filename(candidate_path, filename) {
+            for (candidate_path, candidate_media_kind) in &anticipated_paths {
+                if *candidate_media_kind != missing.media_kind
+                    || !same_filename(candidate_path, filename)
+                {
                     continue;
                 }
                 tombstone_candidates.push(ApplicationTombstonePreflightCandidate {
@@ -887,14 +905,25 @@ impl<R: RecycleBin> ApplicationService<R> {
         FileOperationService::new(&mut self.repository, &self.recycle_bin).recover_pending()
     }
 
-    pub fn open_collection(&self, collection_id: i64) -> Result<LaunchReceipt, LaunchError> {
+    pub fn open_collection(
+        &self,
+        collection_id: i64,
+        entry: Option<&str>,
+    ) -> Result<LaunchReceipt, LaunchError> {
         CollectionLaunchService::new(&self.repository, self.launcher.as_ref())
-            .open_default(collection_id)
+            .open_default(collection_id, entry)
     }
 
-    pub fn read_collection(&self, collection_id: i64) -> Result<LaunchReceipt, LaunchError> {
-        CollectionLaunchService::new(&self.repository, self.launcher.as_ref())
-            .open_with_reader(collection_id, self.reader_path.as_deref())
+    pub fn read_collection(
+        &self,
+        collection_id: i64,
+        entry: Option<&str>,
+    ) -> Result<LaunchReceipt, LaunchError> {
+        CollectionLaunchService::new(&self.repository, self.launcher.as_ref()).open_with_reader(
+            collection_id,
+            self.reader_path.as_deref(),
+            entry,
+        )
     }
 
     pub fn library_roots(&self) -> ApplicationResult<Vec<LibraryRootSnapshot>> {
@@ -1392,6 +1421,24 @@ impl<R: RecycleBin> ApplicationService<R> {
             .reject_vocabulary_group(field, values, reason, removed)?)
     }
 
+    pub fn read_targets(&self, collection_id: i64) -> ApplicationResult<ApplicationReadTargets> {
+        let collection = self.repository.collection(collection_id)?;
+        if collection.media_kind != MediaKind::ImageFolder {
+            return Ok(ApplicationReadTargets {
+                media_kind: collection.media_kind,
+                direct_image_count: 0,
+                targets: Vec::new(),
+            });
+        }
+        let source_path = self.repository.active_collection_file_path(collection_id)?;
+        let (direct_image_count, targets) = directory_read_targets(&source_path)?;
+        Ok(ApplicationReadTargets {
+            media_kind: collection.media_kind,
+            direct_image_count,
+            targets,
+        })
+    }
+
     pub fn cover_candidates(
         &mut self,
         collection_id: i64,
@@ -1849,13 +1896,29 @@ fn has_existing_same_filename_candidate(
     };
     locations.iter().any(|candidate| {
         candidate.collection_id != missing.collection_id
-            && candidate.path.is_file()
+            && candidate.media_kind == missing.media_kind
+            && path_matches_media_kind(&candidate.path, candidate.media_kind)
             && candidate
                 .path
                 .file_name()
                 .and_then(|value| value.to_str())
                 .is_some_and(|value| value.eq_ignore_ascii_case(filename))
     })
+}
+
+/// 候選路徑必須是真正的檔案或資料夾：symlink／directory junction 一律不算有效候選，
+/// 否則連結目標可以落在 library root 之外。
+fn path_matches_media_kind(path: &Path, media_kind: MediaKind) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if metadata.file_type().is_symlink() {
+        return false;
+    }
+    match media_kind {
+        MediaKind::Zip => metadata.is_file(),
+        MediaKind::ImageFolder => metadata.is_dir(),
+    }
 }
 
 fn same_filename(path: &Path, filename: &str) -> bool {

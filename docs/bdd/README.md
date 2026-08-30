@@ -46,16 +46,16 @@
 
 | 順序 | Feature | Scenarios | 主要現況來源 |
 |---|---|---:|---|
-| 1 | [收藏來源與掃描](01-library-scan.feature) | 11 | `scan.py`、`models.py`、`app.py` |
+| 1 | [收藏來源與掃描](01-library-scan.feature) | 14 | `scan.py`、`models.py`、`app.py` |
 | 2 | [檔名解析與分類](02-filename-parsing.feature) | 13 | `parser.py`、`scan.py` |
 | 3 | [搜尋與瀏覽](03-search-and-browse.feature) | 11 | `models.py`、`app.py`、`templates/index.html` |
 | 4 | [Metadata、tags 與批次編輯](04-metadata-and-tags.feature) | 10 | `models.py`、`templates/index.html` |
-| 5 | [檔案操作與閱讀](05-file-actions.feature) | 14 | `app.py`、`templates/index.html` |
+| 5 | [檔案操作與閱讀](05-file-actions.feature) | 15 | `app.py`、`templates/index.html` |
 | 6 | [外部補標、重複偵測與合併](06-enrichment-and-duplicates.feature) | 11 | `web_enrich.py`、`normalize.py` |
-| 7 | [設定、縮圖與統計](07-settings-thumbnails-and-stats.feature) | 12 | `config.py`、`thumbs.py`、`models.py` |
+| 7 | [設定、縮圖與統計](07-settings-thumbnails-and-stats.feature) | 13 | `config.py`、`thumbs.py`、`models.py` |
 | 8 | [安全與輸入邊界](08-security-boundaries.feature) | 6 | `app.py`、`models.py` |
 
-第一版合計 88 個 scenarios。
+第一版合計 93 個 scenarios。
 
 目前另有 14 個 Rust v2 proposed features：
 
@@ -74,7 +74,7 @@
 - [Rust v2 的 tombstone 身分合併](proposed/13-tombstone-consolidation.feature)
 - [Rust v2 的 E-Hentai／ExHentai gallery provider 與標籤映射](proposed/14-ehentai-gallery-provider.feature)
 
-Proposed features 目前合計 145 個 scenarios；連同現況基線共 233 個 scenarios。
+Proposed features 目前合計 145 個 scenarios；連同現況基線共 238 個 scenarios。
 
 - [DEC-003：社團與作者](workshops/dec-003-circle-author-example-mapping.md)
 - [批次 07：Rust v2 儲存模型](workshops/storage-v2-example-mapping.md)
