@@ -5669,7 +5669,7 @@ fn tombstone_candidate_links_only_form_between_the_same_media_kind() {
     assert_eq!(
         0,
         repository
-            .link_tombstones_to_active_same_filename()
+            .link_tombstones_to_active_same_filename(&[])
             .expect("cross kind backfill")
     );
 

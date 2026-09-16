@@ -568,6 +568,7 @@ impl<R: RecycleBin> ApplicationService<R> {
             })
             .collect::<Vec<_>>();
         let mut tombstone_candidates = Vec::new();
+        let mut possible_tombstones = 0_usize;
         for missing in &locations {
             if !safe_root_paths.contains(&missing.root_path)
                 || !missing.root_path.is_dir()
@@ -575,6 +576,7 @@ impl<R: RecycleBin> ApplicationService<R> {
             {
                 continue;
             }
+            possible_tombstones += 1;
             let Some(filename) = missing.path.file_name().and_then(|value| value.to_str()) else {
                 continue;
             };
@@ -612,11 +614,6 @@ impl<R: RecycleBin> ApplicationService<R> {
                 .cmp(&right.tombstone_path)
                 .then_with(|| left.candidate_path.cmp(&right.candidate_path))
         });
-        let possible_tombstones = tombstone_candidates
-            .iter()
-            .map(|candidate| candidate.tombstone_collection_id)
-            .collect::<HashSet<_>>()
-            .len();
         let expectation = ApplicationScanExpectation {
             discovered: scan_output.summary.discovered,
             new_collections: scan_output.summary.pending,
@@ -728,13 +725,21 @@ impl<R: RecycleBin> ApplicationService<R> {
 
         let mut tombstoned = 0_usize;
         if !safe_root_paths.is_empty() {
+            let mut invalid_candidate_ids = Vec::new();
             match self.repository.active_collection_locations() {
                 Ok(locations) => {
+                    invalid_candidate_ids.extend(
+                        locations
+                            .iter()
+                            .filter(|location| {
+                                !path_matches_media_kind(&location.path, location.media_kind)
+                            })
+                            .map(|location| location.collection_id),
+                    );
                     for location in &locations {
                         if !safe_root_paths.contains(&location.root_path)
                             || !location.root_path.is_dir()
                             || location.path.exists()
-                            || !has_existing_same_filename_candidate(location, &locations)
                         {
                             continue;
                         }
@@ -758,7 +763,10 @@ impl<R: RecycleBin> ApplicationService<R> {
                     message: error.to_string(),
                 }),
             }
-            if let Err(error) = self.repository.link_tombstones_to_active_same_filename() {
+            if let Err(error) = self
+                .repository
+                .link_tombstones_to_active_same_filename(&invalid_candidate_ids)
+            {
                 issues.push(ApplicationScanIssue {
                     path: PathBuf::new(),
                     kind: ApplicationScanIssueKind::Reconcile,
@@ -1885,25 +1893,6 @@ fn safely_scanned_root_paths(
         })
         .map(|root| root.path.clone())
         .collect()
-}
-
-fn has_existing_same_filename_candidate(
-    missing: &doujin_storage::lifecycle::ActiveCollectionLocationSnapshot,
-    locations: &[doujin_storage::lifecycle::ActiveCollectionLocationSnapshot],
-) -> bool {
-    let Some(filename) = missing.path.file_name().and_then(|value| value.to_str()) else {
-        return false;
-    };
-    locations.iter().any(|candidate| {
-        candidate.collection_id != missing.collection_id
-            && candidate.media_kind == missing.media_kind
-            && path_matches_media_kind(&candidate.path, candidate.media_kind)
-            && candidate
-                .path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .is_some_and(|value| value.eq_ignore_ascii_case(filename))
-    })
 }
 
 /// 候選路徑必須是真正的檔案或資料夾：symlink／directory junction 一律不算有效候選，

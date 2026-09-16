@@ -1492,8 +1492,14 @@ impl CatalogRepository {
             .collect()
     }
 
-    pub fn link_tombstones_to_active_same_filename(&mut self) -> StorageResult<usize> {
+    /// `excluded_candidate_ids`：呼叫端已確認實體路徑不是真正檔案／資料夾（symlink、junction）
+    /// 的 active 收藏，不得成為候選。
+    pub fn link_tombstones_to_active_same_filename(
+        &mut self,
+        excluded_candidate_ids: &[i64],
+    ) -> StorageResult<usize> {
         let transaction = self.connection.transaction()?;
+        let excluded = serde_json::to_string(excluded_candidate_ids)?;
         let created = transaction.execute(
             "INSERT INTO tombstone_candidates(
                  tombstone_collection_id, candidate_collection_id, reason
@@ -1512,8 +1518,9 @@ impl CatalogRepository {
              WHERE tombstone.status = 'tombstone'
                AND tombstone.id <> candidate.id
                AND candidate.media_kind = tombstone.media_kind
+               AND candidate.id NOT IN (SELECT value FROM json_each(?1))
              ON CONFLICT(tombstone_collection_id, candidate_collection_id) DO NOTHING",
-            [],
+            [excluded],
         )?;
         transaction.commit()?;
         Ok(created)

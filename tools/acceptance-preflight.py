@@ -65,6 +65,7 @@ def list_processes_via_powershell() -> list[dict]:
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
+                errors="replace",
                 check=False,
             )
         except FileNotFoundError as error:

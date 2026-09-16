@@ -923,7 +923,7 @@ fn unavailable_root_never_tombstones_its_collections() {
 }
 
 #[test]
-fn missing_collection_without_same_filename_candidate_is_left_for_separate_policy() {
+fn missing_collection_without_same_filename_candidate_is_tombstoned() {
     let tree = TestTree::new("missing-without-candidate");
     let path = tree.zip("[circle] no-candidate.zip");
     let repository = CatalogRepository::open_in_memory().expect("open catalog");
@@ -936,19 +936,68 @@ fn missing_collection_without_same_filename_candidate_is_left_for_separate_polic
         .expect("collection");
     fs::remove_file(&path).expect("remove collection file");
 
+    let preflight = application
+        .preflight_scan(&[tree.root()])
+        .expect("missing preflight");
+    assert_eq!(1, preflight.expectation.possible_tombstones);
+    assert_eq!(0, preflight.expectation.possible_candidate_links);
+    assert!(preflight.tombstone_candidates.is_empty());
+
     let report = application
         .run_scan(&[tree.root()])
         .expect("candidate reconciliation scan");
 
     assert_eq!(ApplicationScanStatus::Succeeded, report.status);
-    assert_eq!(0, report.summary.tombstoned);
+    assert_eq!(1, report.summary.tombstoned);
     assert_eq!(0, report.summary.candidate_links_created);
     assert_eq!(
-        CollectionStatus::Active,
+        CollectionStatus::Tombstone,
         application
             .repository()
             .collection_status(collection_id)
-            .expect("unrelated missing policy is not inferred")
+            .expect("collection tombstoned")
+    );
+}
+
+/// 圖片資料夾被手動搬到另一個包裝層底下時，新位置會以子資料夾名稱入庫而找不到同名候選；
+/// 舊位置仍必須 tombstone，不能因為沒有候選而留在有效 Library。
+#[test]
+fn missing_image_folder_is_tombstoned_even_when_moved_under_a_differently_named_wrapper() {
+    let tree = TestTree::new("missing-image-folder");
+    let folder = tree.image_folder("[circle] Cave", &[("001.png", [10, 20, 30, 255])]);
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let mut application = ApplicationService::new(repository, NoopRecycleBin);
+    application.run_scan(&[tree.root()]).expect("initial scan");
+    let collection_id = application
+        .repository()
+        .collection_id_for_current_path(&folder)
+        .expect("folder lookup")
+        .expect("folder collection");
+    fs::remove_dir_all(&folder).expect("move folder away");
+    let moved = tree.image_folder(
+        "moved/[circle] Cave/Text",
+        &[("001.png", [10, 20, 30, 255])],
+    );
+
+    let report = application.run_scan(&[tree.root()]).expect("moved scan");
+
+    assert_eq!(ApplicationScanStatus::Succeeded, report.status);
+    assert_eq!(1, report.summary.added);
+    assert_eq!(1, report.summary.tombstoned);
+    assert_eq!(0, report.summary.candidate_links_created);
+    assert_eq!(
+        CollectionStatus::Tombstone,
+        application
+            .repository()
+            .collection_status(collection_id)
+            .expect("old folder tombstoned")
+    );
+    assert!(
+        application
+            .repository()
+            .collection_id_for_current_path(&moved)
+            .expect("moved lookup")
+            .is_some()
     );
 }
 
@@ -2254,32 +2303,28 @@ fn reconciliation_only_pairs_a_missing_collection_with_the_same_media_kind() {
         .expect("cross kind preflight");
 
     assert!(folder_preflight.tombstone_candidates.is_empty());
-    assert_eq!(0, folder_preflight.expectation.possible_tombstones);
+    assert_eq!(1, folder_preflight.expectation.possible_tombstones);
+    assert_eq!(0, folder_preflight.expectation.possible_candidate_links);
 
     let folder_report = application
         .run_scan(&[tree.root()])
         .expect("cross kind scan");
 
-    assert_eq!(0, folder_report.summary.tombstoned);
+    assert_eq!(1, folder_report.summary.tombstoned);
     assert_eq!(0, folder_report.summary.candidate_links_created);
-
-    let zip_twin = tree.zip("zip-twin/[circle] Twin.zip");
-    let zip_preflight = application
-        .preflight_scan(&[tree.root()])
-        .expect("same kind preflight");
-
-    assert_eq!(1, zip_preflight.expectation.possible_tombstones);
-    assert_eq!(1, zip_preflight.tombstone_candidates.len());
-    assert_eq!(
-        zip_twin,
-        zip_preflight.tombstone_candidates[0].candidate_path
+    assert!(
+        application
+            .tombstone_candidates()
+            .expect("cross kind links")
+            .is_empty()
     );
 
+    let zip_twin = tree.zip("zip-twin/[circle] Twin.zip");
     let zip_report = application
         .run_scan(&[tree.root()])
         .expect("same kind scan");
 
-    assert_eq!(1, zip_report.summary.tombstoned);
+    assert_eq!(0, zip_report.summary.tombstoned);
     assert_eq!(1, zip_report.summary.candidate_links_created);
     let zip_twin_id = application
         .repository()
@@ -2332,31 +2377,39 @@ fn a_junction_is_not_a_valid_reconciliation_candidate() {
         .expect("junction preflight");
 
     assert!(preflight.tombstone_candidates.is_empty());
-    assert_eq!(0, preflight.expectation.possible_tombstones);
+    assert_eq!(1, preflight.expectation.possible_tombstones);
     assert_eq!(0, preflight.expectation.possible_candidate_links);
 
     let report = application.run_scan(&[tree.root()]).expect("junction scan");
 
-    assert_eq!(0, report.summary.tombstoned);
+    assert_eq!(1, report.summary.tombstoned);
     assert_eq!(0, report.summary.candidate_links_created);
     assert_eq!(
-        CollectionStatus::Active,
+        CollectionStatus::Tombstone,
         application
             .repository()
             .collection_status(old_id)
             .expect("old collection status")
+    );
+    assert!(
+        application
+            .tombstone_candidates()
+            .expect("junction links")
+            .is_empty()
     );
 
     // 控制組：同一位置換回真資料夾後，候選必須出現，證明上面的空清單不是恆真。
     fs::remove_dir(&real).expect("remove junction");
     tree.image_folder("real/[circle] Ghost", &[("001.png", [10, 20, 30, 255])]);
     let recovered = application
-        .preflight_scan(&[tree.root()])
-        .expect("real folder preflight");
+        .run_scan(&[tree.root()])
+        .expect("real folder scan");
 
-    assert_eq!(1, recovered.tombstone_candidates.len());
-    assert_eq!(real, recovered.tombstone_candidates[0].candidate_path);
-    assert_eq!(old, recovered.tombstone_candidates[0].tombstone_path);
+    assert_eq!(1, recovered.summary.candidate_links_created);
+    let links = application.tombstone_candidates().expect("recovered links");
+    assert_eq!(1, links.len());
+    assert_eq!(old_id, links[0].tombstone_collection_id);
+    assert_eq!(Some(real), links[0].candidate_path);
 }
 
 #[test]

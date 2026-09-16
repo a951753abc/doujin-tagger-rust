@@ -50,6 +50,7 @@
 | DEC-042 | E-Hentai／ExHentai metadata 與 tags | 已決定 | 外部搜尋以 E-Hentai／ExHentai 為主來源：唯一 gid/token 可精確查詢，否則只接受唯一完全相符書名；group、artist、parody 映射為 metadata，內容 namespace 保留為 additive collection tags，DLsite 只補缺少欄位。 |
 | DEC-043 | DLsite 場次 fallback | 已決定 | `DL` 代表作品已由 DLsite 成功匹配，不代表數位版。DLsite 商品缺少明確活動 option 時可提供 `DL` 場次候選；`[DL版]`、`[Digital]` 與 `is_dl` 不得單獨推斷場次。 |
 | DEC-044 | 變體子資料夾 | 已決定 | 沒有直接圖片與 ZIP、只含 2～4 個名稱不含括號的純圖片葉子資料夾、且子資料夾尚未入庫的資料夾視為一筆收藏；縮圖採整體自然排序第一張，封面候選加入各子資料夾第一張；閱讀時由收藏管理者選擇子資料夾，系統預設開啟仍開父層。 |
+| DEC-045 | 消失收藏無同名候選 | 已決定 | 來源可用而收藏路徑已不存在時，不論有無同名候選，掃描一律將該收藏 tombstone 並保留 metadata、tags 與最後位置；同名候選存在時仍只建立候選關聯，交人工裁決。 |
 
 ## DEC-003 語料盤點
 
@@ -263,3 +264,10 @@ Confidence 採 0 到 1 的綜合分數，至少包含以下可追溯資訊：
 4. 以唯一 typed RJ 匹配時，`DL` 候選可依 DEC-015 評估自動套用；只以唯一完全相符書名匹配時仍是 suggestion，必須人工採用。
 5. E-Hentai／ExHentai 可以提供 metadata 與 tags；若其缺少場次，provider chain 只把場次交給 DLsite 補足。DLsite no-match 時場次保持空白。
 6. 先前由 `is_dl` 錯誤推斷的 inference 必須精準撤回；不得刪除或覆寫其他人工、外部、檔名與 legacy 場次。
+
+## 2026-09-16：消失收藏無同名候選決策
+
+1. 掃描來源可用、收藏路徑已不存在時，掃描一律將該收藏 tombstone；不再以「別處存在同名收藏」為 tombstone 前提。
+2. Tombstone 仍保留 metadata、tags 與最後位置；有同名候選時照 DEC-008／DEC-009 建立候選關聯，由人工裁決身分。
+3. 圖片資料夾與 ZIP 適用同一規則；圖片資料夾被搬到不同名稱的包裝層底下時，新位置以新收藏入庫，舊位置 tombstone。
+4. 掃描 preflight 的 `possible_tombstones` 計入所有路徑消失的收藏，不只計入有候選者。
