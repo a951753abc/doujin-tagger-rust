@@ -87,6 +87,8 @@ const SAME_MEDIA_KIND_LINK_CONDITION: &str = "WHERE EXISTS (
                    ON link_candidate.media_kind = link_tombstone.media_kind
                  WHERE link_tombstone.id = candidate_link.tombstone_collection_id
                    AND link_candidate.id = candidate_link.candidate_collection_id
+                   AND link_tombstone.status = 'tombstone'
+                   AND link_candidate.status = 'active'
              )";
 
 struct Migration {

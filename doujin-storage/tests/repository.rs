@@ -5394,6 +5394,24 @@ fn consolidation_requires_manual_conflict_resolution_and_is_idempotent() {
         vec!["new-tag", "old-tag"],
         repository.collection(old_id).expect("survivor").tags
     );
+    assert!(
+        repository
+            .all_tombstone_candidates()
+            .expect("consolidated links leave the queue")
+            .is_empty()
+    );
+    assert!(
+        repository
+            .tombstone_candidates(old_id)
+            .expect("survivor has no pending links")
+            .is_empty()
+    );
+    assert_eq!(
+        0,
+        repository
+            .tombstone_candidate_count()
+            .expect("consolidated links are not counted")
+    );
 }
 
 #[test]
