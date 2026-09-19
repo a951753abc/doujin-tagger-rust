@@ -254,6 +254,7 @@ pub(crate) struct CollectionResponse {
     tags: Vec<String>,
     created_at: String,
     updated_at: String,
+    size_bytes: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -301,6 +302,7 @@ impl From<CollectionSnapshot> for CollectionResponse {
             tags: collection.tags,
             created_at: collection.created_at,
             updated_at: collection.updated_at,
+            size_bytes: collection.size_bytes,
         }
     }
 }

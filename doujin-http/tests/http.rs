@@ -944,7 +944,7 @@ async fn rust_frontend_is_embedded_with_local_only_assets_and_security_headers()
     assert!(document.contains("id=\"main-content\""));
     assert!(document.contains("aria-live=\"polite\""));
     assert!(document.contains("href=\"/assets/app.css?v=61\""));
-    assert!(document.contains("src=\"/assets/app.js?v=61\" defer"));
+    assert!(document.contains("src=\"/assets/app.js?v=62\" defer"));
     assert!(document.contains("id=\"duplicates-view\""));
     assert!(document.contains("id=\"start-duplicate-scan\""));
     assert!(document.contains("id=\"rename-preflight-form\""));
@@ -1611,6 +1611,92 @@ async fn invalid_library_root_requests_have_structured_json_errors() {
         "library_root_not_found",
         invalid_update.json["error"]["code"]
     );
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn collections_sort_by_file_size_and_expose_size_bytes() {
+    let tree = TestTree::new("size-sort");
+    tree.zip("[AlphaCircle (Alice)] Small.zip");
+    tree.zip("[BetaCircle (Bob)] Large.zip");
+    tree.zip("[GammaCircle (Gail)] Medium.zip");
+    fs::write(
+        tree.root("library").join("[AlphaCircle (Alice)] Small.zip"),
+        vec![0_u8; 10],
+    )
+    .expect("write small");
+    fs::write(
+        tree.root("library").join("[BetaCircle (Bob)] Large.zip"),
+        vec![0_u8; 3000],
+    )
+    .expect("write large");
+    fs::write(
+        tree.root("library").join("[GammaCircle (Gail)] Medium.zip"),
+        vec![0_u8; 200],
+    )
+    .expect("write medium");
+    let mut repository = CatalogRepository::open_in_memory().expect("open catalog");
+    repository
+        .register_library_root(&tree.library(), SourceKind::Archive, "歸檔區")
+        .expect("register root");
+    let application = ApplicationService::new(repository, NoopRecycleBin);
+    let server = RunningServer::start(application).await;
+    let scan = server.request("POST", "/api/scans", &[]).await;
+    assert_eq!(3, scan.json["summary"]["added"]);
+
+    let descending = server
+        .request("GET", "/api/collections?sort=size&direction=desc", &[])
+        .await;
+    assert_eq!(200, descending.status);
+    assert_eq!(
+        vec!["Large", "Medium", "Small"],
+        descending.json["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .map(|item| item["title"].as_str().expect("title"))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(3000, descending.json["items"][0]["size_bytes"]);
+    assert_eq!(10, descending.json["items"][2]["size_bytes"]);
+
+    let ascending = server
+        .request(
+            "GET",
+            "/api/collections?sort=size&direction=asc&per_page=1",
+            &[],
+        )
+        .await;
+    assert_eq!("Small", ascending.json["items"][0]["title"]);
+    let medium_id = descending.json["items"][1]["id"]
+        .as_i64()
+        .expect("medium ID");
+    let located = server
+        .request(
+            "GET",
+            &format!("/api/collections/{medium_id}/locate?sort=size&direction=asc&per_page=1"),
+            &[],
+        )
+        .await;
+    assert_eq!(2, located.json["position"]);
+    assert_eq!(2, located.json["page"]);
+    let detail = server
+        .request("GET", &format!("/api/collections/{medium_id}"), &[])
+        .await;
+    assert_eq!(200, detail.json["size_bytes"]);
+
+    let saved = server
+        .request_json(
+            "POST",
+            "/api/saved-views",
+            &serde_json::json!({
+                "name": "最大的檔案",
+                "query": { "sort": "size", "direction": "desc", "layout": "grid" }
+            }),
+        )
+        .await;
+    assert_eq!(201, saved.status);
+    assert_eq!("size", saved.json["query"]["sort"]);
     server.stop().await;
 }
 

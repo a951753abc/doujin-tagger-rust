@@ -188,7 +188,7 @@ fn duplicate_fingerprint(collection_id: i64, source: &str, content: char) -> Dup
 fn migration_enables_required_sqlite_features() {
     let repository = CatalogRepository::open_in_memory().expect("open catalog");
 
-    assert_eq!(21, repository.schema_version().expect("schema version"));
+    assert_eq!(22, repository.schema_version().expect("schema version"));
     assert!(repository.foreign_keys_enabled().expect("foreign keys"));
     assert!(
         repository
@@ -743,16 +743,17 @@ fn version_nineteen_catalog_backfills_pinned_saved_views_into_shelf_configuratio
     let connection = Connection::open(&database).expect("rewind catalog to v19");
     connection
         .execute_batch(
-            "DROP TABLE exhentai_session;
+            "ALTER TABLE collection_locations DROP COLUMN size_bytes;
+             DROP TABLE exhentai_session;
              DROP TABLE shelf_configuration;
-             DELETE FROM schema_migrations WHERE version IN (20, 21);
+             DELETE FROM schema_migrations WHERE version IN (20, 21, 22);
              PRAGMA user_version = 19;",
         )
         .expect("rewind shelf composition migration");
     drop(connection);
 
     let repository = CatalogRepository::open(&database).expect("upgrade v19 catalog");
-    assert_eq!(21, repository.schema_version().expect("schema version"));
+    assert_eq!(22, repository.schema_version().expect("schema version"));
     let configuration = repository
         .shelf_configuration()
         .expect("upgraded shelf configuration");
@@ -1172,11 +1173,12 @@ fn version_seventeen_external_search_activity_uses_selected_assertion_time_for_l
         .expect("date unchanged assertion before job");
     connection
         .execute_batch(
-            "DROP TABLE exhentai_session;
+            "ALTER TABLE collection_locations DROP COLUMN size_bytes;
+             DROP TABLE exhentai_session;
              DROP TABLE shelf_configuration;
              DROP TABLE external_search_job_resolutions;
              ALTER TABLE application_settings DROP COLUMN library_batch_size;
-             DELETE FROM schema_migrations WHERE version IN (18, 19, 20, 21);
+             DELETE FROM schema_migrations WHERE version IN (18, 19, 20, 21, 22);
              PRAGMA user_version = 17;",
         )
         .expect("rewind external activity migration");
@@ -1184,7 +1186,7 @@ fn version_seventeen_external_search_activity_uses_selected_assertion_time_for_l
 
     let mut repository =
         CatalogRepository::open(&database).expect("upgrade legacy activity catalog");
-    assert_eq!(21, repository.schema_version().expect("upgraded schema"));
+    assert_eq!(22, repository.schema_version().expect("upgraded schema"));
     let activity = repository
         .external_search_activity()
         .expect("legacy external activity");
@@ -1805,7 +1807,7 @@ fn version_one_catalog_upgrades_through_all_migrations_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade catalog");
 
-    assert_eq!(21, repository.schema_version().expect("schema version"));
+    assert_eq!(22, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     drop(repository);
     let connection = Connection::open(&database).expect("inspect upgraded catalog");
@@ -1875,14 +1877,15 @@ fn version_eight_catalog_removes_is_dl_event_fallback_without_overwriting_manual
              DROP TABLE shelf_configuration;
              ALTER TABLE application_settings DROP COLUMN library_batch_size;
              ALTER TABLE application_settings DROP COLUMN default_archive_root_id;
-             DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21);
+             ALTER TABLE collection_locations DROP COLUMN size_bytes;
+             DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22);
              PRAGMA user_version = 8;",
         )
         .expect("seed v8 metadata");
     drop(connection);
 
     let repository = CatalogRepository::open(&database).expect("upgrade catalog");
-    assert_eq!(21, repository.schema_version().expect("schema version"));
+    assert_eq!(22, repository.schema_version().expect("schema version"));
     drop(repository);
 
     let connection = Connection::open(&database).expect("inspect upgraded catalog");
@@ -1986,7 +1989,7 @@ fn version_six_catalog_adds_thumbnail_priority_without_losing_state() {
         .thumbnail_state(1)
         .expect("preserved thumbnail state");
 
-    assert_eq!(21, repository.schema_version().expect("schema version"));
+    assert_eq!(22, repository.schema_version().expect("schema version"));
     assert_eq!(ThumbnailStatus::Pending, state.status);
     assert_eq!(BACKGROUND_THUMBNAIL_PRIORITY, state.priority);
     assert!(state.requested_at.is_some());
@@ -2033,7 +2036,7 @@ fn version_two_catalog_upgrades_external_search_jobs_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v2 catalog");
 
-    assert_eq!(21, repository.schema_version().expect("schema version"));
+    assert_eq!(22, repository.schema_version().expect("schema version"));
     let job = repository
         .external_search_job(job_id)
         .expect("preserved external search job");
@@ -2083,7 +2086,7 @@ fn version_three_catalog_adds_consolidation_audit_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v3 catalog");
 
-    assert_eq!(21, repository.schema_version().expect("schema version"));
+    assert_eq!(22, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert_eq!(
         None,
@@ -2138,7 +2141,7 @@ fn version_four_catalog_adds_thumbnail_state_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v4 catalog");
 
-    assert_eq!(21, repository.schema_version().expect("schema version"));
+    assert_eq!(22, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert!(
         repository
@@ -2197,7 +2200,7 @@ fn version_five_catalog_adds_typed_application_settings_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v5 catalog");
 
-    assert_eq!(21, repository.schema_version().expect("schema version"));
+    assert_eq!(22, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert!(
         repository
@@ -2268,6 +2271,124 @@ fn latest_parser_identifiers_preserve_typed_rj_evidence() {
     assert_eq!("RJ", identifiers[0].scheme);
     assert_eq!("RJ407766", identifiers[0].value);
     assert_eq!("[rj407766]", identifiers[0].raw);
+}
+
+#[test]
+fn active_collections_sort_by_file_size_with_unknown_sizes_last() {
+    let tree = TestTree::new("size-sort");
+    let mut repository = CatalogRepository::open(tree.database()).expect("open catalog");
+    let small = tree.pending("[CircleA (Alice)] small.zip");
+    fs::write(&small.path, vec![0_u8; 10]).expect("write small");
+    let large = tree.pending("[CircleB (Bob)] large.zip");
+    fs::write(&large.path, vec![0_u8; 3000]).expect("write large");
+    let medium = tree.pending("[CircleC (Carol)] medium.zip");
+    fs::write(&medium.path, vec![0_u8; 200]).expect("write medium");
+    let mut unknown = tree.pending("[CircleD (Dan)] unknown.zip");
+    fs::remove_file(&unknown.path).expect("remove unknown");
+    unknown.path = tree.path.join("[CircleD (Dan)] unknown.zip");
+    for pending in [&small, &large, &medium, &unknown] {
+        assert_eq!(
+            IngestOutcome::Inserted,
+            repository.ingest_collection(pending).expect("ingest")
+        );
+    }
+
+    let ascending = repository
+        .collections(&CollectionQuery {
+            sort: CollectionSort::Size,
+            direction: SortDirection::Ascending,
+            ..CollectionQuery::default()
+        })
+        .expect("size ascending");
+    assert_eq!(
+        vec![Some(10), Some(200), Some(3000), None],
+        ascending
+            .items
+            .iter()
+            .map(|item| item.size_bytes)
+            .collect::<Vec<_>>()
+    );
+    let descending = repository
+        .collections(&CollectionQuery {
+            sort: CollectionSort::Size,
+            direction: SortDirection::Descending,
+            ..CollectionQuery::default()
+        })
+        .expect("size descending");
+    assert_eq!(
+        vec![Some(3000), Some(200), Some(10), None],
+        descending
+            .items
+            .iter()
+            .map(|item| item.size_bytes)
+            .collect::<Vec<_>>()
+    );
+    let located = repository
+        .locate_collection(
+            medium_id(&ascending),
+            &CollectionQuery {
+                sort: CollectionSort::Size,
+                direction: SortDirection::Descending,
+                per_page: 1,
+                ..CollectionQuery::default()
+            },
+        )
+        .expect("locate in size ordering");
+    assert_eq!(Some(2), located.position);
+    assert_eq!(Some(2), located.page);
+}
+
+fn medium_id(page: &doujin_storage::collections::CollectionPage) -> i64 {
+    page.items
+        .iter()
+        .find(|item| item.size_bytes == Some(200))
+        .expect("medium item")
+        .id
+}
+
+#[test]
+fn backfill_collection_sizes_only_fills_unknown_sizes_from_current_paths() {
+    let tree = TestTree::new("size-backfill");
+    let mut repository = CatalogRepository::open(tree.database()).expect("open catalog");
+    let mut late = tree.pending("[CircleA (Alice)] late.zip");
+    fs::remove_file(&late.path).expect("remove late");
+    late.path = tree.path.join("[CircleA (Alice)] late.zip");
+    let known = tree.pending("[CircleB (Bob)] known.zip");
+    let mut missing = tree.pending("[CircleC (Carol)] missing.zip");
+    fs::remove_file(&missing.path).expect("remove missing");
+    missing.path = tree.path.join("[CircleC (Carol)] missing.zip");
+    for pending in [&late, &known, &missing] {
+        repository.ingest_collection(pending).expect("ingest");
+    }
+    fs::write(&late.path, vec![0_u8; 40]).expect("create late file");
+    fs::write(&known.path, vec![0_u8; 500]).expect("grow known file");
+
+    assert_eq!(1, repository.backfill_collection_sizes().expect("backfill"));
+    let sizes = repository
+        .collections(&CollectionQuery {
+            sort: CollectionSort::Size,
+            direction: SortDirection::Ascending,
+            ..CollectionQuery::default()
+        })
+        .expect("sizes")
+        .items
+        .into_iter()
+        .map(|item| (item.filename, item.size_bytes))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        vec![
+            ("[CircleB (Bob)] known.zip".to_owned(), Some(15)),
+            ("[CircleA (Alice)] late.zip".to_owned(), Some(40)),
+            ("[CircleC (Carol)] missing.zip".to_owned(), None),
+        ],
+        sizes
+    );
+    assert_eq!(
+        0,
+        repository
+            .backfill_collection_sizes()
+            .expect("second backfill")
+    );
 }
 
 #[test]
@@ -4952,6 +5073,13 @@ fn completed_system_move_keeps_collection_identity_and_location_history() {
     assert_eq!(LocationStatus::Moved, history[0].status);
     assert_eq!(destination, history[1].path);
     assert_eq!(LocationStatus::Current, history[1].status);
+    assert_eq!(
+        Some(15),
+        repository
+            .collection(collection_id)
+            .expect("collection after move")
+            .size_bytes
+    );
     assert_eq!(1, repository.file_operation_count().expect("operations"));
     assert_eq!(
         assertions_before,

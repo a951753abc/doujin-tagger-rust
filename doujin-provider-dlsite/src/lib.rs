@@ -955,6 +955,7 @@ mod tests {
                 tags: Vec::new(),
                 created_at: "2026-08-12T00:00:00Z".to_owned(),
                 updated_at: "2026-08-12T00:00:00Z".to_owned(),
+                size_bytes: None,
             },
             identifiers: identifiers
                 .iter()

@@ -1,6 +1,6 @@
 //! Read models for the active collection library.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub use doujin_scanner::MediaKind;
 
@@ -40,6 +40,7 @@ pub enum CollectionSort {
     Created,
     Updated,
     Title,
+    Size,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -154,9 +155,51 @@ pub struct CollectionSnapshot {
     pub tags: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// 目前位置的檔案大小；尚未回填或檔案不可讀時為 `None`。
+    pub size_bytes: Option<i64>,
 }
 
 impl CatalogRepository {
+    /// 為尚未記錄大小的 active 收藏目前位置補齊 `size_bytes`；已記錄的不重讀，
+    /// 檔案不存在的維持未知。回傳補齊筆數。
+    pub fn backfill_collection_sizes(&mut self) -> StorageResult<usize> {
+        let pending = {
+            let mut statement = self.connection.prepare(
+                "SELECT location.id, location.full_path, collection.media_kind
+                 FROM collection_locations AS location
+                 JOIN collections AS collection ON collection.id = location.collection_id
+                 WHERE collection.status = 'active'
+                   AND location.location_status = 'current'
+                   AND location.size_bytes IS NULL",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        let mut filled = 0_usize;
+        for (location_id, path, media_kind) in pending {
+            let Some(media_kind) = MediaKind::parse(&media_kind) else {
+                return Err(StorageError::InvalidSchema(format!(
+                    "未知的 media_kind：{media_kind}"
+                )));
+            };
+            let Some(size) = collection_size_bytes(Path::new(&path), media_kind) else {
+                continue;
+            };
+            filled += self.connection.execute(
+                "UPDATE collection_locations SET size_bytes = ?1
+                 WHERE id = ?2 AND size_bytes IS NULL",
+                params![size, location_id],
+            )?;
+        }
+        Ok(filled)
+    }
+
     pub fn collection_media_kind(&self, collection_id: i64) -> StorageResult<String> {
         self.connection
             .query_row(
@@ -421,7 +464,40 @@ fn collection_order(query: &CollectionQuery) -> &'static str {
         (CollectionSort::Title, SortDirection::Descending) => {
             "metadata.title IS NULL ASC, metadata.title COLLATE NOCASE DESC, collection.id DESC"
         }
+        (CollectionSort::Size, SortDirection::Ascending) => {
+            "location.size_bytes IS NULL ASC, location.size_bytes ASC, collection.id DESC"
+        }
+        (CollectionSort::Size, SortDirection::Descending) => {
+            "location.size_bytes IS NULL ASC, location.size_bytes DESC, collection.id DESC"
+        }
     }
+}
+
+/// 收藏目前位置的檔案大小：ZIP 取檔案本身，圖片資料夾取其下所有一般檔案的總和；
+/// 路徑不存在或讀取失敗時回傳 `None`，代表大小未知。
+pub fn collection_size_bytes(path: &Path, media_kind: MediaKind) -> Option<i64> {
+    fn directory_total(directory: &Path) -> Option<u64> {
+        let mut total = 0_u64;
+        for entry in std::fs::read_dir(directory).ok()? {
+            let entry = entry.ok()?;
+            let file_type = entry.file_type().ok()?;
+            if file_type.is_dir() {
+                total = total.checked_add(directory_total(&entry.path())?)?;
+            } else if file_type.is_file() {
+                total = total.checked_add(entry.metadata().ok()?.len())?;
+            }
+        }
+        Some(total)
+    }
+
+    let size = match media_kind {
+        MediaKind::Zip => std::fs::metadata(path)
+            .ok()
+            .filter(std::fs::Metadata::is_file)?
+            .len(),
+        MediaKind::ImageFolder => directory_total(path)?,
+    };
+    i64::try_from(size).ok()
 }
 
 const COLLECTION_SELECT_SQL: &str =
@@ -442,7 +518,7 @@ const COLLECTION_SELECT_SQL: &str =
                     ORDER BY tag.name
                 ) AS ordered_tags
             ), '[]'),
-            collection.media_kind";
+            collection.media_kind, location.size_bytes";
 
 const COLLECTION_FROM_SQL: &str = "FROM collections AS collection
      JOIN effective_metadata AS metadata ON metadata.collection_id = collection.id
@@ -642,6 +718,7 @@ struct RawCollectionRow {
     is_dl: Option<bool>,
     tags_json: String,
     media_kind: String,
+    size_bytes: Option<i64>,
 }
 
 fn map_collection_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawCollectionRow> {
@@ -665,6 +742,7 @@ fn map_collection_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawCollection
         is_dl: row.get(16)?,
         tags_json: row.get(17)?,
         media_kind: row.get(18)?,
+        size_bytes: row.get(19)?,
     })
 }
 
@@ -704,6 +782,7 @@ fn decode_collection_row(row: RawCollectionRow) -> StorageResult<CollectionSnaps
         tags: serde_json::from_str(&row.tags_json)?,
         created_at: row.created_at,
         updated_at: row.updated_at,
+        size_bytes: row.size_bytes,
     })
 }
 

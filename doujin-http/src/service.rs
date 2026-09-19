@@ -131,6 +131,11 @@ where
     if recovered_exports > 0 {
         println!("已標記 {recovered_exports} 筆中斷的 export jobs 為失敗並清理 partial");
     }
+    match application.backfill_collection_sizes() {
+        Ok(filled) if filled > 0 => println!("已補齊 {filled} 筆收藏的檔案大小"),
+        Ok(_) => {}
+        Err(error) => eprintln!("無法補齊既有收藏的檔案大小：{error}"),
+    }
     match application.reconcile_thumbnail_settings() {
         Ok(enqueued) if enqueued > 0 => {
             println!("thumbnail 設定或來源變更，已重新排程 {enqueued} 筆既有工作");

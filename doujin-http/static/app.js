@@ -1097,7 +1097,7 @@
     });
     const tags = params.getAll("tag").map((tag) => tag.trim()).filter(Boolean);
     if (tags.length) values.tag = tags;
-    const sort = ["created", "updated", "title"].includes(params.get("sort")) ? params.get("sort") : "created";
+    const sort = ["created", "updated", "title", "size"].includes(params.get("sort")) ? params.get("sort") : "created";
     const direction = ["asc", "desc"].includes(params.get("direction")) ? params.get("direction") : "desc";
     const focusId = Number.parseInt(params.get("focus") || "", 10);
     const savedViewId = Number.parseInt(params.get("view") || "", 10);
@@ -2111,6 +2111,8 @@
       "updated:asc": "最久未修改",
       "title:asc": "標題 A → Z",
       "title:desc": "標題 Z → A",
+      "size:desc": "檔案最大",
+      "size:asc": "檔案最小",
     };
     parts.push(`排序：${sortLabels[`${query.sort}:${query.direction}`] || "最近加入"}`);
     parts.push(`排列：${query.layout === "list" ? "條列" : "書牆"}`);
@@ -2444,7 +2446,7 @@
 
   function changeLibrarySort() {
     const [sort, direction] = ui.librarySort.value.split(":");
-    state.sort = ["created", "updated", "title"].includes(sort) ? sort : "created";
+    state.sort = ["created", "updated", "title", "size"].includes(sort) ? sort : "created";
     state.direction = ["asc", "desc"].includes(direction) ? direction : "desc";
     state.libraryFocusId = null;
     renderSavedViewContext();

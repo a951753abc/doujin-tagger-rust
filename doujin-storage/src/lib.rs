@@ -44,7 +44,7 @@ use crate::metadata::{
     MetadataAssertionDecision, MetadataField, MetadataSource, MetadataValue, SelectionSnapshot,
 };
 
-const SCHEMA_VERSION: i64 = 21;
+const SCHEMA_VERSION: i64 = 22;
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const SCAN_RUN_GUARD_MIGRATION: &str = include_str!("../migrations/0002_scan_run_guard.sql");
 const EXTERNAL_SEARCH_JOBS_MIGRATION: &str =
@@ -77,6 +77,7 @@ const LIBRARY_BATCH_SIZE_MIGRATION: &str =
     include_str!("../migrations/0019_library_batch_size.sql");
 const SHELF_COMPOSITION_MIGRATION: &str = include_str!("../migrations/0020_shelf_composition.sql");
 const EXHENTAI_SESSION_MIGRATION: &str = include_str!("../migrations/0021_exhentai_session.sql");
+const COLLECTION_SIZE_MIGRATION: &str = include_str!("../migrations/0022_collection_size.sql");
 
 /// 只保留 tombstone 與 candidate media kind 相同的 `tombstone_candidates` 列；
 /// 需要查詢把 `tombstone_candidates` 別名為 `candidate_link`。
@@ -202,6 +203,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 21,
         name: "0021_exhentai_session",
         sql: EXHENTAI_SESSION_MIGRATION,
+    },
+    Migration {
+        version: 22,
+        name: "0022_collection_size",
+        sql: COLLECTION_SIZE_MIGRATION,
     },
 ];
 
@@ -1391,8 +1397,9 @@ impl CatalogRepository {
         transaction.execute(
             "INSERT INTO collection_locations(
                  collection_id, root_id, full_path, path_key, relative_path,
-                 filename, location_status
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'current')",
+                 filename, location_status, size_bytes
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'current',
+                       (SELECT size_bytes FROM collection_locations WHERE id = ?7))",
             params![
                 collection_id,
                 archive_root_id,
@@ -1400,6 +1407,7 @@ impl CatalogRepository {
                 destination_key,
                 path_text(relative_path)?,
                 filename,
+                location_id,
             ],
         )?;
         transaction.execute(
@@ -2564,8 +2572,9 @@ fn complete_pending_move(
     transaction.execute(
         "INSERT INTO collection_locations(
              collection_id, root_id, full_path, path_key, relative_path,
-             filename, location_status
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'current')",
+             filename, location_status, size_bytes
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'current',
+                   (SELECT size_bytes FROM collection_locations WHERE id = ?7))",
         params![
             operation.collection_id,
             archive_root_id,
@@ -2573,6 +2582,7 @@ fn complete_pending_move(
             destination_key,
             destination_parts.relative_path,
             destination_parts.filename,
+            operation.from_location_id,
         ],
     )?;
     transaction.execute(
@@ -2682,8 +2692,9 @@ fn complete_pending_rename(
     transaction.execute(
         "INSERT INTO collection_locations(
              collection_id, root_id, full_path, path_key, relative_path,
-             filename, location_status
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'current')",
+             filename, location_status, size_bytes
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'current',
+                   (SELECT size_bytes FROM collection_locations WHERE id = ?7))",
         params![
             operation.collection_id,
             root_id,
@@ -2691,6 +2702,7 @@ fn complete_pending_rename(
             destination_key,
             path_text(relative_path)?,
             filename,
+            operation.from_location_id,
         ],
     )?;
     transaction.execute(
@@ -3299,8 +3311,9 @@ fn ingest_one(
         .ok_or_else(|| StorageError::NonUnicodePath(pending.path.clone()))?;
     transaction.execute(
         "INSERT INTO collection_locations(
-             collection_id, root_id, full_path, path_key, relative_path, filename, location_status
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'current')",
+             collection_id, root_id, full_path, path_key, relative_path, filename,
+             location_status, size_bytes
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'current', ?7)",
         params![
             collection_id,
             root_id,
@@ -3308,6 +3321,7 @@ fn ingest_one(
             current_path_key,
             path_text(relative_path)?,
             filename,
+            collections::collection_size_bytes(&pending.path, pending.media_kind),
         ],
     )?;
 

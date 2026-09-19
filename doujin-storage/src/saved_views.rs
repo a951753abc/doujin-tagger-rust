@@ -291,6 +291,7 @@ fn decode_query(value: &str) -> StorageResult<SavedViewQuery> {
             "created" => CollectionSort::Created,
             "updated" => CollectionSort::Updated,
             "title" => CollectionSort::Title,
+            "size" => CollectionSort::Size,
             _ => return invalid_saved_query("sort"),
         },
         direction: match persisted.direction.as_str() {
@@ -328,6 +329,7 @@ fn sort_name(sort: CollectionSort) -> &'static str {
         CollectionSort::Created => "created",
         CollectionSort::Updated => "updated",
         CollectionSort::Title => "title",
+        CollectionSort::Size => "size",
     }
 }
 

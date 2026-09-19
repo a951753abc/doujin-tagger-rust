@@ -149,15 +149,16 @@ mod tests {
         let connection = Connection::open(catalog.path()).expect("open raw catalog");
         connection
             .execute_batch(
-                "DROP TABLE exhentai_session;
-                 DELETE FROM schema_migrations WHERE version = 21;
+                "ALTER TABLE collection_locations DROP COLUMN size_bytes;
+                 DROP TABLE exhentai_session;
+                 DELETE FROM schema_migrations WHERE version IN (21, 22);
                  PRAGMA user_version = 20;",
             )
             .expect("rewind catalog to version 20");
         drop(connection);
 
         let repository = CatalogRepository::open(catalog.path()).expect("upgrade catalog");
-        assert_eq!(21, repository.schema_version().expect("schema version"));
+        assert_eq!(22, repository.schema_version().expect("schema version"));
         assert!(
             repository
                 .table_is_strict("exhentai_session")

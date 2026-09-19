@@ -72,3 +72,26 @@ Feature: Rust v2 的收藏列表、搜尋與詳細資料
     When API 查詢收藏
     Then 結果必須同時具有全部指定 tags
     And 只有部分 tags 相符的收藏不應出現在結果中
+
+  @search-v2-008
+  Scenario: 依檔案大小排序收藏
+    Given catalog 中的有效收藏具有不同的檔案大小
+    When 呼叫端指定以檔案大小排序並選擇遞增或遞減
+    Then 結果應依檔案大小排序
+    And 尚未取得檔案大小的收藏應排在最後
+    And 每筆結果應包含檔案大小
+
+  @search-v2-009
+  Scenario: 服務啟動時補齊既有收藏的檔案大小
+    Given catalog 中已有尚未記錄檔案大小的有效收藏
+    When 服務啟動
+    Then 系統應依目前位置補齊 ZIP 的檔案大小或圖片資料夾內所有檔案的總大小
+    And 已記錄大小的收藏不應重新讀取
+    And 檔案已不存在的收藏維持未知大小
+
+  @ui-local @search-v2-010
+  Scenario: Library 排序選單提供檔案大小
+    Given 收藏管理者開啟 Library 的排序選單
+    When 收藏管理者選擇「檔案最大」或「檔案最小」
+    Then Library 應以檔案大小遞減或遞增重新載入第一頁
+    And 摘要列應顯示對應的排序名稱

@@ -827,6 +827,7 @@ mod tests {
                 tags: Vec::new(),
                 created_at: String::new(),
                 updated_at: String::new(),
+                size_bytes: None,
             },
             identifiers,
             fields: vec![

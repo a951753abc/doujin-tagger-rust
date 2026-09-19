@@ -298,6 +298,7 @@ pub(crate) fn parse_collection_query(raw_query: Option<&str>) -> Result<Collecti
                     "created" => CollectionSort::Created,
                     "updated" => CollectionSort::Updated,
                     "title" => CollectionSort::Title,
+                    "size" => CollectionSort::Size,
                     _ => CollectionSort::default(),
                 };
             }
@@ -492,6 +493,7 @@ pub(crate) fn collection_sort_name(sort: CollectionSort) -> &'static str {
         CollectionSort::Created => "created",
         CollectionSort::Updated => "updated",
         CollectionSort::Title => "title",
+        CollectionSort::Size => "size",
     }
 }
 

@@ -74,7 +74,7 @@
 - [Rust v2 的 tombstone 身分合併](proposed/13-tombstone-consolidation.feature)
 - [Rust v2 的 E-Hentai／ExHentai gallery provider 與標籤映射](proposed/14-ehentai-gallery-provider.feature)
 
-Proposed features 目前合計 145 個 scenarios；連同現況基線共 238 個 scenarios。
+Proposed features 目前合計 151 個 scenarios；連同現況基線共 244 個 scenarios。
 
 - [DEC-003：社團與作者](workshops/dec-003-circle-author-example-mapping.md)
 - [批次 07：Rust v2 儲存模型](workshops/storage-v2-example-mapping.md)

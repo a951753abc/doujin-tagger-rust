@@ -1650,6 +1650,10 @@ impl<R: RecycleBin> ApplicationService<R> {
         Ok(self.repository.recover_interrupted_thumbnails()?)
     }
 
+    pub fn backfill_collection_sizes(&mut self) -> ApplicationResult<usize> {
+        Ok(self.repository.backfill_collection_sizes()?)
+    }
+
     pub fn rebuild_thumbnail(
         &mut self,
         collection_id: i64,

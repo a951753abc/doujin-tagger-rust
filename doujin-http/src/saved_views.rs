@@ -206,10 +206,13 @@ where
 }
 
 pub(crate) fn saved_view_query(request: SavedViewQueryRequest) -> Result<SavedViewQuery, ApiError> {
-    if !matches!(request.sort.as_str(), "created" | "updated" | "title") {
+    if !matches!(
+        request.sort.as_str(),
+        "created" | "updated" | "title" | "size"
+    ) {
         return Err(ApiError::bad_request(
             "invalid_saved_view",
-            "sort 必須是 created、updated 或 title",
+            "sort 必須是 created、updated、title 或 size",
         ));
     }
     if !matches!(request.direction.as_str(), "asc" | "desc") {
