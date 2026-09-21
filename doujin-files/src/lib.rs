@@ -503,7 +503,10 @@ pub fn plan_archive_move(
             error,
         ));
     }
-    let folder = safe_archive_folder(collection.event.as_deref());
+    let folder = safe_archive_folder(
+        collection.event.as_deref(),
+        collection.classification_top.as_deref(),
+    );
     let event_directory = archive_root.path.join(&folder);
     let destination = event_directory.join(&collection.filename);
     if let Err(error) = validate_source_zip(&collection.path) {
@@ -856,8 +859,13 @@ fn move_zip_no_overwrite(source: &Path, destination: &Path) -> Result<(), FileSe
 }
 
 const UNCLASSIFIED_ARCHIVE_FOLDER: &str = "未分類";
+const CG_ARCHIVE_FOLDER: &str = "cg";
 
-fn safe_archive_folder(event: Option<&str>) -> String {
+/// 分類為 CG 的收藏一律歸入 `cg`（不論有無場次）；其餘依場次資料夾。
+fn safe_archive_folder(event: Option<&str>, classification_top: Option<&str>) -> String {
+    if classification_top.is_some_and(|top| top.trim() == "CG") {
+        return CG_ARCHIVE_FOLDER.to_owned();
+    }
     let event = event.unwrap_or_default().trim();
     let mut folder: String = event
         .chars()
@@ -1280,15 +1288,25 @@ mod tests {
 
     #[test]
     fn archive_folder_replaces_windows_unsafe_characters_and_reserved_names() {
-        assert_eq!("C106________", safe_archive_folder(Some(" C106:<>/\\|?* ")));
-        assert_eq!("_CON", safe_archive_folder(Some("CON")));
-        assert_eq!("_lpt9", safe_archive_folder(Some("lpt9")));
+        assert_eq!(
+            "C106________",
+            safe_archive_folder(Some(" C106:<>/\\|?* "), None)
+        );
+        assert_eq!("_CON", safe_archive_folder(Some("CON"), None));
+        assert_eq!("_lpt9", safe_archive_folder(Some("lpt9"), None));
     }
 
     #[test]
     fn missing_or_empty_event_uses_uncategorized_folder() {
-        assert_eq!("未分類", safe_archive_folder(None));
-        assert_eq!("未分類", safe_archive_folder(Some(" . ")));
+        assert_eq!("未分類", safe_archive_folder(None, None));
+        assert_eq!("未分類", safe_archive_folder(Some(" . "), None));
+        assert_eq!("未分類", safe_archive_folder(None, Some("同人誌")));
+    }
+
+    #[test]
+    fn cg_classification_always_uses_cg_folder() {
+        assert_eq!("cg", safe_archive_folder(None, Some("CG")));
+        assert_eq!("cg", safe_archive_folder(Some("C106"), Some("CG")));
     }
 
     /// Windows 會剝掉 component 尾端的 `.` 與空白，也會把 DOS device name 解讀成裝置，
