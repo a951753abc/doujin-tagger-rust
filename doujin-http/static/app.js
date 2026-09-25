@@ -676,6 +676,8 @@
       quickArchiveSubmit: byId("quick-archive-submit"),
       defaultArchiveRoot: byId("default-archive-root"),
       defaultArchiveRootNote: byId("default-archive-root-note"),
+      commercialArchiveRoot: byId("commercial-archive-root"),
+      commercialArchiveRootNote: byId("commercial-archive-root-note"),
       exportDialog: byId("export-dialog"),
       exportForm: byId("export-form"),
       exportRootSelect: byId("export-root-select"),
@@ -6898,6 +6900,7 @@
           thumb_size: current.overrides.thumb_size ? current.saved_thumb_size : current.thumb_size,
           thumb_quality: current.overrides.thumb_quality ? current.saved_thumb_quality : current.thumb_quality,
           default_archive_root_id: rootId,
+          commercial_archive_root_id: current.commercial_archive_root_id ?? null,
           library_batch_size: current.library_batch_size,
         },
       });
@@ -8542,6 +8545,13 @@
       state.settingsRoots = roots.roots;
       state.exportRoots = exportRoots.roots || [];
       renderDefaultArchiveRootSelect(settings.default_archive_root_id, roots.roots);
+      renderArchiveRootSelect(
+        ui.commercialArchiveRoot,
+        ui.commercialArchiveRootNote,
+        settings.commercial_archive_root_id,
+        roots.roots,
+        "原設定的商業誌典藏庫已停用或移除，已顯示為「未設定」；再次儲存會清除這項設定。",
+      );
       renderFirstRun(settings, roots.roots);
       ui.rootRescanNote.hidden = !state.rootsNeedScan;
       updateThumbnailCacheJob(cacheJobs.job, { announce: false });
@@ -8600,6 +8610,7 @@
           thumb_size: settingsSnapshot.saved_thumb_size,
           thumb_quality: settingsSnapshot.saved_thumb_quality,
           default_archive_root_id: settingsSnapshot.default_archive_root_id ?? null,
+          commercial_archive_root_id: settingsSnapshot.commercial_archive_root_id ?? null,
           library_batch_size: settingsSnapshot.library_batch_size ?? state.libraryBatchSize,
         },
       });
@@ -8654,23 +8665,33 @@
   }
 
   function renderDefaultArchiveRootSelect(defaultArchiveRootId, roots) {
+    renderArchiveRootSelect(
+      ui.defaultArchiveRoot,
+      ui.defaultArchiveRootNote,
+      defaultArchiveRootId,
+      roots,
+      "原設定的典藏庫已停用或移除，已顯示為「未設定」；再次儲存會清除這項設定。",
+    );
+  }
+
+  function renderArchiveRootSelect(select, note, selectedRootId, roots, staleMessage) {
     const archiveRoots = (roots || []).filter((root) => root.active && root.source === "archive");
-    ui.defaultArchiveRoot.replaceChildren();
+    select.replaceChildren();
     const noneOption = document.createElement("option");
     noneOption.value = "";
     noneOption.textContent = "未設定";
-    ui.defaultArchiveRoot.append(noneOption);
+    select.append(noneOption);
     archiveRoots.forEach((root) => {
       const option = document.createElement("option");
       option.value = String(root.id);
       option.textContent = `${root.label} — ${root.path}`;
-      ui.defaultArchiveRoot.append(option);
+      select.append(option);
     });
-    const isValid = defaultArchiveRootId != null && archiveRoots.some((root) => root.id === defaultArchiveRootId);
-    ui.defaultArchiveRoot.value = isValid ? String(defaultArchiveRootId) : "";
-    const stale = defaultArchiveRootId != null && !isValid;
-    ui.defaultArchiveRootNote.hidden = !stale;
-    ui.defaultArchiveRootNote.textContent = stale ? "原設定的典藏庫已停用或移除，已顯示為「未設定」；再次儲存會清除這項設定。" : "";
+    const isValid = selectedRootId != null && archiveRoots.some((root) => root.id === selectedRootId);
+    select.value = isValid ? String(selectedRootId) : "";
+    const stale = selectedRootId != null && !isValid;
+    note.hidden = !stale;
+    note.textContent = stale ? staleMessage : "";
   }
 
   function renderThumbnailCacheRoots() {
@@ -8942,6 +8963,9 @@
             : Number(form.get("thumb_quality")),
           default_archive_root_id: form.get("default_archive_root_id")
             ? Number(form.get("default_archive_root_id"))
+            : null,
+          commercial_archive_root_id: form.get("commercial_archive_root_id")
+            ? Number(form.get("commercial_archive_root_id"))
             : null,
           library_batch_size: Number(form.get("library_batch_size")),
         },

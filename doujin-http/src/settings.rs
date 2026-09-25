@@ -23,6 +23,7 @@ pub(crate) struct SettingsResponse {
     saved_thumb_size: String,
     saved_thumb_quality: u8,
     default_archive_root_id: Option<i64>,
+    commercial_archive_root_id: Option<i64>,
     library_batch_size: u32,
     overrides: SettingsOverridesResponse,
     environment_overrides: Vec<&'static str>,
@@ -69,6 +70,7 @@ impl SettingsResponse {
             ),
             saved_thumb_quality: settings.saved_thumbnail_quality,
             default_archive_root_id: settings.default_archive_root_id,
+            commercial_archive_root_id: settings.commercial_archive_root_id,
             library_batch_size: settings.library_batch_size,
             overrides: SettingsOverridesResponse {
                 viewer_path: settings
@@ -95,6 +97,8 @@ pub(crate) struct SettingsUpdateRequest {
     thumb_quality: i64,
     #[serde(default)]
     default_archive_root_id: Option<i64>,
+    #[serde(default)]
+    commercial_archive_root_id: Option<i64>,
     library_batch_size: i64,
 }
 
@@ -184,6 +188,7 @@ where
                 quality,
                 payload.default_archive_root_id,
                 library_batch_size,
+                payload.commercial_archive_root_id,
             )
             .map_err(ApiError::from_application)
     })

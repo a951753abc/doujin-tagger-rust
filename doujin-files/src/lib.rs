@@ -456,6 +456,15 @@ pub struct ArchiveMovePlan {
     pub readiness: ArchiveMoveReadiness,
     pub destination: Option<PathBuf>,
     pub blocker: Option<FileServiceError>,
+    /// `destination` 所屬的歸檔區；商業誌改歸商業誌典藏庫時不同於 request 的歸檔區。
+    pub archive_root: Option<LibraryRootSnapshot>,
+}
+
+impl ArchiveMovePlan {
+    fn in_root(mut self, archive_root: &LibraryRootSnapshot) -> Self {
+        self.archive_root = Some(archive_root.clone());
+        self
+    }
 }
 
 pub fn validate_archive_root(archive_root: &LibraryRootSnapshot) -> Result<(), FileServiceError> {
@@ -469,6 +478,7 @@ pub fn validate_archive_root(archive_root: &LibraryRootSnapshot) -> Result<(), F
 
 /// 計算單筆收藏的歸檔目的地與可執行狀態，全程唯讀：不建立資料夾、不寫 journal。
 /// move preflight 與 apply 期共用這條分類邏輯。
+/// 商業誌且已設定商業誌典藏庫時，目的地改為該典藏庫根目錄，不使用 `archive_root`。
 pub fn plan_archive_move(
     repository: &CatalogRepository,
     collection_id: i64,
@@ -503,11 +513,33 @@ pub fn plan_archive_move(
             error,
         ));
     }
-    let folder = safe_archive_folder(
-        collection.event.as_deref(),
-        collection.classification_top.as_deref(),
-    );
-    let event_directory = archive_root.path.join(&folder);
+    let commercial_root =
+        match commercial_archive_root(repository, collection.classification_top.as_deref())? {
+            Ok(root) => root,
+            Err(error) => {
+                return Ok(blocked_plan(
+                    collection_id,
+                    None,
+                    ArchiveMoveReadiness::Blocked,
+                    error,
+                ));
+            }
+        };
+    let (archive_root, event_directory, ready) = match &commercial_root {
+        Some(root) => (root, root.path.clone(), ArchiveMoveReadiness::Ready),
+        None => {
+            let folder = safe_archive_folder(
+                collection.event.as_deref(),
+                collection.classification_top.as_deref(),
+            );
+            let ready = if folder == UNCLASSIFIED_ARCHIVE_FOLDER {
+                ArchiveMoveReadiness::ReadyUnclassified
+            } else {
+                ArchiveMoveReadiness::Ready
+            };
+            (archive_root, archive_root.path.join(&folder), ready)
+        }
+    };
     let destination = event_directory.join(&collection.filename);
     if let Err(error) = validate_source_zip(&collection.path) {
         return Ok(blocked_plan(
@@ -515,7 +547,8 @@ pub fn plan_archive_move(
             Some(destination),
             ArchiveMoveReadiness::SourceMissing,
             error,
-        ));
+        )
+        .in_root(archive_root));
     }
     if let Err(error) = inspect_safe_archive_directory(&archive_root.path, &event_directory) {
         return Ok(blocked_plan(
@@ -523,7 +556,8 @@ pub fn plan_archive_move(
             Some(destination),
             ArchiveMoveReadiness::Blocked,
             error,
-        ));
+        )
+        .in_root(archive_root));
     }
     match fs::symlink_metadata(&destination) {
         Ok(_) => {
@@ -533,7 +567,8 @@ pub fn plan_archive_move(
                 Some(destination),
                 ArchiveMoveReadiness::Collision,
                 FileServiceError::InvalidFile(message),
-            ));
+            )
+            .in_root(archive_root));
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(source) => {
@@ -546,7 +581,8 @@ pub fn plan_archive_move(
                     path: destination,
                     source,
                 },
-            ));
+            )
+            .in_root(archive_root));
         }
     }
     if repository
@@ -559,19 +595,52 @@ pub fn plan_archive_move(
             Some(destination),
             ArchiveMoveReadiness::Collision,
             FileServiceError::InvalidFile(message),
-        ));
+        )
+        .in_root(archive_root));
     }
-    let readiness = if folder == UNCLASSIFIED_ARCHIVE_FOLDER {
-        ArchiveMoveReadiness::ReadyUnclassified
-    } else {
-        ArchiveMoveReadiness::Ready
-    };
     Ok(ArchiveMovePlan {
         collection_id,
-        readiness,
+        readiness: ready,
         destination: Some(destination),
         blocker: None,
+        archive_root: Some(archive_root.clone()),
     })
+}
+
+/// 分類為商業誌且已設定商業誌典藏庫時回傳該典藏庫；其餘回傳 `None`。
+/// 設定指向的 root 無法使用時回傳阻擋原因，不退回 request 的歸檔區。
+fn commercial_archive_root(
+    repository: &CatalogRepository,
+    classification_top: Option<&str>,
+) -> Result<Result<Option<LibraryRootSnapshot>, FileServiceError>, StorageError> {
+    if !classification_top.is_some_and(|top| top.trim() == COMMERCIAL_CLASSIFICATION_TOP) {
+        return Ok(Ok(None));
+    }
+    let Some(root_id) = repository
+        .stored_application_settings()?
+        .and_then(|settings| settings.commercial_archive_root_id)
+    else {
+        return Ok(Ok(None));
+    };
+    let unusable = |reason: String| {
+        FileServiceError::InvalidFile(format!(
+            "商業誌典藏庫無法使用（{reason}），請到設定重新指定商業誌典藏庫"
+        ))
+    };
+    let root = match repository.library_root(root_id) {
+        Ok(root) => root,
+        Err(StorageError::LibraryRootNotFound(_)) => {
+            return Ok(Err(unusable(format!("找不到 library root {root_id}"))));
+        }
+        Err(error) => return Err(error),
+    };
+    if root.source != SourceKind::Archive {
+        return Ok(Err(unusable("不是 archive 來源的 library root".to_owned())));
+    }
+    if !root.active {
+        return Ok(Err(unusable("library root 已停用".to_owned())));
+    }
+    Ok(Ok(Some(root)))
 }
 
 fn blocked_plan(
@@ -585,6 +654,7 @@ fn blocked_plan(
         readiness,
         destination,
         blocker: Some(blocker),
+        archive_root: None,
     }
 }
 
@@ -667,13 +737,16 @@ impl<'repository, R: RecycleBin> FileOperationService<'repository, R> {
         let archive_root = self.repository.library_root(archive_root_id)?;
         validate_archive_root(&archive_root)?;
         let plan = plan_archive_move(self.repository, collection_id, &archive_root)?;
-        let destination = match plan.readiness {
+        let (destination, target_root) = match plan.readiness {
             // Collision 交由 begin_system_move 與 move_zip_no_overwrite 攔下，維持既有錯誤來源。
             ArchiveMoveReadiness::Ready
             | ArchiveMoveReadiness::ReadyUnclassified
-            | ArchiveMoveReadiness::Collision => plan
-                .destination
-                .expect("可歸檔或碰撞的 plan 一定算得出目的地"),
+            | ArchiveMoveReadiness::Collision => (
+                plan.destination
+                    .expect("可歸檔或碰撞的 plan 一定算得出目的地"),
+                plan.archive_root
+                    .expect("可歸檔或碰撞的 plan 一定帶有目的地歸檔區"),
+            ),
             _ => {
                 return Err(plan.blocker.unwrap_or_else(|| {
                     FileServiceError::InvalidFile("收藏目前不可歸檔".to_owned())
@@ -683,11 +756,11 @@ impl<'repository, R: RecycleBin> FileOperationService<'repository, R> {
         let event_directory = destination
             .parent()
             .ok_or_else(|| FileServiceError::InvalidFile("歸檔目的地缺少場次資料夾".to_owned()))?;
-        ensure_safe_archive_directory(&archive_root.path, event_directory)?;
+        ensure_safe_archive_directory(&target_root.path, event_directory)?;
 
         Ok(MoveRequest {
             collection_id,
-            archive_root_id,
+            archive_root_id: target_root.id,
             destination,
         })
     }
@@ -860,6 +933,7 @@ fn move_zip_no_overwrite(source: &Path, destination: &Path) -> Result<(), FileSe
 
 const UNCLASSIFIED_ARCHIVE_FOLDER: &str = "未分類";
 const CG_ARCHIVE_FOLDER: &str = "cg";
+const COMMERCIAL_CLASSIFICATION_TOP: &str = "商業誌";
 
 /// 分類為 CG 的收藏一律歸入 `cg`（不論有無場次）；其餘依場次資料夾。
 fn safe_archive_folder(event: Option<&str>, classification_top: Option<&str>) -> String {

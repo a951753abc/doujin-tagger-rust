@@ -188,7 +188,7 @@ fn duplicate_fingerprint(collection_id: i64, source: &str, content: char) -> Dup
 fn migration_enables_required_sqlite_features() {
     let repository = CatalogRepository::open_in_memory().expect("open catalog");
 
-    assert_eq!(22, repository.schema_version().expect("schema version"));
+    assert_eq!(23, repository.schema_version().expect("schema version"));
     assert!(repository.foreign_keys_enabled().expect("foreign keys"));
     assert!(
         repository
@@ -743,17 +743,18 @@ fn version_nineteen_catalog_backfills_pinned_saved_views_into_shelf_configuratio
     let connection = Connection::open(&database).expect("rewind catalog to v19");
     connection
         .execute_batch(
-            "ALTER TABLE collection_locations DROP COLUMN size_bytes;
+            "ALTER TABLE application_settings DROP COLUMN commercial_archive_root_id;
+             ALTER TABLE collection_locations DROP COLUMN size_bytes;
              DROP TABLE exhentai_session;
              DROP TABLE shelf_configuration;
-             DELETE FROM schema_migrations WHERE version IN (20, 21, 22);
+             DELETE FROM schema_migrations WHERE version IN (20, 21, 22, 23);
              PRAGMA user_version = 19;",
         )
         .expect("rewind shelf composition migration");
     drop(connection);
 
     let repository = CatalogRepository::open(&database).expect("upgrade v19 catalog");
-    assert_eq!(22, repository.schema_version().expect("schema version"));
+    assert_eq!(23, repository.schema_version().expect("schema version"));
     let configuration = repository
         .shelf_configuration()
         .expect("upgraded shelf configuration");
@@ -1173,12 +1174,13 @@ fn version_seventeen_external_search_activity_uses_selected_assertion_time_for_l
         .expect("date unchanged assertion before job");
     connection
         .execute_batch(
-            "ALTER TABLE collection_locations DROP COLUMN size_bytes;
+            "ALTER TABLE application_settings DROP COLUMN commercial_archive_root_id;
+             ALTER TABLE collection_locations DROP COLUMN size_bytes;
              DROP TABLE exhentai_session;
              DROP TABLE shelf_configuration;
              DROP TABLE external_search_job_resolutions;
              ALTER TABLE application_settings DROP COLUMN library_batch_size;
-             DELETE FROM schema_migrations WHERE version IN (18, 19, 20, 21, 22);
+             DELETE FROM schema_migrations WHERE version IN (18, 19, 20, 21, 22, 23);
              PRAGMA user_version = 17;",
         )
         .expect("rewind external activity migration");
@@ -1186,7 +1188,7 @@ fn version_seventeen_external_search_activity_uses_selected_assertion_time_for_l
 
     let mut repository =
         CatalogRepository::open(&database).expect("upgrade legacy activity catalog");
-    assert_eq!(22, repository.schema_version().expect("upgraded schema"));
+    assert_eq!(23, repository.schema_version().expect("upgraded schema"));
     let activity = repository
         .external_search_activity()
         .expect("legacy external activity");
@@ -1663,6 +1665,7 @@ fn typed_settings_save_atomically_and_requeue_changed_thumbnail_settings() {
             "360x480-q85-webp-v1",
             None,
             96,
+            None,
         )
         .expect("save settings");
     assert_eq!(Some(reader_path), saved.settings.reader_path);
@@ -1679,20 +1682,20 @@ fn typed_settings_save_atomically_and_requeue_changed_thumbnail_settings() {
     assert_eq!(0, requeued.attempts);
 
     let unchanged = repository
-        .save_application_settings(None, 360, 480, 85, "360x480-q85-webp-v1", None, 144)
+        .save_application_settings(None, 360, 480, 85, "360x480-q85-webp-v1", None, 144, None)
         .expect("save unchanged thumbnail settings");
     assert_eq!(0, unchanged.thumbnails_requeued);
     assert_eq!(None, unchanged.settings.reader_path);
     assert_eq!(144, unchanged.settings.library_batch_size);
     assert!(matches!(
         repository
-            .save_application_settings(None, 300, 400, 0, "invalid", None, 48)
+            .save_application_settings(None, 300, 400, 0, "invalid", None, 48, None)
             .expect_err("reject invalid quality"),
         StorageError::InvalidApplicationSettings(_)
     ));
     assert!(matches!(
         repository
-            .save_application_settings(None, 360, 480, 85, "360x480-q85-webp-v1", None, 25)
+            .save_application_settings(None, 360, 480, 85, "360x480-q85-webp-v1", None, 25, None)
             .expect_err("reject invalid library batch size"),
         StorageError::InvalidApplicationSettings(_)
     ));
@@ -1743,7 +1746,7 @@ fn library_batch_size_defaults_round_trips_reopens_and_falls_back_from_invalid_r
     );
     for value in [24, 48, 96, 144, 192] {
         let saved = repository
-            .save_application_settings(None, 300, 400, 80, "300x400-q80-webp-v1", None, value)
+            .save_application_settings(None, 300, 400, 80, "300x400-q80-webp-v1", None, value, None)
             .expect("save allowed library batch size");
         assert_eq!(value, saved.settings.library_batch_size);
     }
@@ -1784,6 +1787,75 @@ fn library_batch_size_defaults_round_trips_reopens_and_falls_back_from_invalid_r
 }
 
 #[test]
+fn commercial_archive_root_setting_round_trips_on_new_and_upgraded_catalogs() {
+    let tree = TestTree::new("commercial-archive-root");
+    let database = tree.database();
+    let mut repository = CatalogRepository::open(&database).expect("open new catalog");
+    assert_eq!(23, repository.schema_version().expect("schema version"));
+    let saved = repository
+        .save_application_settings(
+            None,
+            300,
+            400,
+            80,
+            "300x400-q80-webp-v1",
+            Some(5),
+            48,
+            Some(7),
+        )
+        .expect("save commercial archive root");
+    assert_eq!(Some(7), saved.settings.commercial_archive_root_id);
+    assert_eq!(Some(5), saved.settings.default_archive_root_id);
+    let cleared = repository
+        .save_application_settings(None, 300, 400, 80, "300x400-q80-webp-v1", Some(5), 48, None)
+        .expect("clear commercial archive root");
+    assert_eq!(None, cleared.settings.commercial_archive_root_id);
+    drop(repository);
+
+    let connection = Connection::open(&database).expect("rewind catalog to v22");
+    connection
+        .execute_batch(
+            "ALTER TABLE application_settings DROP COLUMN commercial_archive_root_id;
+             DELETE FROM schema_migrations WHERE version = 23;
+             PRAGMA user_version = 22;",
+        )
+        .expect("rewind commercial archive root migration");
+    drop(connection);
+
+    let mut repository = CatalogRepository::open(&database).expect("upgrade v22 catalog");
+    assert_eq!(23, repository.schema_version().expect("upgraded schema"));
+    let upgraded = repository
+        .stored_application_settings()
+        .expect("upgraded settings")
+        .expect("settings row");
+    assert_eq!(None, upgraded.commercial_archive_root_id);
+    assert_eq!(Some(5), upgraded.default_archive_root_id);
+    repository
+        .save_application_settings(
+            None,
+            300,
+            400,
+            80,
+            "300x400-q80-webp-v1",
+            Some(5),
+            48,
+            Some(9),
+        )
+        .expect("save on upgraded catalog");
+    drop(repository);
+
+    let repository = CatalogRepository::open(&database).expect("reopen upgraded catalog");
+    assert_eq!(
+        Some(9),
+        repository
+            .stored_application_settings()
+            .expect("reopened settings")
+            .expect("settings row")
+            .commercial_archive_root_id
+    );
+}
+
+#[test]
 fn version_one_catalog_upgrades_through_all_migrations_without_losing_data() {
     let tree = TestTree::new("upgrade-v1");
     let database = tree.database();
@@ -1807,7 +1879,7 @@ fn version_one_catalog_upgrades_through_all_migrations_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade catalog");
 
-    assert_eq!(22, repository.schema_version().expect("schema version"));
+    assert_eq!(23, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     drop(repository);
     let connection = Connection::open(&database).expect("inspect upgraded catalog");
@@ -1875,17 +1947,18 @@ fn version_eight_catalog_removes_is_dl_event_fallback_without_overwriting_manual
              DROP TABLE export_roots;
              DROP TABLE exhentai_session;
              DROP TABLE shelf_configuration;
+             ALTER TABLE application_settings DROP COLUMN commercial_archive_root_id;
              ALTER TABLE application_settings DROP COLUMN library_batch_size;
              ALTER TABLE application_settings DROP COLUMN default_archive_root_id;
              ALTER TABLE collection_locations DROP COLUMN size_bytes;
-             DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22);
+             DELETE FROM schema_migrations WHERE version IN (9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23);
              PRAGMA user_version = 8;",
         )
         .expect("seed v8 metadata");
     drop(connection);
 
     let repository = CatalogRepository::open(&database).expect("upgrade catalog");
-    assert_eq!(22, repository.schema_version().expect("schema version"));
+    assert_eq!(23, repository.schema_version().expect("schema version"));
     drop(repository);
 
     let connection = Connection::open(&database).expect("inspect upgraded catalog");
@@ -1989,7 +2062,7 @@ fn version_six_catalog_adds_thumbnail_priority_without_losing_state() {
         .thumbnail_state(1)
         .expect("preserved thumbnail state");
 
-    assert_eq!(22, repository.schema_version().expect("schema version"));
+    assert_eq!(23, repository.schema_version().expect("schema version"));
     assert_eq!(ThumbnailStatus::Pending, state.status);
     assert_eq!(BACKGROUND_THUMBNAIL_PRIORITY, state.priority);
     assert!(state.requested_at.is_some());
@@ -2036,7 +2109,7 @@ fn version_two_catalog_upgrades_external_search_jobs_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v2 catalog");
 
-    assert_eq!(22, repository.schema_version().expect("schema version"));
+    assert_eq!(23, repository.schema_version().expect("schema version"));
     let job = repository
         .external_search_job(job_id)
         .expect("preserved external search job");
@@ -2086,7 +2159,7 @@ fn version_three_catalog_adds_consolidation_audit_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v3 catalog");
 
-    assert_eq!(22, repository.schema_version().expect("schema version"));
+    assert_eq!(23, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert_eq!(
         None,
@@ -2141,7 +2214,7 @@ fn version_four_catalog_adds_thumbnail_state_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v4 catalog");
 
-    assert_eq!(22, repository.schema_version().expect("schema version"));
+    assert_eq!(23, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert!(
         repository
@@ -2200,7 +2273,7 @@ fn version_five_catalog_adds_typed_application_settings_without_losing_data() {
 
     let repository = CatalogRepository::open(&database).expect("upgrade v5 catalog");
 
-    assert_eq!(22, repository.schema_version().expect("schema version"));
+    assert_eq!(23, repository.schema_version().expect("schema version"));
     assert_eq!(1, repository.collection_count().expect("preserved data"));
     assert!(
         repository

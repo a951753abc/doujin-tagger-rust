@@ -1577,7 +1577,7 @@ fn environment_overrides_remain_effective_while_user_settings_are_persisted() {
             .library_batch_size
     );
     let saved = application
-        .save_application_settings(Some(stored_reader.clone()), 360, 480, 85, None, 96)
+        .save_application_settings(Some(stored_reader.clone()), 360, 480, 85, None, 96, None)
         .expect("save overridden settings");
 
     assert_eq!(Some(environment_reader), saved.settings.reader_path);
@@ -1704,7 +1704,7 @@ fn stale_thumbnail_result_is_ignored_after_settings_requeue() {
         .expect("start thumbnail");
 
     let saved = application
-        .save_application_settings(None, 480, 640, 100, None, 48)
+        .save_application_settings(None, 480, 640, 100, None, 48, None)
         .expect("save settings");
     assert_eq!(1, saved.thumbnails_requeued);
     let state = application
@@ -1785,7 +1785,7 @@ fn manual_cover_persists_invalidates_cache_survives_settings_and_reports_missing
     assert!(selected_state.source_fingerprint.contains("cover:manual"));
 
     let settings = application
-        .save_application_settings(None, 480, 640, 92, None, 48)
+        .save_application_settings(None, 480, 640, 92, None, 48, None)
         .expect("change thumbnail settings");
     assert_eq!(1, settings.thumbnails_requeued);
     let selected_request = application
@@ -2524,6 +2524,285 @@ fn image_folder_named_like_a_zip_is_blocked_before_touching_the_archive_root() {
             .expect("file operation count")
     );
     assert!(folder.is_file());
+}
+
+const COMMERCIAL_ZIP: &str = "(成年コミック) [作者] 作品.zip";
+const DOUJIN_ZIP: &str = "(C106) [circle] work.zip";
+
+struct CommercialArchiveFixture {
+    tree: TestTree,
+    application: ApplicationService<NoopRecycleBin>,
+    commercial_id: i64,
+    doujin_id: i64,
+    doujin_root_path: PathBuf,
+    doujin_root_id: i64,
+    commercial_root_path: PathBuf,
+    commercial_root_id: i64,
+}
+
+fn commercial_archive_fixture(
+    label: &str,
+    configure_commercial_root: bool,
+) -> CommercialArchiveFixture {
+    let tree = TestTree::new(label);
+    let commercial_source = tree.zip(COMMERCIAL_ZIP);
+    let doujin_source = tree.zip(DOUJIN_ZIP);
+    let doujin_root_path = tree.path.join("同人誌");
+    let commercial_root_path = tree.path.join("商業誌");
+    fs::create_dir_all(&doujin_root_path).expect("create doujin archive root");
+    fs::create_dir_all(&commercial_root_path).expect("create commercial archive root");
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let thumbnail_config =
+        ThumbnailConfig::new(tree.path.join("cache"), 300, 400, 80).expect("thumbnail config");
+    let mut application =
+        ApplicationService::with_thumbnails(repository, NoopRecycleBin, thumbnail_config);
+    application
+        .run_scan(&[tree.root()])
+        .expect("scan downloads root");
+    let commercial_id = application
+        .repository()
+        .collection_id_for_current_path(&commercial_source)
+        .expect("commercial lookup")
+        .expect("commercial collection");
+    let doujin_id = application
+        .repository()
+        .collection_id_for_current_path(&doujin_source)
+        .expect("doujin lookup")
+        .expect("doujin collection");
+    let doujin_root_id = application
+        .register_library_root(&doujin_root_path, SourceKind::Archive, "同人誌")
+        .expect("register doujin archive root")
+        .id;
+    let commercial_root_id = application
+        .register_library_root(&commercial_root_path, SourceKind::Archive, "商業誌")
+        .expect("register commercial archive root")
+        .id;
+    if configure_commercial_root {
+        let saved = application
+            .save_application_settings(
+                None,
+                300,
+                400,
+                80,
+                Some(doujin_root_id),
+                48,
+                Some(commercial_root_id),
+            )
+            .expect("save commercial archive root");
+        assert_eq!(
+            Some(commercial_root_id),
+            saved.settings.commercial_archive_root_id
+        );
+    }
+    CommercialArchiveFixture {
+        tree,
+        application,
+        commercial_id,
+        doujin_id,
+        doujin_root_path,
+        doujin_root_id,
+        commercial_root_path,
+        commercial_root_id,
+    }
+}
+
+#[test]
+fn commercial_collection_preflight_routes_to_commercial_archive_root_while_doujin_keeps_event_folder()
+ {
+    let fixture = commercial_archive_fixture("commercial-preflight", true);
+
+    let preflight = fixture
+        .application
+        .move_preflight(
+            &[fixture.commercial_id, fixture.doujin_id],
+            fixture.doujin_root_id,
+        )
+        .expect("move preflight");
+
+    assert_eq!(fixture.doujin_root_id, preflight.archive_root_id);
+    assert_eq!(
+        fixture.doujin_root_path.to_string_lossy(),
+        preflight.archive_root_path
+    );
+    assert_eq!(2, preflight.items.len());
+    assert_eq!(fixture.commercial_id, preflight.items[0].collection_id);
+    assert_eq!(ArchiveMovePreflightStatus::Ready, preflight.items[0].status);
+    assert_eq!(
+        Some(
+            fixture
+                .commercial_root_path
+                .join(COMMERCIAL_ZIP)
+                .to_string_lossy()
+                .into_owned()
+        ),
+        preflight.items[0].destination
+    );
+    assert_eq!(None, preflight.items[0].message);
+    assert_eq!(fixture.doujin_id, preflight.items[1].collection_id);
+    assert_eq!(ArchiveMovePreflightStatus::Ready, preflight.items[1].status);
+    assert_eq!(
+        Some(
+            fixture
+                .doujin_root_path
+                .join("C106")
+                .join(DOUJIN_ZIP)
+                .to_string_lossy()
+                .into_owned()
+        ),
+        preflight.items[1].destination
+    );
+    assert_eq!(2, preflight.summary.ready);
+    assert_eq!(0, preflight.summary.ready_unclassified);
+    assert!(fixture.tree.library().join(COMMERCIAL_ZIP).is_file());
+    assert_eq!(
+        0,
+        fs::read_dir(&fixture.commercial_root_path)
+            .expect("read commercial root")
+            .count()
+    );
+}
+
+#[test]
+fn commercial_collection_move_lands_flat_in_commercial_archive_root_in_mixed_batch() {
+    let mut fixture = commercial_archive_fixture("commercial-move", true);
+
+    let moved = fixture.application.move_collections_to_archive(
+        &[fixture.commercial_id, fixture.doujin_id],
+        fixture.doujin_root_id,
+    );
+
+    assert_eq!(2, moved.succeeded(), "{moved:?}");
+    assert_eq!(0, moved.failed());
+    assert!(fixture.commercial_root_path.join(COMMERCIAL_ZIP).is_file());
+    assert!(!fixture.tree.library().join(COMMERCIAL_ZIP).exists());
+    assert!(!fixture.doujin_root_path.join("未分類").exists());
+    assert!(!fixture.doujin_root_path.join(COMMERCIAL_ZIP).exists());
+    assert!(
+        fixture
+            .doujin_root_path
+            .join("C106")
+            .join(DOUJIN_ZIP)
+            .is_file()
+    );
+    assert!(!fixture.tree.library().join(DOUJIN_ZIP).exists());
+    let commercial = fixture
+        .application
+        .repository()
+        .collection(fixture.commercial_id)
+        .expect("commercial snapshot");
+    assert_eq!(
+        Some(fixture.commercial_root_id),
+        commercial.root.map(|root| root.id)
+    );
+    assert_eq!(
+        fixture.commercial_root_path.join(COMMERCIAL_ZIP),
+        commercial.path
+    );
+    let doujin = fixture
+        .application
+        .repository()
+        .collection(fixture.doujin_id)
+        .expect("doujin snapshot");
+    assert_eq!(
+        Some(fixture.doujin_root_id),
+        doujin.root.map(|root| root.id)
+    );
+}
+
+#[test]
+fn commercial_collection_without_commercial_archive_root_setting_stays_unclassified() {
+    let mut fixture = commercial_archive_fixture("commercial-unset", false);
+
+    let preflight = fixture
+        .application
+        .move_preflight(&[fixture.commercial_id], fixture.doujin_root_id)
+        .expect("move preflight");
+    assert_eq!(
+        ArchiveMovePreflightStatus::ReadyUnclassified,
+        preflight.items[0].status
+    );
+    assert_eq!(
+        Some(
+            fixture
+                .doujin_root_path
+                .join("未分類")
+                .join(COMMERCIAL_ZIP)
+                .to_string_lossy()
+                .into_owned()
+        ),
+        preflight.items[0].destination
+    );
+
+    let moved = fixture
+        .application
+        .move_collections_to_archive(&[fixture.commercial_id], fixture.doujin_root_id);
+
+    assert_eq!(1, moved.succeeded(), "{moved:?}");
+    assert!(
+        fixture
+            .doujin_root_path
+            .join("未分類")
+            .join(COMMERCIAL_ZIP)
+            .is_file()
+    );
+    assert_eq!(
+        0,
+        fs::read_dir(&fixture.commercial_root_path)
+            .expect("read commercial root")
+            .count()
+    );
+}
+
+#[test]
+fn deactivated_commercial_archive_root_blocks_commercial_collection_without_moving_files() {
+    let mut fixture = commercial_archive_fixture("commercial-deactivated", true);
+    fixture
+        .application
+        .deactivate_library_root(fixture.commercial_root_id)
+        .expect("deactivate commercial root");
+
+    let preflight = fixture
+        .application
+        .move_preflight(&[fixture.commercial_id], fixture.doujin_root_id)
+        .expect("move preflight");
+    assert_eq!(
+        ArchiveMovePreflightStatus::Blocked,
+        preflight.items[0].status
+    );
+    assert_eq!(1, preflight.summary.blocked);
+    let message = preflight.items[0]
+        .message
+        .clone()
+        .expect("blocked preflight message");
+    assert!(message.contains("商業誌典藏庫"), "實際訊息：{message}");
+
+    let moved = fixture
+        .application
+        .move_collections_to_archive(&[fixture.commercial_id], fixture.doujin_root_id);
+
+    assert_eq!(1, moved.failed());
+    assert_eq!(0, moved.succeeded());
+    assert!(fixture.tree.library().join(COMMERCIAL_ZIP).is_file());
+    assert_eq!(
+        0,
+        fs::read_dir(&fixture.doujin_root_path)
+            .expect("read doujin root")
+            .count()
+    );
+    assert_eq!(
+        0,
+        fs::read_dir(&fixture.commercial_root_path)
+            .expect("read commercial root")
+            .count()
+    );
+    assert_eq!(
+        0,
+        fixture
+            .application
+            .repository()
+            .file_operation_count()
+            .expect("file operation count")
+    );
 }
 
 fn folder_snapshot(directory: &Path) -> Vec<(String, Vec<u8>)> {

@@ -44,7 +44,7 @@ use crate::metadata::{
     MetadataAssertionDecision, MetadataField, MetadataSource, MetadataValue, SelectionSnapshot,
 };
 
-const SCHEMA_VERSION: i64 = 22;
+const SCHEMA_VERSION: i64 = 23;
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
 const SCAN_RUN_GUARD_MIGRATION: &str = include_str!("../migrations/0002_scan_run_guard.sql");
 const EXTERNAL_SEARCH_JOBS_MIGRATION: &str =
@@ -78,6 +78,8 @@ const LIBRARY_BATCH_SIZE_MIGRATION: &str =
 const SHELF_COMPOSITION_MIGRATION: &str = include_str!("../migrations/0020_shelf_composition.sql");
 const EXHENTAI_SESSION_MIGRATION: &str = include_str!("../migrations/0021_exhentai_session.sql");
 const COLLECTION_SIZE_MIGRATION: &str = include_str!("../migrations/0022_collection_size.sql");
+const COMMERCIAL_ARCHIVE_ROOT_MIGRATION: &str =
+    include_str!("../migrations/0023_commercial_archive_root.sql");
 
 /// 只保留 tombstone 與 candidate media kind 相同的 `tombstone_candidates` 列；
 /// 需要查詢把 `tombstone_candidates` 別名為 `candidate_link`。
@@ -208,6 +210,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 22,
         name: "0022_collection_size",
         sql: COLLECTION_SIZE_MIGRATION,
+    },
+    Migration {
+        version: 23,
+        name: "0023_commercial_archive_root",
+        sql: COMMERCIAL_ARCHIVE_ROOT_MIGRATION,
     },
 ];
 

@@ -1,0 +1,2 @@
+ALTER TABLE application_settings
+ADD COLUMN commercial_archive_root_id INTEGER;

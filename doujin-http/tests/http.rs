@@ -5049,7 +5049,7 @@ async fn settings_api_identifies_each_environment_override_and_saved_fallback() 
         },
     );
     application
-        .save_application_settings(Some(saved_reader.clone()), 360, 480, 85, None, 144)
+        .save_application_settings(Some(saved_reader.clone()), 360, 480, 85, None, 144, None)
         .expect("save fallback settings");
     let server = RunningServer::start(application).await;
 
@@ -5215,6 +5215,296 @@ async fn settings_api_manages_default_archive_root_and_pins_stored_value_after_d
     );
 
     server.stop().await;
+}
+
+#[tokio::test]
+async fn settings_api_manages_commercial_archive_root_and_pins_stored_value_after_deactivation() {
+    let tree = TestTree::new("settings-commercial-archive-root");
+    let archive_path = tree.root("commercial-archive");
+    let downloads_path = tree.root("commercial-downloads");
+    fs::create_dir_all(&archive_path).expect("create archive library");
+    fs::create_dir_all(&downloads_path).expect("create downloads library");
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let thumbnail_config =
+        ThumbnailConfig::new(tree.path.join("cache"), 300, 400, 80).expect("thumbnail config");
+    let application =
+        ApplicationService::with_thumbnails(repository, NoopRecycleBin, thumbnail_config);
+    let server = RunningServer::start(application).await;
+
+    let archive_root = server
+        .request_json(
+            "POST",
+            "/api/library-roots",
+            &serde_json::json!({
+                "path": archive_path,
+                "source": "archive",
+                "label": "商業誌"
+            }),
+        )
+        .await;
+    assert_eq!(200, archive_root.status);
+    let archive_root_id = archive_root.json["id"].as_i64().expect("archive root ID");
+    let downloads_root = server
+        .request_json(
+            "POST",
+            "/api/library-roots",
+            &serde_json::json!({
+                "path": downloads_path,
+                "source": "downloads",
+                "label": "下載區"
+            }),
+        )
+        .await;
+    assert_eq!(200, downloads_root.status);
+    let downloads_root_id = downloads_root.json["id"]
+        .as_i64()
+        .expect("downloads root ID");
+
+    let settings_payload = |commercial_archive_root_id: Option<i64>| {
+        serde_json::json!({
+            "viewer_path": "",
+            "thumb_size": "300x400",
+            "thumb_quality": 80,
+            "commercial_archive_root_id": commercial_archive_root_id,
+            "library_batch_size": 48
+        })
+    };
+
+    let initial = server.request("GET", "/api/settings", &[]).await;
+    assert_eq!(200, initial.status);
+    assert_eq!(Value::Null, initial.json["commercial_archive_root_id"]);
+
+    let set = server
+        .request_json(
+            "PUT",
+            "/api/settings",
+            &settings_payload(Some(archive_root_id)),
+        )
+        .await;
+    assert_eq!(200, set.status);
+    assert_eq!(archive_root_id, set.json["commercial_archive_root_id"]);
+    assert_eq!(Value::Null, set.json["default_archive_root_id"]);
+
+    let confirmed = server.request("GET", "/api/settings", &[]).await;
+    assert_eq!(200, confirmed.status);
+    assert_eq!(
+        archive_root_id,
+        confirmed.json["commercial_archive_root_id"]
+    );
+
+    let downloads_rejected = server
+        .request_json(
+            "PUT",
+            "/api/settings",
+            &settings_payload(Some(downloads_root_id)),
+        )
+        .await;
+    assert_eq!(400, downloads_rejected.status);
+    assert_eq!("invalid_settings", downloads_rejected.json["error"]["code"]);
+    assert!(
+        downloads_rejected.json["error"]["message"]
+            .as_str()
+            .expect("downloads rejection message")
+            .contains("商業誌典藏庫")
+    );
+
+    let missing_rejected = server
+        .request_json("PUT", "/api/settings", &settings_payload(Some(999)))
+        .await;
+    assert_eq!(400, missing_rejected.status);
+    assert_eq!("invalid_settings", missing_rejected.json["error"]["code"]);
+    assert!(
+        missing_rejected.json["error"]["message"]
+            .as_str()
+            .expect("missing rejection message")
+            .contains("商業誌典藏庫")
+    );
+
+    let unchanged = server.request("GET", "/api/settings", &[]).await;
+    assert_eq!(200, unchanged.status);
+    assert_eq!(
+        archive_root_id,
+        unchanged.json["commercial_archive_root_id"]
+    );
+
+    let omitted = server
+        .request_json(
+            "PUT",
+            "/api/settings",
+            &serde_json::json!({
+                "viewer_path": "",
+                "thumb_size": "300x400",
+                "thumb_quality": 80,
+                "library_batch_size": 48
+            }),
+        )
+        .await;
+    assert_eq!(200, omitted.status);
+    assert_eq!(Value::Null, omitted.json["commercial_archive_root_id"]);
+    let omitted_confirmed = server.request("GET", "/api/settings", &[]).await;
+    assert_eq!(200, omitted_confirmed.status);
+    assert_eq!(
+        Value::Null,
+        omitted_confirmed.json["commercial_archive_root_id"]
+    );
+
+    let reset = server
+        .request_json(
+            "PUT",
+            "/api/settings",
+            &settings_payload(Some(archive_root_id)),
+        )
+        .await;
+    assert_eq!(200, reset.status);
+    assert_eq!(archive_root_id, reset.json["commercial_archive_root_id"]);
+
+    let deactivated = server
+        .request(
+            "DELETE",
+            &format!("/api/library-roots/{archive_root_id}"),
+            &[],
+        )
+        .await;
+    assert_eq!(200, deactivated.status);
+    assert_eq!(false, deactivated.json["active"]);
+
+    let after_deactivation = server.request("GET", "/api/settings", &[]).await;
+    assert_eq!(200, after_deactivation.status);
+    assert_eq!(
+        archive_root_id,
+        after_deactivation.json["commercial_archive_root_id"]
+    );
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn file_move_api_routes_commercial_collection_to_commercial_archive_root() {
+    const COMMERCIAL_ZIP: &str = "(成年コミック) [作者] 作品.zip";
+    const DOUJIN_ZIP: &str = "(C106) [circle] work.zip";
+
+    let tree = TestTree::new("file-move-commercial");
+    tree.zip_in("downloads", COMMERCIAL_ZIP);
+    tree.zip_in("downloads", DOUJIN_ZIP);
+    let downloads = tree.root("downloads");
+    let doujin_archive = tree.root("同人誌");
+    let commercial_archive = tree.root("商業誌");
+    fs::create_dir_all(&doujin_archive).expect("create doujin archive");
+    fs::create_dir_all(&commercial_archive).expect("create commercial archive");
+    let repository = CatalogRepository::open_in_memory().expect("open catalog");
+    let thumbnail_config =
+        ThumbnailConfig::new(tree.path.join("cache"), 300, 400, 80).expect("thumbnail config");
+    let mut application =
+        ApplicationService::with_thumbnails(repository, NoopRecycleBin, thumbnail_config);
+    application
+        .run_scan(&[ScanRoot {
+            path: downloads.clone(),
+            source: SourceKind::Downloads,
+            label: "下載區".to_owned(),
+        }])
+        .expect("scan downloads");
+    let commercial_id = application
+        .repository()
+        .collection_id_for_current_path(&downloads.join(COMMERCIAL_ZIP))
+        .expect("commercial lookup")
+        .expect("commercial collection");
+    let doujin_id = application
+        .repository()
+        .collection_id_for_current_path(&downloads.join(DOUJIN_ZIP))
+        .expect("doujin lookup")
+        .expect("doujin collection");
+    let doujin_root_id = application
+        .register_library_root(&doujin_archive, SourceKind::Archive, "同人誌")
+        .expect("register doujin archive")
+        .id;
+    let commercial_root_id = application
+        .register_library_root(&commercial_archive, SourceKind::Archive, "商業誌")
+        .expect("register commercial archive")
+        .id;
+    let shared = share_application(application);
+    let server = RunningServer::start_shared(Arc::clone(&shared)).await;
+
+    let saved = server
+        .request_json(
+            "PUT",
+            "/api/settings",
+            &serde_json::json!({
+                "viewer_path": "",
+                "thumb_size": "300x400",
+                "thumb_quality": 80,
+                "default_archive_root_id": doujin_root_id,
+                "commercial_archive_root_id": commercial_root_id,
+                "library_batch_size": 48
+            }),
+        )
+        .await;
+    assert_eq!(200, saved.status);
+
+    let preflight = server
+        .request_json(
+            "POST",
+            "/api/file-actions/move/preflight",
+            &serde_json::json!({
+                "collection_ids": [commercial_id, doujin_id],
+                "archive_root_id": doujin_root_id
+            }),
+        )
+        .await;
+    assert_eq!(200, preflight.status);
+    assert_eq!(doujin_root_id, preflight.json["archive_root_id"]);
+    assert_eq!(
+        doujin_archive.to_string_lossy().as_ref(),
+        preflight.json["archive_root_path"]
+    );
+    assert_eq!(2, preflight.json["summary"]["ready"]);
+    assert_eq!(0, preflight.json["summary"]["ready_unclassified"]);
+    assert_eq!("ready", preflight.json["items"][0]["status"]);
+    assert_eq!(
+        commercial_archive
+            .join(COMMERCIAL_ZIP)
+            .to_string_lossy()
+            .as_ref(),
+        preflight.json["items"][0]["destination"]
+    );
+    assert_eq!("ready", preflight.json["items"][1]["status"]);
+    assert_eq!(
+        doujin_archive
+            .join("C106")
+            .join(DOUJIN_ZIP)
+            .to_string_lossy()
+            .as_ref(),
+        preflight.json["items"][1]["destination"]
+    );
+
+    let moved = server
+        .request_json(
+            "POST",
+            "/api/file-actions/move",
+            &serde_json::json!({
+                "collection_ids": [commercial_id, doujin_id],
+                "archive_root_id": doujin_root_id
+            }),
+        )
+        .await;
+    assert_eq!(200, moved.status);
+    assert_eq!(2, moved.json["succeeded"]);
+    assert_eq!(0, moved.json["failed"]);
+    assert!(commercial_archive.join(COMMERCIAL_ZIP).is_file());
+    assert!(!downloads.join(COMMERCIAL_ZIP).exists());
+    assert!(!doujin_archive.join("未分類").exists());
+    assert!(doujin_archive.join("C106").join(DOUJIN_ZIP).is_file());
+    server.stop().await;
+
+    let application = shared.lock().expect("application lock");
+    assert_eq!(
+        Some(commercial_root_id),
+        application
+            .repository()
+            .collection(commercial_id)
+            .expect("commercial snapshot")
+            .root
+            .map(|root| root.id)
+    );
 }
 
 #[tokio::test]

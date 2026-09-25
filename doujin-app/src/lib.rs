@@ -324,6 +324,7 @@ pub struct ApplicationSettingsSnapshot {
     pub thumbnail_size_overridden_by_environment: bool,
     pub thumbnail_quality_overridden_by_environment: bool,
     pub default_archive_root_id: Option<i64>,
+    pub commercial_archive_root_id: Option<i64>,
     pub library_batch_size: u32,
 }
 
@@ -1235,6 +1236,9 @@ impl<R: RecycleBin> ApplicationService<R> {
         let default_archive_root_id = stored
             .as_ref()
             .and_then(|settings| settings.default_archive_root_id);
+        let commercial_archive_root_id = stored
+            .as_ref()
+            .and_then(|settings| settings.commercial_archive_root_id);
         let library_batch_size = stored
             .as_ref()
             .map(|settings| settings.library_batch_size)
@@ -1258,6 +1262,7 @@ impl<R: RecycleBin> ApplicationService<R> {
                 .thumbnail_quality
                 .is_some(),
             default_archive_root_id,
+            commercial_archive_root_id,
             library_batch_size,
         })
     }
@@ -1281,6 +1286,7 @@ impl<R: RecycleBin> ApplicationService<R> {
         Ok(self.repository.clear_exhentai_cookie()?)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn save_application_settings(
         &mut self,
         reader_path: Option<PathBuf>,
@@ -1289,6 +1295,7 @@ impl<R: RecycleBin> ApplicationService<R> {
         thumbnail_quality: u8,
         default_archive_root_id: Option<i64>,
         library_batch_size: u32,
+        commercial_archive_root_id: Option<i64>,
     ) -> ApplicationResult<SaveSettingsOutcome> {
         if reader_path
             .as_deref()
@@ -1326,25 +1333,31 @@ impl<R: RecycleBin> ApplicationService<R> {
             effective_quality,
         )
         .map_err(|error| ApplicationError::InvalidSettings(error.to_string()))?;
-        if let Some(root_id) = default_archive_root_id {
+        for (root_id, label) in [
+            (default_archive_root_id, "預設典藏庫"),
+            (commercial_archive_root_id, "商業誌典藏庫"),
+        ] {
+            let Some(root_id) = root_id else {
+                continue;
+            };
             let root = self
                 .repository
                 .library_root(root_id)
                 .map_err(|error| match error {
                     StorageError::LibraryRootNotFound(id) => ApplicationError::InvalidSettings(
-                        format!("找不到 library root {id}，無法設為預設典藏庫"),
+                        format!("找不到 library root {id}，無法設為{label}"),
                     ),
                     other => ApplicationError::from(other),
                 })?;
             if root.source != SourceKind::Archive {
-                return Err(ApplicationError::InvalidSettings(
-                    "預設典藏庫必須是 archive 來源的 library root".to_owned(),
-                ));
+                return Err(ApplicationError::InvalidSettings(format!(
+                    "{label}必須是 archive 來源的 library root"
+                )));
             }
             if !root.active {
-                return Err(ApplicationError::InvalidSettings(
-                    "預設典藏庫必須是啟用中的 library root".to_owned(),
-                ));
+                return Err(ApplicationError::InvalidSettings(format!(
+                    "{label}必須是啟用中的 library root"
+                )));
             }
         }
         let saved = self.repository.save_application_settings(
@@ -1355,6 +1368,7 @@ impl<R: RecycleBin> ApplicationService<R> {
             &effective_thumbnail.settings_fingerprint(),
             default_archive_root_id,
             library_batch_size,
+            commercial_archive_root_id,
         )?;
         self.reader_path = effective_reader;
         self.thumbnail_config = Some(effective_thumbnail);
